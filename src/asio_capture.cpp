@@ -29,7 +29,7 @@ struct CaptureState {
     std::atomic<bool> overflow{false};
 };
 
-int capture_callback(void* input, void*, unsigned int frames, double, RtAudioStreamStatus,
+int capture_callback(void*, void* input, unsigned int frames, double, RtAudioStreamStatus,
                      void* user_data) {
     auto& state = *static_cast<CaptureState*>(user_data);
     const auto* samples = static_cast<const float*>(input);

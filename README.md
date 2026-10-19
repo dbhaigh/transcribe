@@ -119,11 +119,16 @@ FFmpeg command-line executable is not sufficient.
 
 ### ASIO capture
 
-ASIO is Windows-only and disabled by default. Install/build RtAudio with its
-ASIO backend and expose its CMake package, then configure:
+ASIO is Windows-only and disabled by default. Build and install RtAudio with
+its ASIO backend enabled, then point Transcribe at that installation:
 
 ```powershell
-cmake -S . -B build-asio -DTRANSCRIBE_ENABLE_ASIO=ON
+cmake -S ..\rtaudio -B rtaudio-build `
+  -DRTAUDIO_API_ASIO=ON -DRTAUDIO_API_WASAPI=OFF
+cmake --build rtaudio-build --config Release
+cmake --install rtaudio-build --prefix "$PWD\rtaudio-install"
+cmake -S . -B build-asio -DTRANSCRIBE_ENABLE_ASIO=ON `
+  -DCMAKE_PREFIX_PATH="$PWD\rtaudio-install"
 ```
 
 Capture uses a fixed-size single-producer/single-consumer ring. The audio
