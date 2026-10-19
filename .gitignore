@@ -1,4 +1,6 @@
 /build/
+/build-tests/
+/build-*/
 /cmake-build-*/
 *.obj
 *.exe

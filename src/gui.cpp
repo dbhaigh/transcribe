@@ -1,6 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <commdlg.h>
+#include <commctrl.h>
+#include <shellapi.h>
 
 #include "transcribe/asio_capture.hpp"
 #include "transcribe/audio.hpp"
@@ -10,9 +12,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cwctype>
 #include <filesystem>
+#include <iomanip>
 #include <memory>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -31,11 +37,24 @@ constexpr int id_musicxml_browse = 108;
 constexpr int id_tab = 109;
 constexpr int id_tab_browse = 110;
 constexpr int id_transcribe = 111;
+constexpr int id_midi = 112;
+constexpr int id_midi_browse = 113;
+constexpr int id_open_output = 114;
+constexpr int id_progress = 115;
+constexpr int id_preview = 116;
+constexpr int id_polyphonic = 117;
 constexpr UINT message_complete = WM_APP + 1;
+constexpr UINT message_progress = WM_APP + 2;
+constexpr UINT message_live_preview = WM_APP + 3;
 
 struct WorkResult {
     bool success{};
     std::wstring message;
+    std::wstring preview;
+};
+
+struct LivePreview {
+    std::wstring text;
 };
 
 struct AppState {
@@ -51,12 +70,19 @@ struct AppState {
     HWND musicxml_browse{};
     HWND tab{};
     HWND tab_browse{};
+    HWND midi{};
+    HWND midi_browse{};
+    HWND open_output{};
+    HWND polyphonic{};
     HWND transcribe{};
     HWND status{};
+    HWND progress{};
+    HWND preview{};
     std::vector<HWND> form_controls;
     std::jthread worker;
     bool busy{};
     bool close_when_done{};
+    std::filesystem::path preferences_path;
 };
 
 std::wstring get_text(HWND control) {
@@ -79,6 +105,18 @@ std::wstring to_wide(const char* text) {
     MultiByteToWideChar(CP_UTF8, 0, text, -1, result.data(), length);
     result.resize(static_cast<std::size_t>(length - 1));
     return result;
+}
+
+std::wstring key_name(const transcribe::ScoreMetadata& metadata) {
+    static constexpr std::array<const wchar_t*, 15> major_names{
+        L"Cb", L"Gb", L"Db", L"Ab", L"Eb", L"Bb", L"F", L"C",
+        L"G", L"D", L"A", L"E", L"B", L"F#", L"C#"};
+    static constexpr std::array<const wchar_t*, 15> minor_names{
+        L"Ab", L"Eb", L"Bb", L"F", L"C", L"G", L"D", L"A",
+        L"E", L"B", L"F#", L"C#", L"G#", L"D#", L"A#"};
+    const auto index = static_cast<std::size_t>(std::clamp(metadata.key_fifths, -7, 7) + 7);
+    return std::wstring(metadata.minor_key ? minor_names[index] : major_names[index]) +
+           (metadata.minor_key ? L" minor" : L" major");
 }
 
 HWND create_control(AppState& state, const wchar_t* class_name, const wchar_t* text,
@@ -111,6 +149,7 @@ void set_mode_controls(AppState& state) {
 #ifndef TRANSCRIBE_ENABLE_ONNX
     EnableWindow(state.model, FALSE);
     EnableWindow(state.model_browse, FALSE);
+    EnableWindow(state.polyphonic, FALSE);
 #endif
 }
 
@@ -149,12 +188,73 @@ void set_form_enabled(AppState& state, bool enabled) {
     }
 }
 
+std::filesystem::path preferences_path() {
+    std::array<wchar_t, 32768> appdata{};
+    const DWORD length = GetEnvironmentVariableW(L"APPDATA", appdata.data(),
+                                                 static_cast<DWORD>(appdata.size()));
+    if (length == 0 || length >= appdata.size()) {
+        return {};
+    }
+    return std::filesystem::path(appdata.data()) / L"Transcribe" / L"preferences.ini";
+}
+
+void load_preferences(AppState& state) {
+    state.preferences_path = preferences_path();
+    if (state.preferences_path.empty()) {
+        return;
+    }
+    std::array<wchar_t, 32768> value{};
+    const auto read = [&state, &value](const wchar_t* key, HWND control) {
+        value.fill(L'\0');
+        GetPrivateProfileStringW(L"Recent", key, L"", value.data(),
+                                 static_cast<DWORD>(value.size()),
+                                 state.preferences_path.c_str());
+        if (value[0] != L'\0') {
+            SetWindowTextW(control, value.data());
+        }
+    };
+    read(L"input", state.input);
+    read(L"model", state.model);
+    read(L"musicxml", state.musicxml);
+    read(L"tab", state.tab);
+    read(L"midi", state.midi);
+}
+
+bool save_preferences(const AppState& state) {
+    if (state.preferences_path.empty()) {
+        return false;
+    }
+    std::error_code error;
+    std::filesystem::create_directories(state.preferences_path.parent_path(), error);
+    if (error) {
+        return false;
+    }
+    const auto write = [&state](const wchar_t* key, HWND control) {
+        const auto value = get_text(control);
+        return WritePrivateProfileStringW(L"Recent", key, value.c_str(),
+                                          state.preferences_path.c_str()) != FALSE;
+    };
+    return write(L"input", state.input) && write(L"model", state.model) &&
+           write(L"musicxml", state.musicxml) && write(L"tab", state.tab) &&
+           write(L"midi", state.midi);
+}
+
+void save_preferences_or_warn(const AppState& state) {
+    if (!save_preferences(state)) {
+        MessageBoxW(state.window,
+                    L"Recent paths could not be saved and will not be remembered.",
+                    L"Transcribe", MB_OK | MB_ICONWARNING);
+    }
+}
+
 void start_transcription(AppState& state) {
     const bool use_asio = SendMessageW(state.mode, CB_GETCURSEL, 0, 0) == 1;
     const std::wstring input_text = get_text(state.input);
     const std::wstring model_text = get_text(state.model);
     const std::wstring musicxml_text = get_text(state.musicxml);
     const std::wstring tab_text = get_text(state.tab);
+    const std::wstring midi_text = get_text(state.midi);
+    const bool polyphonic = IsDlgButtonChecked(state.window, id_polyphonic) == BST_CHECKED;
     double capture_seconds = 0.0;
 
     if (!use_asio && input_text.empty()) {
@@ -168,7 +268,7 @@ void start_transcription(AppState& state) {
         return;
     }
 #ifndef TRANSCRIBE_ENABLE_ONNX
-    if (!model_text.empty()) {
+    if (!model_text.empty() || polyphonic) {
         MessageBoxW(state.window,
                     L"ONNX Runtime support is not enabled in this build. "
                     L"Configure with -DTRANSCRIBE_ENABLE_ONNX=ON to use a model.",
@@ -196,39 +296,134 @@ void start_transcription(AppState& state) {
     const std::filesystem::path model_path(model_text);
     const std::filesystem::path musicxml_path(musicxml_text);
     const std::filesystem::path tab_path(tab_text);
+    const std::filesystem::path midi_path(midi_text);
+    save_preferences_or_warn(state);
     state.busy = true;
     set_form_enabled(state, false);
-    SetWindowTextW(state.status, use_asio
-                                     ? L"Capturing from ASIO, then transcribing..."
-                                     : L"Transcribing audio...");
+    auto input_extension = input_path.extension().wstring();
+    std::transform(input_extension.begin(), input_extension.end(), input_extension.begin(),
+                   [](wchar_t character) { return static_cast<wchar_t>(std::towlower(character)); });
+    const bool streaming_wav = !use_asio && model_path.empty() && input_extension == L".wav";
+    SetWindowTextW(state.status, use_asio ? L"Capturing from ASIO..."
+                          : streaming_wav ? L"Streaming and analyzing WAV..."
+                                          : L"Loading and analyzing audio...");
+    SendMessageW(state.progress, PBM_SETPOS, 0, 0);
 
-    state.worker = std::jthread([window = state.window, use_asio, capture_seconds,
-                                 input_path, model_path, musicxml_path, tab_path]
+    state.worker = std::jthread([window = state.window, use_asio, streaming_wav,
+                                 capture_seconds, input_path, model_path, musicxml_path,
+                                 tab_path, midi_path
+#ifdef TRANSCRIBE_ENABLE_ONNX
+                                 , polyphonic
+#endif
+                                 ]
                                 (std::stop_token stop_token) {
         auto result = std::make_unique<WorkResult>();
         try {
-            transcribe::AudioBuffer audio = use_asio
-                                                ? transcribe::capture_asio(capture_seconds, stop_token)
-                                                : transcribe::read_wav(input_path);
+            const auto report_progress = [window](double progress) {
+                PostMessageW(window, message_progress, static_cast<WPARAM>(
+                    std::clamp(static_cast<int>(progress * 100.0), 0, 100)), 0);
+            };
             std::vector<transcribe::Note> notes;
-            if (model_path.empty()) {
-                notes = transcribe::transcribe_monophonic(audio);
+            if (streaming_wav) {
+                transcribe::StreamingOptions stream_options;
+                stream_options.analysis.progress_callback = report_progress;
+                notes = transcribe::transcribe_wav_streaming(input_path, stream_options).notes;
             } else {
+                transcribe::AudioBuffer audio = use_asio
+                    ? transcribe::capture_asio(capture_seconds, stop_token,
+                    [report_progress](double progress) { report_progress(progress * 0.35); },
+                    [window](double offset, const transcribe::AudioBuffer& snapshot) {
+                        auto notes = transcribe::transcribe_monophonic(snapshot);
+                        std::wostringstream text;
+                        text << L"Live notes (recent audio):\r\n";
+                        const std::size_t first = notes.size() > 35 ? notes.size() - 35 : 0;
+                        for (std::size_t i = first; i < notes.size(); ++i) {
+                            text << std::fixed << std::setprecision(2)
+                                 << offset + notes[i].start_seconds << L"s  "
+                                 << to_wide(notes[i].name.c_str()) << L"\r\n";
+                        }
+                        auto preview = std::make_unique<LivePreview>();
+                        preview->text = text.str();
+                        if (PostMessageW(window, message_live_preview, 0,
+                                         reinterpret_cast<LPARAM>(preview.get()))) {
+                            preview.release();
+                        }
+                    })
+                    : transcribe::read_audio(input_path);
+                report_progress(0.4);
+                if (model_path.empty()) {
+                    transcribe::AnalysisOptions analysis_options;
+                    analysis_options.progress_callback = [report_progress](double progress) {
+                        report_progress(0.4 + progress * 0.6);
+                    };
+                    notes = transcribe::transcribe_monophonic(audio, analysis_options);
+                } else {
 #ifdef TRANSCRIBE_ENABLE_ONNX
-                notes = transcribe::transcribe_with_onnx(audio, model_path);
+                    transcribe::OnnxOptions model_options;
+                    model_options.polyphonic = polyphonic;
+                    model_options.independent_probabilities = polyphonic;
+                    model_options.progress_callback = [report_progress](double progress) {
+                        report_progress(0.4 + progress * 0.6);
+                    };
+                    notes = transcribe::transcribe_with_onnx(audio, model_path, model_options);
 #else
-                throw std::runtime_error("ONNX Runtime support is disabled.");
+                    throw std::runtime_error("ONNX Runtime support is disabled.");
 #endif
+                }
             }
             if (notes.empty()) {
                 throw std::runtime_error("No stable pitches were detected in the input.");
             }
-            transcribe::write_musicxml(musicxml_path, notes);
+            const auto metadata = transcribe::infer_score_metadata(notes);
+            transcribe::write_musicxml(musicxml_path, notes, metadata);
             transcribe::write_guitar_tab(tab_path, notes);
+            if (!midi_path.empty()) {
+                transcribe::write_midi(midi_path, notes, metadata);
+            }
             result->success = true;
-            result->message = L"Detected " + std::to_wstring(notes.size()) +
-                              L" notes.\r\nMusicXML: " + musicxml_path.wstring() +
-                              L"\r\nGuitar tab: " + tab_path.wstring();
+            std::wostringstream summary;
+            summary << L"Detected " << notes.size() << L" notes. Tempo: ";
+            if (metadata.tempo_inferred) {
+                summary << std::fixed << std::setprecision(1) << metadata.tempo_bpm
+                        << L" BPM (confidence " << std::setprecision(2)
+                        << metadata.tempo_confidence << L')';
+            } else {
+                summary << L"uncertain; 120 BPM default";
+            }
+            summary << L". Meter: ";
+            if (metadata.meter_inferred) {
+                summary << metadata.time_numerator << L'/'
+                        << metadata.time_denominator << L" (confidence "
+                        << std::setprecision(2) << metadata.meter_confidence << L')';
+            } else {
+                summary << L"uncertain; 4/4 default";
+            }
+            summary << L". Key: ";
+            if (metadata.key_inferred) {
+                summary << key_name(metadata) << L" (confidence "
+                        << std::setprecision(2) << metadata.key_confidence << L')';
+            } else {
+                summary << L"uncertain; C major default";
+            }
+            summary << L".\r\nMusicXML: " << musicxml_path.wstring()
+                    << L"\r\nGuitar tab: " << tab_path.wstring();
+            if (!midi_path.empty()) {
+                summary << L"\r\nMIDI: " << midi_path.wstring();
+            }
+            result->message = summary.str();
+            std::wostringstream note_list;
+            const std::size_t shown = std::min<std::size_t>(notes.size(), 80);
+            for (std::size_t index = 0; index < shown; ++index) {
+                note_list << std::fixed << std::setprecision(2)
+                          << notes[index].start_seconds << L"s  "
+                          << to_wide(notes[index].name.c_str()) << L"  "
+                          << notes[index].duration_seconds << L"s  confidence "
+                          << notes[index].confidence << L"\r\n";
+            }
+            if (notes.size() > shown) {
+                note_list << L"... " << notes.size() - shown << L" more notes";
+            }
+            result->preview = note_list.str();
         } catch (const std::exception& error) {
             result->message = to_wide(error.what());
         }
@@ -265,7 +460,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
 #endif
         SendMessageW(state->mode, CB_SETCURSEL, 0, 0);
 
-        create_label(*state, L"Input WAV file", 66);
+        create_label(*state, L"Audio file", 66);
         state->input = create_control(*state, L"EDIT", L"",
                                       WS_BORDER | ES_AUTOHSCROLL, 175, 62, 455, 25, id_input);
         state->input_browse = create_control(*state, L"BUTTON", L"Browse...",
@@ -287,22 +482,45 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         EnableWindow(state->model_browse, FALSE);
 #endif
 
-        create_label(*state, L"MusicXML output", 186);
-        state->musicxml = create_control(*state, L"EDIT", L"transcription.musicxml",
-                                         WS_BORDER | ES_AUTOHSCROLL, 175, 182, 455, 25, id_musicxml);
-        state->musicxml_browse = create_control(*state, L"BUTTON", L"Save as...",
-                                                BS_PUSHBUTTON, 640, 181, 90, 27, id_musicxml_browse);
+        state->polyphonic = create_control(*state, L"BUTTON", L"Polyphonic ONNX",
+                                           BS_AUTOCHECKBOX, 175, 171, 180, 24,
+                                           id_polyphonic);
+#ifndef TRANSCRIBE_ENABLE_ONNX
+        EnableWindow(state->polyphonic, FALSE);
+#endif
 
-        create_label(*state, L"Guitar tab output", 226);
+        create_label(*state, L"MusicXML output", 210);
+        state->musicxml = create_control(*state, L"EDIT", L"transcription.musicxml",
+                                         WS_BORDER | ES_AUTOHSCROLL, 175, 206, 455, 25, id_musicxml);
+        state->musicxml_browse = create_control(*state, L"BUTTON", L"Save as...",
+                                                BS_PUSHBUTTON, 640, 205, 90, 27, id_musicxml_browse);
+
+        create_label(*state, L"Guitar tab output", 250);
         state->tab = create_control(*state, L"EDIT", L"transcription.txt",
-                                    WS_BORDER | ES_AUTOHSCROLL, 175, 222, 455, 25, id_tab);
+                                    WS_BORDER | ES_AUTOHSCROLL, 175, 246, 455, 25, id_tab);
         state->tab_browse = create_control(*state, L"BUTTON", L"Save as...",
-                                           BS_PUSHBUTTON, 640, 221, 90, 27, id_tab_browse);
+                                           BS_PUSHBUTTON, 640, 245, 90, 27, id_tab_browse);
+
+        create_label(*state, L"MIDI output (optional)", 290);
+        state->midi = create_control(*state, L"EDIT", L"",
+                                     WS_BORDER | ES_AUTOHSCROLL, 175, 286, 455, 25, id_midi);
+        state->midi_browse = create_control(*state, L"BUTTON", L"Save as...",
+                                            BS_PUSHBUTTON, 640, 285, 90, 27, id_midi_browse);
 
         state->transcribe = create_control(*state, L"BUTTON", L"Transcribe",
-                                           BS_DEFPUSHBUTTON, 175, 267, 140, 34, id_transcribe);
+                                           BS_DEFPUSHBUTTON, 175, 328, 140, 34, id_transcribe);
+        state->open_output = create_control(*state, L"BUTTON", L"Open output folder",
+                                            BS_PUSHBUTTON, 325, 328, 170, 34, id_open_output);
+        state->progress = create_control(*state, PROGRESS_CLASSW, L"",
+                                         PBS_SMOOTH, 175, 375, 555, 20, id_progress);
+        SendMessageW(state->progress, PBM_SETRANGE32, 0, 100);
         state->status = create_control(*state, L"STATIC", L"Ready.",
-                                       SS_LEFT, 175, 316, 555, 65, 0);
+                                       SS_LEFT, 175, 402, 555, 24, 0);
+        state->preview = create_control(*state, L"EDIT", L"",
+                                        WS_BORDER | ES_MULTILINE | ES_READONLY |
+                                            ES_AUTOVSCROLL | WS_VSCROLL,
+                                        175, 432, 555, 92, id_preview);
+        load_preferences(*state);
         set_mode_controls(*state);
         return 0;
         } catch (const std::exception& error) {
@@ -319,8 +537,14 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             }
             return 0;
         case id_input_browse:
+#ifdef TRANSCRIBE_ENABLE_FFMPEG
+            browse_for_file(window, state->input, false,
+                            L"Audio files (*.wav;*.mp3;*.flac;*.ogg;*.m4a)\0*.wav;*.mp3;*.flac;*.ogg;*.m4a\0All files (*.*)\0*.*\0\0",
+                            nullptr);
+#else
             browse_for_file(window, state->input, false,
                             L"Wave audio (*.wav)\0*.wav\0All files (*.*)\0*.*\0\0", nullptr);
+#endif
             return 0;
         case id_model_browse:
             browse_for_file(window, state->model, false,
@@ -335,6 +559,23 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             browse_for_file(window, state->tab, true,
                             L"Text files (*.txt)\0*.txt\0All files (*.*)\0*.*\0\0", L"txt");
             return 0;
+        case id_midi_browse:
+            browse_for_file(window, state->midi, true,
+                            L"MIDI files (*.mid)\0*.mid\0All files (*.*)\0*.*\0\0", L"mid");
+            return 0;
+        case id_open_output: {
+            auto folder = std::filesystem::path(get_text(state->musicxml)).parent_path();
+            if (folder.empty()) {
+                folder = std::filesystem::current_path();
+            }
+            const auto result = reinterpret_cast<INT_PTR>(
+                ShellExecuteW(window, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+            if (result <= 32) {
+                MessageBoxW(window, L"Could not open the output folder.", L"Transcribe",
+                            MB_OK | MB_ICONERROR);
+            }
+            return 0;
+        }
         case id_transcribe:
             try {
                 start_transcription(*state);
@@ -355,6 +596,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         state->busy = false;
         if (result->success) {
             SetWindowTextW(state->status, result->message.c_str());
+            SetWindowTextW(state->preview, result->preview.c_str());
+            SendMessageW(state->progress, PBM_SETPOS, 100, 0);
         } else {
             SetWindowTextW(state->status, L"Transcription failed.");
             MessageBoxW(window, result->message.c_str(), L"Transcription failed",
@@ -367,6 +610,45 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         return 0;
     }
+    case message_progress:
+        SendMessageW(state->progress, PBM_SETPOS, wparam, 0);
+        {
+            const std::wstring status =
+                L"Analyzing audio... " + std::to_wstring(static_cast<int>(wparam)) + L"%";
+            SetWindowTextW(state->status, status.c_str());
+        }
+        return 0;
+    case message_live_preview: {
+        std::unique_ptr<LivePreview> preview(reinterpret_cast<LivePreview*>(lparam));
+        if (state->busy) {
+            SetWindowTextW(state->preview, preview->text.c_str());
+        }
+        return 0;
+    }
+    case WM_DROPFILES: {
+        HDROP drop = reinterpret_cast<HDROP>(wparam);
+        std::array<wchar_t, 32768> dropped_path{};
+        if (DragQueryFileW(drop, 0, dropped_path.data(),
+                           static_cast<UINT>(dropped_path.size())) > 0) {
+#ifndef TRANSCRIBE_ENABLE_FFMPEG
+            const auto extension = std::filesystem::path(dropped_path.data()).extension();
+            if (extension != L".wav" && extension != L".WAV") {
+                MessageBoxW(window, L"This build accepts WAV files only.", L"Transcribe",
+                            MB_OK | MB_ICONINFORMATION);
+                DragFinish(drop);
+                return 0;
+            }
+#endif
+            if (!state->busy) {
+                SendMessageW(state->mode, CB_SETCURSEL, 0, 0);
+                set_mode_controls(*state);
+                SetWindowTextW(state->input, dropped_path.data());
+                SetWindowTextW(state->status, L"Audio file selected.");
+            }
+        }
+        DragFinish(drop);
+        return 0;
+    }
     case WM_CLOSE:
         if (state->busy) {
             state->close_when_done = true;
@@ -377,6 +659,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         DestroyWindow(window);
         return 0;
     case WM_DESTROY:
+        save_preferences_or_warn(*state);
         PostQuitMessage(0);
         return 0;
     default:
@@ -388,6 +671,14 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
 } // namespace
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
+    INITCOMMONCONTROLSEX common_controls{};
+    common_controls.dwSize = sizeof(common_controls);
+    common_controls.dwICC = ICC_PROGRESS_CLASS;
+    if (!InitCommonControlsEx(&common_controls)) {
+        MessageBoxW(nullptr, L"Could not initialize common controls.", L"Transcribe",
+                    MB_OK | MB_ICONERROR);
+        return 1;
+    }
     AppState state;
     const wchar_t class_name[] = L"TranscribeMainWindow";
     WNDCLASSEXW window_class{};
@@ -403,7 +694,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
         return 1;
     }
 
-    RECT bounds{0, 0, 760, 405};
+    RECT bounds{0, 0, 760, 540};
     AdjustWindowRect(&bounds, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     HWND window = CreateWindowExW(
         0, class_name, L"Transcribe", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
@@ -415,6 +706,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
         return 1;
     }
 
+    DragAcceptFiles(window, TRUE);
     ShowWindow(window, show_command);
     UpdateWindow(window);
     MSG message{};

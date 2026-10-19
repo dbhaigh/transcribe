@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure with tests
+        run: cmake -S . -B build -DTRANSCRIBE_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+        ffmpeg: [OFF, ON]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FFmpeg development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg pkg-config libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+          -DTRANSCRIBE_ENABLE_FFMPEG=${{ matrix.ffmpeg }}
+          -DTRANSCRIBE_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Decode a compressed fixture
+        if: matrix.ffmpeg == 'ON'
+        run: |
+          ffmpeg -nostdin -hide_banner -loglevel error -y -i samples/single_a4.wav -c:a flac "$RUNNER_TEMP/single_a4.flac"
+          ./build/transcribe "$RUNNER_TEMP/single_a4.flac" --quiet --musicxml "$RUNNER_TEMP/score.musicxml" --tab "$RUNNER_TEMP/tab.txt"
+
+  onnx:
+    runs-on: ubuntu-24.04
+    env:
+      ONNXRUNTIME_ROOT: ${{ runner.temp }}/onnxruntime-linux-x64-1.20.1
+      LD_LIBRARY_PATH: ${{ runner.temp }}/onnxruntime-linux-x64-1.20.1/lib
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download ONNX Runtime
+        run: |
+          curl -fsSL https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-1.20.1.tgz -o "$RUNNER_TEMP/onnxruntime.tgz"
+          tar -xzf "$RUNNER_TEMP/onnxruntime.tgz" -C "$RUNNER_TEMP"
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -DTRANSCRIBE_ENABLE_ONNX=ON
+          -DTRANSCRIBE_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cctype>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -90,7 +92,42 @@ float decode_sample(const unsigned char* data, std::uint16_t encoding, std::uint
 
 } // namespace
 
+#ifdef TRANSCRIBE_ENABLE_FFMPEG
+AudioBuffer read_audio_ffmpeg(const std::filesystem::path& path);
+#endif
+
+AudioBuffer read_audio(const std::filesystem::path& path) {
+    auto extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    if (extension == ".wav") {
+        return read_wav(path);
+    }
+#ifdef TRANSCRIBE_ENABLE_FFMPEG
+    return read_audio_ffmpeg(path);
+#else
+    throw std::runtime_error(
+        "Unsupported audio format. This build reads WAV; enable TRANSCRIBE_ENABLE_FFMPEG for other formats.");
+#endif
+}
+
 AudioBuffer read_wav(const std::filesystem::path& path) {
+    AudioBuffer audio;
+    read_wav_blocks(path, 4096, [&audio](const AudioBlockView& block) {
+        audio.sample_rate = block.sample_rate;
+        audio.samples.insert(audio.samples.end(), block.samples.begin(), block.samples.end());
+    });
+    return audio;
+}
+
+void read_wav_blocks(
+    const std::filesystem::path& path, std::size_t block_frames,
+    const std::function<void(const AudioBlockView&)>& block_callback) {
+    if (block_frames == 0 || !block_callback) {
+        throw std::invalid_argument("WAV block size and callback must be valid.");
+    }
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         throw std::runtime_error("Could not open input file: " + path.string());
@@ -106,7 +143,8 @@ AudioBuffer read_wav(const std::filesystem::path& path) {
     Format format{};
     bool have_format = false;
     bool have_data = false;
-    std::vector<unsigned char> data;
+    std::streampos data_start{};
+    std::uint32_t data_size = 0;
     while (input && !(have_format && have_data)) {
         const std::string chunk = read_fourcc(input);
         const std::uint32_t size = read_u32(input);
@@ -127,11 +165,8 @@ AudioBuffer read_wav(const std::filesystem::path& path) {
             }
             have_format = true;
         } else if (chunk == "data") {
-            data.resize(size);
-            input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size));
-            if (!input) {
-                throw std::runtime_error("WAV data chunk is truncated.");
-            }
+            data_start = chunk_start;
+            data_size = size;
             have_data = true;
         }
 
@@ -143,26 +178,52 @@ AudioBuffer read_wav(const std::filesystem::path& path) {
     }
 
     if (!have_format || !have_data || format.channels == 0 || format.sample_rate == 0 ||
-        format.block_align == 0 || data.size() % format.block_align != 0) {
+        format.block_align == 0 || data_size % format.block_align != 0) {
         throw std::runtime_error("WAV file has missing or inconsistent format/data chunks.");
     }
     const std::size_t bytes_per_sample = (format.bits_per_sample + 7U) / 8U;
     if (bytes_per_sample * format.channels > format.block_align) {
         throw std::runtime_error("WAV block alignment is smaller than its sample data.");
     }
-
-    AudioBuffer audio{format.sample_rate, {}};
-    const std::size_t frames = data.size() / format.block_align;
-    audio.samples.reserve(frames);
-    for (std::size_t frame = 0; frame < frames; ++frame) {
-        float sum = 0.0f;
-        for (std::uint16_t channel = 0; channel < format.channels; ++channel) {
-            const auto offset = frame * format.block_align + channel * bytes_per_sample;
-            sum += decode_sample(data.data() + offset, format.encoding, format.bits_per_sample);
-        }
-        audio.samples.push_back(sum / format.channels);
+    const auto maximum_block =
+        static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) /
+        format.block_align;
+    if (block_frames > maximum_block ||
+        block_frames > std::numeric_limits<std::size_t>::max() / format.block_align) {
+        throw std::length_error("Requested WAV read block is too large.");
     }
-    return audio;
+
+    const std::size_t frames = data_size / format.block_align;
+    input.clear();
+    input.seekg(data_start);
+    if (frames == 0) {
+        block_callback({format.sample_rate, 0, 0, {}});
+        return;
+    }
+    std::vector<unsigned char> chunk(block_frames * format.block_align);
+    std::size_t frames_read = 0;
+    while (frames_read < frames) {
+        const std::size_t count = std::min(block_frames, frames - frames_read);
+        const auto byte_count = count * format.block_align;
+        input.read(reinterpret_cast<char*>(chunk.data()),
+                   static_cast<std::streamsize>(byte_count));
+        if (!input) {
+            throw std::runtime_error("WAV data chunk is truncated.");
+        }
+        std::vector<float> decoded;
+        decoded.reserve(count);
+        for (std::size_t frame = 0; frame < count; ++frame) {
+            float sum = 0.0f;
+            for (std::uint16_t channel = 0; channel < format.channels; ++channel) {
+                const auto offset = frame * format.block_align + channel * bytes_per_sample;
+                sum += decode_sample(chunk.data() + offset, format.encoding,
+                                     format.bits_per_sample);
+            }
+            decoded.push_back(sum / format.channels);
+        }
+        block_callback({format.sample_rate, frames_read, frames, decoded});
+        frames_read += count;
+    }
 }
 
 } // namespace transcribe
