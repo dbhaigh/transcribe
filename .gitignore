@@ -1,0 +1,9 @@
+/build/
+/cmake-build-*/
+*.obj
+*.exe
+*.dll
+*.lib
+*.a
+transcription.musicxml
+transcription.txt
