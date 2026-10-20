@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(transcribe VERSION 0.1.2 LANGUAGES CXX)
+project(transcribe VERSION 0.1.3 LANGUAGES CXX)
 
 option(TRANSCRIBE_ENABLE_ASIO "Build real-time capture using RtAudio's ASIO backend" OFF)
 option(TRANSCRIBE_ENABLE_ONNX "Build ONNX Runtime model inference support" OFF)
@@ -34,6 +34,43 @@ if(WIN32)
     if(TRANSCRIBE_ENABLE_WEBVIEW2)
         set(TRANSCRIBE_WEBVIEW2_SDK_ROOT "" CACHE PATH
             "Root of an extracted Microsoft.Web.WebView2 NuGet package")
+        set(TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH "" CACHE FILEPATH
+            "Path to a pre-downloaded Evergreen WebView2 bootstrapper")
+        if(TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH)
+            set(_webview2_bootstrapper "${TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH}")
+        else()
+            set(_webview2_bootstrapper
+                "${CMAKE_CURRENT_BINARY_DIR}/webview2-runtime/MicrosoftEdgeWebView2Setup.exe")
+            if(NOT EXISTS "${_webview2_bootstrapper}")
+                get_filename_component(_webview2_runtime_dir
+                    "${_webview2_bootstrapper}" DIRECTORY)
+                file(MAKE_DIRECTORY "${_webview2_runtime_dir}")
+                file(DOWNLOAD
+                    "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+                    "${_webview2_bootstrapper}"
+                    STATUS _webview2_download_status
+                    TLS_VERIFY ON
+                    TIMEOUT 180)
+                list(GET _webview2_download_status 0 _webview2_download_code)
+                list(GET _webview2_download_status 1 _webview2_download_message)
+                if(NOT _webview2_download_code EQUAL 0)
+                    file(REMOVE "${_webview2_bootstrapper}")
+                    message(FATAL_ERROR
+                        "Could not download the Evergreen WebView2 bootstrapper: "
+                        "${_webview2_download_message}. Set "
+                        "TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH to a local copy to build offline.")
+                endif()
+            endif()
+        endif()
+        if(NOT EXISTS "${_webview2_bootstrapper}")
+            message(FATAL_ERROR
+                "WebView2 bootstrapper not found: ${_webview2_bootstrapper}")
+        endif()
+        file(SIZE "${_webview2_bootstrapper}" _webview2_bootstrapper_size)
+        if(_webview2_bootstrapper_size LESS 100000)
+            message(FATAL_ERROR
+                "WebView2 bootstrapper is unexpectedly small: ${_webview2_bootstrapper}")
+        endif()
         if(CMAKE_SIZEOF_VOID_P EQUAL 8)
             set(_webview2_arch x64)
         else()
@@ -72,6 +109,8 @@ if(WIN32)
                 "${WEBVIEW2_LICENSE_FILE}" "$<TARGET_FILE_DIR:transcribe-gui>/WebView2-LICENSE.txt"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${WEBVIEW2_NOTICE_FILE}" "$<TARGET_FILE_DIR:transcribe-gui>/WebView2-NOTICE.txt"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_webview2_bootstrapper}" "$<TARGET_FILE_DIR:transcribe-gui>/MicrosoftEdgeWebView2Setup.exe"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_CURRENT_SOURCE_DIR}/ui" "$<TARGET_FILE_DIR:transcribe-gui>/ui")
     else()

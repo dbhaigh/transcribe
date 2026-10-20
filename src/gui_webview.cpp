@@ -48,6 +48,13 @@ struct AppState {
     bool shutting_down{};
 };
 
+enum class RuntimeStartup {
+    ready,
+    setup_started,
+    cancelled,
+    failed
+};
+
 struct ProgressMessage {
     int percent{};
     std::wstring status;
@@ -361,6 +368,71 @@ std::filesystem::path executable_directory() {
     return std::filesystem::path(path.data()).parent_path();
 }
 
+RuntimeStartup prepare_webview_runtime(AppState& state) {
+    state.loader = LoadLibraryW(L"WebView2Loader.dll");
+    if (state.loader == nullptr) {
+        MessageBoxW(nullptr, L"WebView2Loader.dll is missing beside the application executable.",
+                    L"Transcribe", MB_OK | MB_ICONERROR);
+        return RuntimeStartup::failed;
+    }
+
+    using GetAvailableVersionFunction =
+        decltype(&GetAvailableCoreWebView2BrowserVersionString);
+    const auto get_available_version =
+        reinterpret_cast<GetAvailableVersionFunction>(GetProcAddress(
+            state.loader, "GetAvailableCoreWebView2BrowserVersionString"));
+    if (get_available_version == nullptr) {
+        MessageBoxW(nullptr, L"The WebView2 loader is missing a required entry point.",
+                    L"Transcribe", MB_OK | MB_ICONERROR);
+        return RuntimeStartup::failed;
+    }
+
+    LPWSTR version = nullptr;
+    const HRESULT result = get_available_version(nullptr, &version);
+    const bool runtime_available =
+        SUCCEEDED(result) && version != nullptr && version[0] != L'\0';
+    CoTaskMemFree(version);
+    if (runtime_available) {
+        return RuntimeStartup::ready;
+    }
+
+    const auto bootstrapper =
+        executable_directory() / L"MicrosoftEdgeWebView2Setup.exe";
+    std::error_code filesystem_error;
+    if (!std::filesystem::is_regular_file(bootstrapper, filesystem_error)) {
+        MessageBoxW(nullptr,
+                    L"The Microsoft Edge WebView2 Runtime is not installed, and its "
+                    L"Evergreen installer is missing beside Transcribe.",
+                    L"Transcribe", MB_OK | MB_ICONERROR);
+        return RuntimeStartup::failed;
+    }
+
+    const int choice = MessageBoxW(
+        nullptr,
+        L"The Microsoft Edge WebView2 Runtime is required but is not installed.\n\n"
+        L"Would you like to start the included Evergreen installer? Internet access "
+        L"is required. Restart Transcribe after installation.",
+        L"Transcribe", MB_YESNO | MB_ICONINFORMATION);
+    if (choice != IDYES) {
+        return RuntimeStartup::cancelled;
+    }
+
+    SHELLEXECUTEINFOW execute_info{};
+    execute_info.cbSize = sizeof(execute_info);
+    execute_info.fMask = SEE_MASK_NOASYNC;
+    execute_info.lpVerb = L"open";
+    execute_info.lpFile = bootstrapper.c_str();
+    execute_info.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&execute_info)) {
+        const auto error = std::to_wstring(GetLastError());
+        const auto message =
+            L"Could not start the WebView2 installer (Windows error " + error + L").";
+        MessageBoxW(nullptr, message.c_str(), L"Transcribe", MB_OK | MB_ICONERROR);
+        return RuntimeStartup::failed;
+    }
+    return RuntimeStartup::setup_started;
+}
+
 std::filesystem::path webview_user_data_directory() {
     std::array<wchar_t, 32768> local_app_data{};
     const DWORD length = GetEnvironmentVariableW(
@@ -381,12 +453,6 @@ std::filesystem::path webview_user_data_directory() {
 }
 
 void initialize_webview(AppState& state) {
-    state.loader = LoadLibraryW(L"WebView2Loader.dll");
-    if (state.loader == nullptr) {
-        throw std::runtime_error(
-            "WebView2Loader.dll is missing beside the application executable.");
-    }
-
     using CreateEnvironmentFunction =
         decltype(&CreateCoreWebView2EnvironmentWithOptions);
     const auto create_environment = reinterpret_cast<CreateEnvironmentFunction>(
@@ -954,6 +1020,15 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
     }
 
     AppState state;
+    const RuntimeStartup runtime_startup = prepare_webview_runtime(state);
+    if (runtime_startup != RuntimeStartup::ready) {
+        if (state.loader != nullptr) {
+            FreeLibrary(state.loader);
+        }
+        CoUninitialize();
+        return runtime_startup == RuntimeStartup::failed ? 1 : 0;
+    }
+
     const wchar_t class_name[] = L"TranscribeWebViewWindow";
     WNDCLASSEXW window_class{};
     window_class.cbSize = sizeof(window_class);

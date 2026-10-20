@@ -1,9 +1,9 @@
 # Transcribe
 
 Transcribe is a C++20 CLI and Windows GUI for turning audio into a first-pass
-musical score and standard-tuning guitar tablature. Version 0.1.2 adds an
-optional WebView2 interface and reproducible real-recording evaluation while
-retaining the dependency-light WAV/YIN default, optional ONNX inference,
+musical score and standard-tuning guitar tablature. Version 0.1.3 adds
+automatic Evergreen WebView2 Runtime setup to the optional WebView2 interface,
+while retaining the dependency-light WAV/YIN default, optional ONNX inference,
 optional FFmpeg decoding, and optional Windows ASIO capture.
 
 This release is an early transcription aid, not a commercial-grade
@@ -101,9 +101,8 @@ default so the normal build stays dependency-light.
 
 ### WebView2 GUI
 
-Install the Microsoft Edge WebView2 Runtime and extract the
-`Microsoft.Web.WebView2` NuGet package. Then point CMake to the extracted
-package root:
+Extract the `Microsoft.Web.WebView2` NuGet package and point CMake to the
+extracted package root:
 
 ```powershell
 cmake -S . -B build-webview2 `
@@ -112,9 +111,18 @@ cmake -S . -B build-webview2 `
 cmake --build build-webview2 --config Release --target transcribe-gui
 ```
 
-The build copies `WebView2Loader.dll`, its package license/notice, and the local
-`ui/` assets beside the executable. The Evergreen WebView2 Runtime must be
-installed on each target machine. To keep using the native Win32 form, leave
+The build downloads Microsoft's Evergreen WebView2 bootstrapper and copies it,
+`WebView2Loader.dll`, its package license/notice, and the local `ui/` assets
+beside the executable. You can provide a pre-downloaded bootstrapper with
+`-DTRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH="C:\path\to\MicrosoftEdgeWebView2Setup.exe"`
+to build without network access during CMake configuration.
+
+At startup, Transcribe checks for the Evergreen Runtime. If it is missing, the
+app offers to launch the bundled bootstrapper. Runtime installation needs
+internet access; close and restart Transcribe after installation. The runtime
+updates independently of Transcribe. See Microsoft's
+[WebView2 deployment documentation](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution)
+for deployment details. To keep using the native Win32 form, leave
 `TRANSCRIBE_ENABLE_WEBVIEW2` off.
 
 ### ONNX Runtime
