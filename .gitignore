@@ -9,3 +9,4 @@
 *.a
 transcription.musicxml
 transcription.txt
+__pycache__/

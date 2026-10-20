@@ -1,0 +1,2768 @@
+{
+  "audio_sample_rates": [
+    22050
+  ],
+  "build": {
+    "build_type": "Release",
+    "compiler": {
+      "id": "Clang",
+      "path": "C:/Users/ahaig/AppData/Local/Microsoft/WinGet/Packages/MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/llvm-mingw-20260908-ucrt-x86_64/bin/clang++.exe",
+      "version": "23.1.1"
+    },
+    "executable": "C:/Users/ahaig/Source/Repos/transcriber/build-release-mingw/transcriber.exe",
+    "features": {
+      "asio": false,
+      "ffmpeg": false,
+      "onnx": false,
+      "onnx_cuda": false,
+      "onnx_directml": false,
+      "onnx_rocm": false,
+      "webview2": false
+    },
+    "flags": {
+      "common": "",
+      "debug": "-g",
+      "language": "cxx_std_20",
+      "minsizerel": "-Os -DNDEBUG",
+      "release": "-O3 -DNDEBUG",
+      "relwithdebinfo": "-O2 -g -DNDEBUG",
+      "warnings": "-Wall -Wextra -Wpedantic"
+    },
+    "generator": "MinGW Makefiles",
+    "metadata_sha256": "7372bbdd6b7638a14ad0458570312e6b49c0d5dfc5d9bbfbc42421ab260d0dc5",
+    "project_version": "0.1.4",
+    "runner": "C:/Users/ahaig/Source/Repos/transcriber/build-release-mingw/transcriber-evaluate.exe",
+    "runner_sha256": "f5e33f3ebc385885c11dd7c05e96626fc4476d05cdfe91170d3c6f1370069223",
+    "schema_version": 1,
+    "system": "Windows"
+  },
+  "clips": [
+    {
+      "audio_sha256": "5c0f5eca644e9f191a4c694bb0397cacd099df157e171bff7dcfa01fe4867668",
+      "duration_seconds": 2.0,
+      "first_update_seconds": [
+        0.000844,
+        0.0007622,
+        0.0008822
+      ],
+      "id": "monophonic",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9802371541501976,
+          "fn": 1,
+          "fp": 4,
+          "precision": 0.96875,
+          "recall": 0.992,
+          "tp": 124
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 2
+        },
+        "offset_error_seconds": {
+          "count": 2,
+          "maximum": 0.011564625850340127,
+          "mean": 0.0075963718820861725,
+          "median": 0.0075963718820861725,
+          "p95": 0.011564625850340127
+        },
+        "onset_error_seconds": {
+          "count": 2,
+          "maximum": 0.021995464852607727,
+          "mean": 0.02114512471655329,
+          "median": 0.02114512471655329,
+          "p95": 0.021995464852607727
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 2
+        },
+        "pitch_accuracy": {
+          "correct": 2,
+          "matched": 2,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9998852501557923,
+          "duration": 0.5587301587301587,
+          "midi": 57,
+          "start": 0.12970521541950114
+        },
+        {
+          "confidence": 0.9957706886953257,
+          "duration": 0.7183673469387756,
+          "midi": 64,
+          "start": 0.8780045351473923
+        }
+      ],
+      "process_wall_seconds": [
+        0.020636700006434694,
+        0.020848399988608435,
+        0.022024400008376688
+      ],
+      "real_time_factor": [
+        0.004608,
+        0.00460885,
+        0.0047726
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.1796825396825397,
+          "midi": 57,
+          "time_seconds": 0.12970521541950114,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 0.748390022675737,
+          "midi": 57,
+          "time_seconds": 0.6884353741496598,
+          "type": "offset"
+        },
+        {
+          "detected_at_seconds": 0.9279818594104309,
+          "midi": 64,
+          "time_seconds": 0.8780045351473923,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.656326530612245,
+          "midi": 64,
+          "time_seconds": 1.5963718820861679,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303855,
+        0.04997732426303858,
+        0.04997732426303855,
+        0.04997732426303858,
+        0.04997732426303855,
+        0.04997732426303858
+      ],
+      "references": [
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 0.7,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.7000000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.6,
+          "onset": 0.9,
+          "start": 0.9,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0086371,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005786,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.000844,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.009216
+        },
+        {
+          "analysis_seconds": 0.0086736,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005435,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0007622,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0092177
+        },
+        {
+          "analysis_seconds": 0.0088812,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006624,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0008822,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0095452
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "f44550ea83d9d37f9a96bd72e81d8108ddaef586f0f18b4da21b5d2356f25255",
+      "duration_seconds": 2.0,
+      "first_update_seconds": [
+        0.0006633,
+        0.0007705,
+        0.0010378
+      ],
+      "id": "repeated",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.967741935483871,
+          "fn": 0,
+          "fp": 8,
+          "precision": 0.9375,
+          "recall": 1.0,
+          "tp": 120
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "offset_error_seconds": {
+          "count": 3,
+          "maximum": 0.0037414965986393156,
+          "mean": 0.0024943310657596176,
+          "median": 0.0024943310657596918,
+          "p95": 0.0037414965986393156
+        },
+        "onset_error_seconds": {
+          "count": 3,
+          "maximum": 0.03151927437641722,
+          "mean": 0.028193499622071048,
+          "median": 0.030272108843537412,
+          "p95": 0.03151927437641722
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "pitch_accuracy": {
+          "correct": 3,
+          "matched": 3,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9998754887371255,
+          "duration": 0.4290249433106576,
+          "midi": 69,
+          "start": 0.11972789115646258
+        },
+        {
+          "confidence": 0.9998754288886277,
+          "duration": 0.42902494331065766,
+          "midi": 69,
+          "start": 0.6684807256235827
+        },
+        {
+          "confidence": 0.9998754923762295,
+          "duration": 0.4190476190476191,
+          "midi": 69,
+          "start": 1.2272108843537415
+        }
+      ],
+      "process_wall_seconds": [
+        0.02122409999719821,
+        0.02208339999197051,
+        0.019875300000421703
+      ],
+      "real_time_factor": [
+        0.0044607,
+        0.0046523,
+        0.0046303
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.16970521541950115,
+          "midi": 69,
+          "time_seconds": 0.11972789115646258,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 0.6087074829931973,
+          "midi": 69,
+          "time_seconds": 0.5487528344671202,
+          "type": "offset"
+        },
+        {
+          "detected_at_seconds": 0.7184580498866213,
+          "midi": 69,
+          "time_seconds": 0.6684807256235827,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.1574603174603175,
+          "midi": 69,
+          "time_seconds": 1.0975056689342404,
+          "type": "offset"
+        },
+        {
+          "detected_at_seconds": 1.27718820861678,
+          "midi": 69,
+          "time_seconds": 1.2272108843537415,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.7062131519274377,
+          "midi": 69,
+          "time_seconds": 1.6462585034013606,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303857,
+        0.04997732426303858,
+        0.04997732426303858,
+        0.04997732426303857,
+        0.04997732426303858,
+        0.04997732426303858,
+        0.04997732426303857,
+        0.04997732426303858,
+        0.04997732426303858
+      ],
+      "references": [
+        {
+          "duration": 0.4,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 0.55,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.40000000000000013,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.1,
+          "onset": 0.7,
+          "start": 0.7,
+          "velocity": 90
+        },
+        {
+          "duration": 0.3999999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.65,
+          "onset": 1.25,
+          "start": 1.25,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0084181,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005029,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0006633,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0089214
+        },
+        {
+          "analysis_seconds": 0.008694,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006102,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0007705,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0093046
+        },
+        {
+          "analysis_seconds": 0.0083939,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0008664,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0010378,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0092606
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "842d8ff3d950813e85a6f5cd2e3c0639ea69070ca01766ad47184befd309b8ec",
+      "duration_seconds": 1.0,
+      "first_update_seconds": [],
+      "id": "silence",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.011015299998689443,
+        0.012272799998754635,
+        0.011679299990646541
+      ],
+      "real_time_factor": [
+        0.0004958,
+        0.0005519,
+        0.0004912
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [],
+      "runs": [
+        {
+          "analysis_seconds": 0.0001391,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0003564,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0004958
+        },
+        {
+          "analysis_seconds": 0.0001491,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004025,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0005519
+        },
+        {
+          "analysis_seconds": 0.0001375,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0003535,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0004912
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "0c23b090efad343a3edce4adcd5acf6c5da6a131c818d51c75dd4a8347918a0a",
+      "duration_seconds": 2.5,
+      "first_update_seconds": [
+        0.0010091,
+        0.0009931,
+        0.001336
+      ],
+      "id": "octaves",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9788519637462235,
+          "fn": 3,
+          "fp": 4,
+          "precision": 0.9759036144578314,
+          "recall": 0.9818181818181818,
+          "tp": 162
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "offset_error_seconds": {
+          "count": 3,
+          "maximum": 0.02154195011337867,
+          "mean": 0.013265306122449028,
+          "median": 0.013265306122449028,
+          "p95": 0.02154195011337867
+        },
+        "onset_error_seconds": {
+          "count": 3,
+          "maximum": 0.023696145124716406,
+          "mean": 0.015343915343915299,
+          "median": 0.021995464852607727,
+          "p95": 0.023696145124716406
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "pitch_accuracy": {
+          "correct": 3,
+          "matched": 3,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9998946639221555,
+          "duration": 0.5287981859410431,
+          "midi": 45,
+          "start": 0.14965986394557823
+        },
+        {
+          "confidence": 0.9998852417958798,
+          "duration": 0.5587301587301586,
+          "midi": 57,
+          "start": 0.8780045351473923
+        },
+        {
+          "confidence": 0.9998754833371469,
+          "duration": 0.5687074829931973,
+          "midi": 69,
+          "start": 1.6263038548752835
+        }
+      ],
+      "process_wall_seconds": [
+        0.02694140002131462,
+        0.025148199987597764,
+        0.026333200017688796
+      ],
+      "real_time_factor": [
+        0.00549468,
+        0.00488112,
+        0.0054782
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.19963718820861678,
+          "midi": 45,
+          "time_seconds": 0.14965986394557823,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 0.7384126984126984,
+          "midi": 45,
+          "time_seconds": 0.6784580498866213,
+          "type": "offset"
+        },
+        {
+          "detected_at_seconds": 0.9279818594104309,
+          "midi": 57,
+          "time_seconds": 0.8780045351473923,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.496689342403628,
+          "midi": 57,
+          "time_seconds": 1.436734693877551,
+          "type": "offset"
+        },
+        {
+          "detected_at_seconds": 1.676281179138322,
+          "midi": 69,
+          "time_seconds": 1.6263038548752835,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 2.254965986394558,
+          "midi": 69,
+          "time_seconds": 2.195011337868481,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303855,
+        0.04997732426303858,
+        0.04997732426303858,
+        0.04997732426303855,
+        0.04997732426303858,
+        0.04997732426303858,
+        0.04997732426303855,
+        0.04997732426303858,
+        0.04997732426303858
+      ],
+      "references": [
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 45,
+          "offset": 0.7,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 1.45,
+          "onset": 0.9,
+          "start": 0.9,
+          "velocity": 90
+        },
+        {
+          "duration": 0.5500000000000003,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 2.2,
+          "onset": 1.65,
+          "start": 1.65,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.013152,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005842,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.0010091,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0137367
+        },
+        {
+          "analysis_seconds": 0.0115358,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006343,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.0009931,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0122028
+        },
+        {
+          "analysis_seconds": 0.0129336,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0007614,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.001336,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0136955
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "518941768c022c75dcad53ef3306e755ece46f96790cfd9b6685b73bfa8fd8d1",
+      "duration_seconds": 2.0,
+      "first_update_seconds": [
+        0.0007643,
+        0.0017508,
+        0.0009098
+      ],
+      "id": "vibrato",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9900990099009901,
+          "fn": 0,
+          "fp": 3,
+          "precision": 0.9803921568627451,
+          "recall": 1.0,
+          "tp": 150
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.0037414965986393156,
+          "mean": 0.0037414965986393156,
+          "median": 0.0037414965986393156,
+          "p95": 0.0037414965986393156
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.030272108843537412,
+          "mean": 0.030272108843537412,
+          "median": 0.030272108843537412,
+          "p95": 0.030272108843537412
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9989659650852141,
+          "duration": 1.526530612244898,
+          "midi": 69,
+          "start": 0.11972789115646258
+        }
+      ],
+      "process_wall_seconds": [
+        0.022463800007244572,
+        0.02630870000575669,
+        0.021248800010653213
+      ],
+      "real_time_factor": [
+        0.005217,
+        0.00603375,
+        0.0051581
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.16970521541950115,
+          "midi": 69,
+          "time_seconds": 0.11972789115646258,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.7062131519274377,
+          "midi": 69,
+          "time_seconds": 1.6462585034013606,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303857,
+        0.04997732426303857,
+        0.04997732426303857
+      ],
+      "references": [
+        {
+          "duration": 1.5,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.65,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90,
+          "vibrato_cents": 35.0
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0098381,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005956,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0007643,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.010434
+        },
+        {
+          "analysis_seconds": 0.010583,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0014841,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0017508,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0120675
+        },
+        {
+          "analysis_seconds": 0.0096599,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006559,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0009098,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0103162
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "ba216e82f5462d377de78f9da238f074889cdca766932f267da57f2b1ab43fb0",
+      "duration_seconds": 1.8,
+      "first_update_seconds": [
+        0.0008822,
+        0.0011842,
+        0.0008743
+      ],
+      "id": "chord",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 3,
+          "value": 0.0
+        },
+        "false_positives": 1,
+        "frame": {
+          "f1": 0.0,
+          "fn": 375,
+          "fp": 121,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 3,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 3,
+          "fp": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 3,
+          "fp": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 1,
+          "value": 0.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9934965360119611,
+          "duration": 1.2072562358276644,
+          "midi": 36,
+          "start": 0.15963718820861678
+        }
+      ],
+      "process_wall_seconds": [
+        0.01870819999021478,
+        0.020297500013839453,
+        0.019318000006023794
+      ],
+      "real_time_factor": [
+        0.0047121111111111105,
+        0.004950722222222223,
+        0.004684166666666666
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.20961451247165533,
+          "midi": 36,
+          "time_seconds": 0.15963718820861678,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.4268480725623582,
+          "midi": 36,
+          "time_seconds": 1.3668934240362811,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303855,
+        0.04997732426303855,
+        0.04997732426303855
+      ],
+      "references": [
+        {
+          "duration": 1.25,
+          "instrument": "synthetic_harmonic",
+          "midi": 60,
+          "offset": 1.4,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 65
+        },
+        {
+          "duration": 1.25,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.4,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 65
+        },
+        {
+          "duration": 1.25,
+          "instrument": "synthetic_harmonic",
+          "midi": 67,
+          "offset": 1.4,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 65
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0080045,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.000477,
+          "duration_seconds": 1.8,
+          "first_update_seconds": 0.0008822,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0084818
+        },
+        {
+          "analysis_seconds": 0.0081608,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0007501,
+          "duration_seconds": 1.8,
+          "first_update_seconds": 0.0011842,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0089113
+        },
+        {
+          "analysis_seconds": 0.0079689,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004621,
+          "duration_seconds": 1.8,
+          "first_update_seconds": 0.0008743,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0084315
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "feeb436772e487d48d9fac0e73c766dfc3397caeafa060d4bbe2e0fe667271ea",
+      "duration_seconds": 2.2,
+      "first_update_seconds": [
+        0.0007145,
+        0.0007325,
+        0.0007509
+      ],
+      "id": "overlap",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 1,
+          "reference": 2,
+          "value": 0.5
+        },
+        "false_positives": 3,
+        "frame": {
+          "f1": 0.5395095367847411,
+          "fn": 111,
+          "fp": 58,
+          "precision": 0.6305732484076433,
+          "recall": 0.4714285714285714,
+          "tp": 99
+        },
+        "missed_notes": 2,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 2,
+          "fp": 3,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.5714285714285715,
+          "mean": 0.5714285714285715,
+          "median": 0.5714285714285715,
+          "p95": 0.5714285714285715
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.020294784580498854,
+          "mean": 0.020294784580498854,
+          "median": 0.020294784580498854,
+          "p95": 0.020294784580498854
+        },
+        "onset_pitch": {
+          "f1": 0.4,
+          "fn": 1,
+          "fp": 2,
+          "precision": 0.3333333333333333,
+          "recall": 0.5,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 2,
+          "value": 0.5
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9998852170869036,
+          "duration": 0.4988662131519274,
+          "midi": 57,
+          "start": 0.12970521541950114
+        },
+        {
+          "confidence": 0.9986929208827978,
+          "duration": 0.5587301587301587,
+          "midi": 45,
+          "start": 0.6285714285714286
+        },
+        {
+          "confidence": 0.9957707233358991,
+          "duration": 0.508843537414966,
+          "midi": 64,
+          "start": 1.1873015873015873
+        }
+      ],
+      "process_wall_seconds": [
+        0.021457499999087304,
+        0.021578599989879876,
+        0.02027999999700114
+      ],
+      "real_time_factor": [
+        0.004882318181818181,
+        0.004747454545454545,
+        0.00464640909090909
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.1796825396825397,
+          "midi": 57,
+          "time_seconds": 0.12970521541950114,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 0.6785487528344671,
+          "midi": 57,
+          "time_seconds": 0.6285714285714286,
+          "type": "offset"
+        },
+        {
+          "detected_at_seconds": 0.6785487528344671,
+          "midi": 45,
+          "time_seconds": 0.6285714285714286,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.2372789115646259,
+          "midi": 45,
+          "time_seconds": 1.1873015873015873,
+          "type": "offset"
+        },
+        {
+          "detected_at_seconds": 1.2372789115646259,
+          "midi": 64,
+          "time_seconds": 1.1873015873015873,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.7560997732426304,
+          "midi": 64,
+          "time_seconds": 1.6961451247165533,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303855,
+        0.04997732426303858,
+        0.04997732426303858,
+        0.04997732426303855,
+        0.04997732426303858,
+        0.04997732426303858,
+        0.04997732426303855,
+        0.04997732426303858,
+        0.04997732426303858
+      ],
+      "references": [
+        {
+          "duration": 1.05,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 1.2,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 70
+        },
+        {
+          "duration": 1.0499999999999998,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.7,
+          "onset": 0.65,
+          "start": 0.65,
+          "velocity": 70
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.010245,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004958,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0007145,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0107411
+        },
+        {
+          "analysis_seconds": 0.0099361,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005079,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0007325,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0104444
+        },
+        {
+          "analysis_seconds": 0.009691,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005271,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0007509,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0102221
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "3d1757008f8bc29daa63cfa8cf88e48c012fd6d71902c33ed6253b3940375a06",
+      "duration_seconds": 2.2,
+      "first_update_seconds": [
+        0.0007915,
+        0.0008644,
+        0.0007466
+      ],
+      "id": "decay",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9595015576323987,
+          "fn": 11,
+          "fp": 2,
+          "precision": 0.9871794871794872,
+          "recall": 0.9333333333333333,
+          "tp": 154
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.11383219954648527,
+          "mean": 0.11383219954648527,
+          "median": 0.11383219954648527,
+          "p95": 0.11383219954648527
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.020294784580498854,
+          "mean": 0.020294784580498854,
+          "median": 0.020294784580498854,
+          "p95": 0.020294784580498854
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9957483393275284,
+          "duration": 1.5564625850340137,
+          "midi": 64,
+          "start": 0.12970521541950114
+        }
+      ],
+      "process_wall_seconds": [
+        0.02073520002886653,
+        0.02097520002280362,
+        0.022503499989397824
+      ],
+      "real_time_factor": [
+        0.0045847272727272724,
+        0.0046875,
+        0.004719818181818181
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.1796825396825397,
+          "midi": 64,
+          "time_seconds": 0.12970521541950114,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.746122448979592,
+          "midi": 64,
+          "time_seconds": 1.6861678004535148,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303855,
+        0.04997732426303855,
+        0.04997732426303855
+      ],
+      "references": [
+        {
+          "decay": 3.0,
+          "duration": 1.6500000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.8,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0095239,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.000562,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0007915,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0100864
+        },
+        {
+          "analysis_seconds": 0.0096835,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006287,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0008644,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0103125
+        },
+        {
+          "analysis_seconds": 0.0098531,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005301,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0007466,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0103836
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "db360547584ea5e14033b41734e976de4ffd16676900c1403335adb400d2aa5b",
+      "duration_seconds": 2.2,
+      "first_update_seconds": [
+        0.0008516,
+        0.0009528,
+        0.0007618
+      ],
+      "id": "attack",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9909365558912386,
+          "fn": 1,
+          "fp": 2,
+          "precision": 0.9879518072289156,
+          "recall": 0.9939393939393939,
+          "tp": 164
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.014058956916099818,
+          "mean": 0.014058956916099818,
+          "median": 0.014058956916099818,
+          "p95": 0.014058956916099818
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.020294784580498854,
+          "mean": 0.020294784580498854,
+          "median": 0.020294784580498854,
+          "p95": 0.020294784580498854
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9998852501557923,
+          "duration": 1.6562358276643991,
+          "midi": 57,
+          "start": 0.12970521541950114
+        }
+      ],
+      "process_wall_seconds": [
+        0.022472599986940622,
+        0.02408370000193827,
+        0.02431480001541786
+      ],
+      "real_time_factor": [
+        0.005160818181818181,
+        0.005263136363636363,
+        0.005170272727272727
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.1796825396825397,
+          "midi": 57,
+          "time_seconds": 0.12970521541950114,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.8458956916099774,
+          "midi": 57,
+          "time_seconds": 1.7859410430839002,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303855,
+        0.04997732426303855,
+        0.04997732426303855
+      ],
+      "references": [
+        {
+          "attack": 0.25,
+          "duration": 1.6500000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 1.8,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0107663,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005871,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0008516,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0113538
+        },
+        {
+          "analysis_seconds": 0.0108623,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0007163,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0009528,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0115789
+        },
+        {
+          "analysis_seconds": 0.0108276,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005194,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0007618,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0113746
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "59cc892aca97cbe2aa84431990f6fcf0c0354d3a47f4bff34c023242e1da1b12",
+      "duration_seconds": 2.0,
+      "first_update_seconds": [
+        0.0014947,
+        0.0015033,
+        0.001721
+      ],
+      "id": "noise",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9900332225913622,
+          "fn": 1,
+          "fp": 2,
+          "precision": 0.9867549668874173,
+          "recall": 0.9933333333333333,
+          "tp": 149
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.01371882086167786,
+          "mean": 0.01371882086167786,
+          "median": 0.01371882086167786,
+          "p95": 0.01371882086167786
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.020294784580498854,
+          "mean": 0.020294784580498854,
+          "median": 0.020294784580498854,
+          "p95": 0.020294784580498854
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9898441821360985,
+          "duration": 1.506575963718821,
+          "midi": 69,
+          "start": 0.12970521541950114
+        }
+      ],
+      "process_wall_seconds": [
+        0.024467999988701195,
+        0.02628650001133792,
+        0.029716100019868463
+      ],
+      "real_time_factor": [
+        0.0069289,
+        0.0066502,
+        0.00673575
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.1796825396825397,
+          "midi": 69,
+          "time_seconds": 0.12970521541950114,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.6962358276643992,
+          "midi": 69,
+          "time_seconds": 1.636281179138322,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303855,
+        0.04997732426303855,
+        0.04997732426303855
+      ],
+      "references": [
+        {
+          "duration": 1.5,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.65,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0133164,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.000541,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0014947,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0138578
+        },
+        {
+          "analysis_seconds": 0.0127565,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005432,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0015033,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0133004
+        },
+        {
+          "analysis_seconds": 0.0127202,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0007505,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.001721,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0134715
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "db93f5d146b1eaa59d30d20902a8240bf7b6d7c36770ce86f2a8e25533ad9636",
+      "duration_seconds": 1.0,
+      "first_update_seconds": [],
+      "id": "noise_only",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.017534199985675514,
+        0.01859249998233281,
+        0.01790520001668483
+      ],
+      "real_time_factor": [
+        0.0064782,
+        0.0066429,
+        0.0067342
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [],
+      "runs": [
+        {
+          "analysis_seconds": 0.006144,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0003338,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0064782
+        },
+        {
+          "analysis_seconds": 0.0060012,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006409,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0066429
+        },
+        {
+          "analysis_seconds": 0.0063881,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0003457,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0067342
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "9b749b5d9098e9072dc82b00817286feea35188f2c22e4b61109250e048e9810",
+      "duration_seconds": 2.5,
+      "first_update_seconds": [
+        0.0008939,
+        0.0007785,
+        0.0011581
+      ],
+      "id": "reverberation",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 2,
+        "frame": {
+          "f1": 0.7924528301886793,
+          "fn": 0,
+          "fp": 55,
+          "precision": 0.65625,
+          "recall": 1.0,
+          "tp": 105
+        },
+        "missed_notes": 2,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 2,
+          "fp": 2,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 2,
+          "maximum": 0.276077097505669,
+          "mean": 0.2520408163265306,
+          "median": 0.2520408163265306,
+          "p95": 0.276077097505669
+        },
+        "onset_error_seconds": {
+          "count": 2,
+          "maximum": 0.021995464852607727,
+          "mean": 0.02114512471655329,
+          "median": 0.02114512471655329,
+          "p95": 0.021995464852607727
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 2
+        },
+        "pitch_accuracy": {
+          "correct": 2,
+          "matched": 2,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9998938225820818,
+          "duration": 0.7482993197278911,
+          "midi": 57,
+          "start": 0.12970521541950114
+        },
+        {
+          "confidence": 0.996365393172357,
+          "duration": 0.8480725623582767,
+          "midi": 64,
+          "start": 0.8780045351473923
+        }
+      ],
+      "process_wall_seconds": [
+        0.022552500013262033,
+        0.02207720000296831,
+        0.022904600016772747
+      ],
+      "real_time_factor": [
+        0.00445712,
+        0.00442952,
+        0.00445112
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.1796825396825397,
+          "midi": 57,
+          "time_seconds": 0.12970521541950114,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 0.9279818594104309,
+          "midi": 57,
+          "time_seconds": 0.8780045351473923,
+          "type": "offset"
+        },
+        {
+          "detected_at_seconds": 0.9279818594104309,
+          "midi": 64,
+          "time_seconds": 0.8780045351473923,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.786031746031746,
+          "midi": 64,
+          "time_seconds": 1.726077097505669,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303855,
+        0.04997732426303858,
+        0.04997732426303855,
+        0.04997732426303858,
+        0.04997732426303855,
+        0.04997732426303858
+      ],
+      "references": [
+        {
+          "duration": 0.5,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 0.65,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.45,
+          "onset": 0.9,
+          "start": 0.9,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0104646,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006779,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.0008939,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0111428
+        },
+        {
+          "analysis_seconds": 0.0105106,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005629,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.0007785,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0110738
+        },
+        {
+          "analysis_seconds": 0.0102052,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0009222,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.0011581,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0111278
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "a6b15193170120d89e88b7755ae878c778550fa0cb3cd661ff408940c783fe4b",
+      "duration_seconds": 1.5,
+      "first_update_seconds": [
+        0.0006549,
+        0.00081,
+        0.0006168
+      ],
+      "id": "clipping",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9859154929577465,
+          "fn": 0,
+          "fp": 3,
+          "precision": 0.9722222222222222,
+          "recall": 1.0,
+          "tp": 105
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.0027210884353741083,
+          "mean": 0.0027210884353741083,
+          "median": 0.0027210884353741083,
+          "p95": 0.0027210884353741083
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.030272108843537412,
+          "mean": 0.030272108843537412,
+          "median": 0.030272108843537412,
+          "p95": 0.030272108843537412
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.999786415272285,
+          "duration": 1.0775510204081633,
+          "midi": 69,
+          "start": 0.11972789115646258
+        }
+      ],
+      "process_wall_seconds": [
+        0.01939410000341013,
+        0.01792440001736395,
+        0.018998199986526743
+      ],
+      "real_time_factor": [
+        0.004922666666666666,
+        0.0050184,
+        0.004985866666666667
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.16970521541950115,
+          "midi": 69,
+          "time_seconds": 0.11972789115646258,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 1.257233560090703,
+          "midi": 69,
+          "time_seconds": 1.1972789115646258,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303857,
+        0.04997732426303857,
+        0.04997732426303857
+      ],
+      "references": [
+        {
+          "duration": 1.05,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.2,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0068862,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004974,
+          "duration_seconds": 1.5,
+          "first_update_seconds": 0.0006549,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.007384
+        },
+        {
+          "analysis_seconds": 0.006897,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006302,
+          "duration_seconds": 1.5,
+          "first_update_seconds": 0.00081,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0075276
+        },
+        {
+          "analysis_seconds": 0.0070223,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004562,
+          "duration_seconds": 1.5,
+          "first_update_seconds": 0.0006168,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0074788
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "3987570688d01fdcd0451e5338877cfe41d06bc2793dd8aabf9b84b58f2106f2",
+      "duration_seconds": 0.01,
+      "first_update_seconds": [],
+      "id": "very_short",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 1,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.01172680000308901,
+        0.01102609999361448,
+        0.019134100002702326
+      ],
+      "real_time_factor": [
+        0.03252,
+        0.01791,
+        0.02525
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "attack": 0.001,
+          "duration": 0.01,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 0.01,
+          "onset": 0,
+          "start": 0,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 1.98e-05,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.000305,
+          "duration_seconds": 0.009977324263038548,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0003252
+        },
+        {
+          "analysis_seconds": 1.49e-05,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.000164,
+          "duration_seconds": 0.009977324263038548,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0001791
+        },
+        {
+          "analysis_seconds": 2.1e-05,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0002311,
+          "duration_seconds": 0.009977324263038548,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0002525
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "24d5db4ca2d256752cd049a330cb406196c05f4cfe8036beb309e0e4533d21de",
+      "duration_seconds": 0.0,
+      "first_update_seconds": [],
+      "id": "empty",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.009670100000221282,
+        0.012480800010962412,
+        0.011360400007106364
+      ],
+      "real_time_factor": [
+        null,
+        null,
+        null
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [],
+      "runs": [
+        {
+          "analysis_seconds": 9.3e-06,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0001605,
+          "duration_seconds": 0,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0001699
+        },
+        {
+          "analysis_seconds": 9.5e-06,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0002348,
+          "duration_seconds": 0,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0002443
+        },
+        {
+          "analysis_seconds": 9.9e-06,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.000207,
+          "duration_seconds": 0,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.000217
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "eecf2111ad094636e2ccccafcfabfa31947df77fab3db412191edde27a3fdf56",
+      "duration_seconds": 16.5,
+      "first_update_seconds": [
+        0.0024422,
+        0.0037563,
+        0.0037205
+      ],
+      "id": "long_boundary",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9811965811965812,
+          "fn": 3,
+          "fp": 8,
+          "precision": 0.9728813559322034,
+          "recall": 0.9896551724137931,
+          "tp": 287
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "offset_error_seconds": {
+          "count": 3,
+          "maximum": 0.011791383219954765,
+          "mean": 0.008012093726379973,
+          "median": 0.0070294784580511305,
+          "p95": 0.011791383219954765
+        },
+        "onset_error_seconds": {
+          "count": 3,
+          "maximum": 0.03129251700680413,
+          "mean": 0.02577475434618311,
+          "median": 0.025623582766439057,
+          "p95": 0.03129251700680413
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "pitch_accuracy": {
+          "correct": 3,
+          "matched": 3,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9998852350277171,
+          "duration": 0.6086167800453515,
+          "midi": 57,
+          "start": 0.17959183673469387
+        },
+        {
+          "confidence": 0.9998754816846799,
+          "duration": 1.7260770975056694,
+          "midi": 69,
+          "start": 13.768707482993197
+        },
+        {
+          "confidence": 0.9957749211363988,
+          "duration": 0.6185941043083893,
+          "midi": 64,
+          "start": 15.67437641723356
+        }
+      ],
+      "process_wall_seconds": [
+        0.03609599999617785,
+        0.03686340001877397,
+        0.03664649999700487
+      ],
+      "real_time_factor": [
+        0.001475969696969697,
+        0.0015388787878787879,
+        0.0015168060606060606
+      ],
+      "realtime_events": [
+        {
+          "detected_at_seconds": 0.22956916099773245,
+          "midi": 57,
+          "time_seconds": 0.17959183673469387,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 0.8481632653061225,
+          "midi": 57,
+          "time_seconds": 0.7882086167800454,
+          "type": "offset"
+        },
+        {
+          "detected_at_seconds": 13.818684807256234,
+          "midi": 69,
+          "time_seconds": 13.768707482993197,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 15.554739229024943,
+          "midi": 69,
+          "time_seconds": 15.494784580498866,
+          "type": "offset"
+        },
+        {
+          "detected_at_seconds": 15.724353741496598,
+          "midi": 64,
+          "time_seconds": 15.67437641723356,
+          "type": "onset"
+        },
+        {
+          "detected_at_seconds": 16.352925170068026,
+          "midi": 64,
+          "time_seconds": 16.29297052154195,
+          "type": "offset"
+        }
+      ],
+      "realtime_onset_analysis_latency_seconds": [
+        0.04997732426303858,
+        0.049977324263037914,
+        0.049977324263037914,
+        0.04997732426303858,
+        0.049977324263037914,
+        0.049977324263037914,
+        0.04997732426303858,
+        0.049977324263037914,
+        0.049977324263037914
+      ],
+      "references": [
+        {
+          "duration": 0.6000000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 0.8,
+          "onset": 0.2,
+          "start": 0.2,
+          "velocity": 90
+        },
+        {
+          "duration": 1.6999999999999993,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 15.5,
+          "onset": 13.8,
+          "start": 13.8,
+          "velocity": 90
+        },
+        {
+          "duration": 0.6000000000000014,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 16.3,
+          "onset": 15.7,
+          "start": 15.7,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0220198,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0022147,
+          "duration_seconds": 16.5,
+          "first_update_seconds": 0.0024422,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0243535
+        },
+        {
+          "analysis_seconds": 0.0218481,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.003471,
+          "duration_seconds": 16.5,
+          "first_update_seconds": 0.0037563,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0253915
+        },
+        {
+          "analysis_seconds": 0.0215177,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.00344,
+          "duration_seconds": 16.5,
+          "first_update_seconds": 0.0037205,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0250273
+        }
+      ],
+      "sample_rate": 22050
+    }
+  ],
+  "comparison": {
+    "event_f1_delta": 0.0,
+    "frame_f1_delta": 0.0,
+    "median_process_time_ratio": 0.9882670619823317,
+    "same_build": false,
+    "same_environment": true
+  },
+  "configuration": {
+    "backend": "yin",
+    "chunk_seconds": 15,
+    "device_id": 0,
+    "fast": false,
+    "instrument_prior": "none",
+    "maximum_pitches_per_frame": 6,
+    "minimum_confidence": 0.25,
+    "mode": "realtime",
+    "onnx_independent_probabilities": true,
+    "onnx_polyphonic_threshold": 0.4,
+    "overlap_seconds": 1,
+    "parallel": true,
+    "provider": "cpu",
+    "realtime_latency_ms": 40,
+    "realtime_minimum_confidence": 0.45,
+    "realtime_update_rate_hz": 100,
+    "spectral_threshold": 0.3
+  },
+  "corpus": {
+    "ground_truth": "Dry oscillator activation; reverb tails are not extra notes",
+    "name": "transcriber-synthetic",
+    "provenance": "Generated locally by synthetic_corpus.py; no sampled recordings",
+    "sample_rate": 22050,
+    "schema_version": 1,
+    "seed": 2026,
+    "sha256": "183c7f68643d6ac54a1b15a26af195e16590f115c5194f25c139366844f6fca9",
+    "version": 1
+  },
+  "environment": {
+    "logical_cpus": 12,
+    "machine": "AMD64",
+    "platform": "Windows-11-10.0.26220-SP0",
+    "processor": "Intel64 Family 6 Model 165 Stepping 2, GenuineIntel",
+    "python": "3.12.10"
+  },
+  "evaluator": {
+    "files_sha256": {
+      "CMakeLists.txt": "324a41f6b57ed16d9825be7ae3d5df64565b36ae3908b2ec466bfe094282dfc7",
+      "include/transcribe/audio.hpp": "1f1f9b59faeb32b2b8e7068956a26e47c20616fe5a391491963c5f040ba4596c",
+      "include/transcribe/transcriber.hpp": "7296e183228996c63162362e2df3dfd56794aeba774dfc56f765bdca747647b0",
+      "python/evaluate.py": "8651eac8d6c656441b7f3d380ff75b6fe204fb900fb9c5283f1ea6a9935c402d",
+      "python/evaluate_guitarset.py": "35754c80b7fd8533dd1848b1d1a2c88be1364ebc657c60d5f7d34e2517c96c8b",
+      "python/evaluation_metrics.py": "97d41d462a57e179c275ce117d276b6cf1beeb0f7ad219777fcb1b4484b337dc",
+      "python/synthetic_corpus.py": "7fd5e1e8df0b07d21c8af142e26436e13dad6d98437990b61b51d3d909c39bac",
+      "src/audio_file.cpp": "e4fde094ee5b28c03ece6ae49f653a5185b535043ddcc83cd9291c2a614bcb84",
+      "src/audio_ring_buffer.cpp": "bf6df2fc41b14616e5ff4357c55f5f82b72cac337d3eb8290cf5bc0b4ad9e922",
+      "src/transcriber.cpp": "67faf275860a07ec76fb3157830909ed10a9d903f208e1b10f36caac53ab13f9",
+      "tests/evaluation_build.json.in": "c39b2e91c5583e75dfdfd77fcb568d59c35ee270a0f5603d3a7c45cca2e46853",
+      "tests/evaluation_runner.cpp": "e5f6f41c32073ea7bf14c01596591a5e3c5f7aa4afce819aa4a1c0bfac1f8bc4"
+    },
+    "git_dirty": true,
+    "git_revision": "0561397b3705aeb8763726ea4b73fd83b4012aac"
+  },
+  "generated_at_utc": "2026-10-20T15:49:00.660688+00:00",
+  "model": {
+    "identifier": "builtin:yin",
+    "sha256": null
+  },
+  "schema_version": 1,
+  "summary": {
+    "analysis_seconds": {
+      "count": 48,
+      "maximum": 0.0220198,
+      "mean": 0.008544402083333333,
+      "median": 0.00920255,
+      "p95": 0.0215177
+    },
+    "chord_note_recall": {
+      "correct": 1,
+      "reference": 5,
+      "value": 0.2
+    },
+    "corpus_audio_seconds": 41.410000000000004,
+    "corpus_real_time_factor": 0.003575297432182242,
+    "false_positives": 6,
+    "first_update_seconds": {
+      "count": 36,
+      "maximum": 0.0037563,
+      "mean": 0.001149461111111111,
+      "median": 0.0008782499999999999,
+      "p95": 0.0037205
+    },
+    "frame": {
+      "f1": 0.8064757160647572,
+      "fn": 507,
+      "fp": 270,
+      "precision": 0.8570672313393329,
+      "recall": 0.7615239887111948,
+      "tp": 1619
+    },
+    "missed_notes": 8,
+    "note_event": {
+      "f1": 0.6956521739130435,
+      "fn": 8,
+      "fp": 6,
+      "precision": 0.7272727272727273,
+      "recall": 0.6666666666666666,
+      "tp": 16
+    },
+    "offset_error_seconds": {
+      "count": 19,
+      "maximum": 0.5714285714285715,
+      "mean": 0.06895214226041302,
+      "median": 0.011564625850340127,
+      "p95": 0.5714285714285715
+    },
+    "onset_error_seconds": {
+      "count": 19,
+      "maximum": 0.03151927437641722,
+      "mean": 0.022854755937462726,
+      "median": 0.021995464852607727,
+      "p95": 0.03151927437641722
+    },
+    "onset_pitch": {
+      "f1": 0.8260869565217391,
+      "fn": 5,
+      "fp": 3,
+      "precision": 0.8636363636363636,
+      "recall": 0.7916666666666666,
+      "tp": 19
+    },
+    "pitch_accuracy": {
+      "correct": 19,
+      "matched": 21,
+      "value": 0.9047619047619048
+    },
+    "process_wall_seconds": {
+      "count": 48,
+      "maximum": 0.03686340001877397,
+      "mean": 0.021045547919735935,
+      "median": 0.021099650010000914,
+      "p95": 0.03609599999617785
+    },
+    "realtime_onset_analysis_latency_seconds": {
+      "count": 66,
+      "maximum": 0.04997732426303858,
+      "mean": 0.049977324263038504,
+      "median": 0.04997732426303857,
+      "p95": 0.04997732426303858
+    },
+    "skipped_inferences": 0,
+    "total_seconds": {
+      "count": 48,
+      "maximum": 0.0253915,
+      "mean": 0.009253316666666666,
+      "median": 0.0098158,
+      "p95": 0.0243535
+    }
+  },
+  "timing_protocol": {
+    "clock": "steady_clock engine / perf_counter parent",
+    "first_update": "wall time to first nonempty streaming update/realtime event",
+    "isolation": "new process per clip and repetition; model/session cold",
+    "offline_latency": "decode + analysis total; no exports/process startup",
+    "realtime_latency": "detected_at - estimated onset in input time; not hardware latency",
+    "repetitions": 3,
+    "warmups": 1
+  },
+  "tolerances": {
+    "frame_seconds": 0.01,
+    "offset_ratio": 0.2,
+    "offset_seconds": 0.05,
+    "onset_seconds": 0.05
+  }
+}

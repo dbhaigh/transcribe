@@ -14,10 +14,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from evaluation_metrics import checked_metrics, distribution, frame_counts, match_events
 
 
 DATASET_VERSION = "1.1.0"
@@ -26,6 +29,7 @@ AUDIO_MD5 = "275966d6610ac34999b58426beb119c3"
 ANNOTATION_MD5 = "b39b78e63d3446f2e54ddb7a54df9b10"
 ONSET_TOLERANCE_SECONDS = 0.05
 FRAME_STEP_SECONDS = 0.01
+BUNDLED_MODEL_SHA256 = "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec"
 
 
 def md5_file(path: Path) -> str:
@@ -42,13 +46,6 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def checked_metrics(tp: int, fp: int, fn: int) -> dict[str, float | int]:
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    f1 = 2.0 * precision * recall / (precision + recall) if precision + recall else 0.0
-    return {"tp": tp, "fp": fp, "fn": fn, "precision": precision, "recall": recall, "f1": f1}
 
 
 def read_reference_events(jams_data: dict[str, Any]) -> list[dict[str, float | int]]:
@@ -75,101 +72,6 @@ def read_reference_events(jams_data: dict[str, Any]) -> list[dict[str, float | i
                 }
             )
     return notes
-
-
-def match_events(
-    references: list[dict[str, float | int]],
-    predictions: list[dict[str, float | int]],
-    *,
-    require_offset: bool,
-) -> int:
-    candidates: list[list[int]] = []
-    for prediction in predictions:
-        matches = []
-        predicted_end = float(prediction["start"]) + float(prediction["duration"])
-        for reference_index, reference in enumerate(references):
-            if int(prediction["midi"]) != int(reference["midi"]):
-                continue
-            onset_error = abs(float(prediction["start"]) - float(reference["start"]))
-            if onset_error > ONSET_TOLERANCE_SECONDS:
-                continue
-            if require_offset:
-                reference_end = float(reference["start"]) + float(reference["duration"])
-                offset_tolerance = max(0.05, 0.2 * float(reference["duration"]))
-                if abs(predicted_end - reference_end) > offset_tolerance:
-                    continue
-            matches.append(reference_index)
-        matches.sort(
-            key=lambda index: (
-                abs(float(prediction["start"]) - float(references[index]["start"])),
-                abs(
-                    float(prediction["start"]) + float(prediction["duration"])
-                    - float(references[index]["start"]) - float(references[index]["duration"])
-                ),
-            )
-        )
-        candidates.append(matches)
-
-    owners = [-1] * len(references)
-
-    def assign(prediction_index: int, visited: set[int]) -> bool:
-        for reference_index in candidates[prediction_index]:
-            if reference_index in visited:
-                continue
-            visited.add(reference_index)
-            if owners[reference_index] < 0 or assign(owners[reference_index], visited):
-                owners[reference_index] = prediction_index
-                return True
-        return False
-
-    order = sorted(range(len(predictions)), key=lambda index: len(candidates[index]))
-    return sum(assign(index, set()) for index in order)
-
-
-def frame_counts(
-    references: list[dict[str, float | int]],
-    predictions: list[dict[str, float | int]],
-    duration: float,
-) -> tuple[int, int, int]:
-    frame_count = max(1, math.ceil(duration / FRAME_STEP_SECONDS))
-    def active_frames(events: list[dict[str, float | int]]) -> dict[int, list[bool]]:
-        changes: dict[int, list[int]] = {}
-        for event in events:
-            pitch = int(event["midi"])
-            diff = changes.setdefault(pitch, [0] * (frame_count + 1))
-            start = math.ceil(float(event["start"]) / FRAME_STEP_SECONDS - 0.5)
-            end = math.ceil(
-                (float(event["start"]) + float(event["duration"])) / FRAME_STEP_SECONDS - 0.5
-            )
-            start = min(frame_count, max(0, start))
-            end = min(frame_count, max(start, end))
-            if start < end:
-                diff[start] += 1
-                diff[end] -= 1
-        result: dict[int, list[bool]] = {}
-        for pitch, diff in changes.items():
-            active = 0
-            frames = []
-            for change in diff[:-1]:
-                active += change
-                frames.append(active > 0)
-            result[pitch] = frames
-        return result
-
-    reference_frames = active_frames(references)
-    prediction_frames = active_frames(predictions)
-    true_positive = false_positive = false_negative = 0
-    for pitch in reference_frames.keys() | prediction_frames.keys():
-        ref = reference_frames.get(pitch, [False] * frame_count)
-        pred = prediction_frames.get(pitch, [False] * frame_count)
-        for ref_active, pred_active in zip(ref, pred):
-            if ref_active and pred_active:
-                true_positive += 1
-            elif pred_active:
-                false_positive += 1
-            elif ref_active:
-                false_negative += 1
-    return true_positive, false_positive, false_negative
 
 
 def output_events(json_path: Path) -> list[dict[str, float | int]]:
@@ -259,15 +161,30 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     for path in (executable, model, audio_archive, annotation_archive):
         if not path.is_file():
             raise FileNotFoundError(f"Required evaluation input does not exist: {path}")
+    metadata_path = getattr(args, "build_info", None)
+    if metadata_path is None:
+        candidates = sorted(set(executable.parent.glob("evaluation-build-*.json")) |
+                            set(executable.parent.parent.glob("evaluation-build-*.json")))
+        matches = [
+            path for path in candidates
+            if Path(json.loads(path.read_text(encoding="utf-8"))["executable"]).resolve()
+            == executable
+        ]
+        if len(matches) != 1:
+            raise ValueError("Supply --build-info from the matching CMake build (reconfigure to generate it)")
+        metadata_path = matches[0]
+    build_info = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if not build_info.get("compiler") or not build_info.get("build_type"):
+        raise ValueError("Build metadata must identify compiler and build type")
+    if Path(build_info["executable"]).resolve() != executable:
+        raise ValueError("Build metadata does not match the executable")
+    model_hash = sha256_file(model)
+    archive_hashes = {path: md5_file(path) for path in (audio_archive, annotation_archive)}
     if not args.skip_checksums:
-        for path, expected in (
-            (audio_archive, AUDIO_MD5),
-            (annotation_archive, ANNOTATION_MD5),
-        ):
-            actual = md5_file(path)
-            if actual.lower() != expected:
+        for path, expected in ((audio_archive, AUDIO_MD5), (annotation_archive, ANNOTATION_MD5)):
+            if archive_hashes[path].lower() != expected:
                 raise ValueError(
-                    f"Unexpected {path.name} checksum {actual}; expected {expected}. "
+                    f"Unexpected {path.name} checksum {archive_hashes[path]}; expected {expected}. "
                     "Use --skip-checksums only for a verified equivalent archive."
                 )
 
@@ -322,21 +239,26 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                     shutil.copyfileobj(source, target)
                 with wave.open(str(wav_path), "rb") as wav:
                     duration = wav.getnframes() / wav.getframerate()
+                    sample_rate = wav.getframerate()
 
                 clip_result: dict[str, Any] = {
                     "track": annotation_stem,
                     "reference_notes": len(references),
                     "duration_seconds": duration,
+                    "sample_rate": sample_rate,
                     "systems": {},
                 }
                 for label, selected_model in modes:
                     output_directory = workspace / label
                     output_directory.mkdir(exist_ok=True)
+                    started = time.perf_counter()
                     predictions = run_transcriber(
                         executable, selected_model, wav_path, output_directory, annotation_stem
                     )
+                    process_seconds = time.perf_counter() - started
                     clip_result["systems"][label] = {
                         "predicted_notes": len(predictions),
+                        "process_wall_seconds": process_seconds,
                         "metrics": update_counts(
                             aggregate, label, references, predictions, duration
                         ),
@@ -384,20 +306,36 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "systems": grouped_systems,
         }
     return {
+        "schema_version": 2,
+        "build": build_info,
+        "executable_sha256": sha256_file(executable),
+        "evaluator_sha256": sha256_file(Path(__file__)),
+        "audio_sample_rates": sorted({clip["sample_rate"] for clip in per_clip}),
+        "system_configuration": {
+            label: {"model_identifier": "onnx:" + model_hash if selected_model else "builtin:yin",
+                    "inference_provider": "cpu", "minimum_confidence": 0.25,
+                    "polyphonic": selected_model is not None}
+            for label, selected_model in modes
+        },
+        "timing": {
+            label: distribution([clip["systems"][label]["process_wall_seconds"] for clip in per_clip])
+            for label, _ in modes
+        },
         "dataset": {
             "name": "GuitarSet",
             "version": DATASET_VERSION,
             "doi": "10.5281/zenodo.3371780",
             "recordings_evaluated": len(jam_names),
-            "audio_archive_md5": AUDIO_MD5,
-            "annotation_archive_md5": ANNOTATION_MD5,
+            "audio_archive_md5": archive_hashes[audio_archive],
+            "annotation_archive_md5": archive_hashes[annotation_archive],
+            "checksums_verified": not args.skip_checksums,
             "audio_source": "audio_mono-mic.zip",
             "license": "CC BY 4.0",
         },
         "model": {
-            "name": "Spotify Basic Pitch",
-            "source_commit": MODEL_SOURCE_COMMIT,
-            "sha256": sha256_file(model),
+            "name": "Spotify Basic Pitch" if model_hash == BUNDLED_MODEL_SHA256 else "User-supplied ONNX model",
+            "source_commit": MODEL_SOURCE_COMMIT if model_hash == BUNDLED_MODEL_SHA256 else None,
+            "sha256": model_hash,
         },
         "evaluation": {
             "onset_pitch_tolerance_seconds": ONSET_TOLERANCE_SECONDS,
@@ -407,6 +345,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "seed": args.seed if args.limit is not None else None,
             "python": platform.python_version(),
             "platform": platform.platform(),
+            "timing_protocol": "One process-cold run per clip; includes startup, decode, inference and exports",
         },
         "systems": systems,
         "by_performance_type": performance_types,
@@ -438,6 +377,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--audio-zip", type=Path, required=True, help="GuitarSet audio_mono-mic.zip")
     parser.add_argument("--annotations-zip", type=Path, required=True, help="GuitarSet annotation.zip")
+    parser.add_argument("--build-info", type=Path,
+                        help="Matching CMake evaluation-build-<config>.json (auto-detected when unique)")
     parser.add_argument("--limit", type=int, help="Evaluate a seeded random subset (default: all recordings)")
     parser.add_argument("--seed", type=int, default=2026, help="Subset selection seed")
     parser.add_argument("--skip-yin-baseline", action="store_true", help="Run only the ONNX model")
@@ -465,7 +406,7 @@ def main() -> int:
                 json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
             print(f"\nDetailed per-recording results: {output_path}")
-    except (FileNotFoundError, OSError, RuntimeError, ValueError, zipfile.BadZipFile) as error:
+    except (FileNotFoundError, OSError, RuntimeError, ValueError, KeyError, zipfile.BadZipFile) as error:
         print(f"Evaluation failed: {error}", file=sys.stderr)
         return 1
     return 0

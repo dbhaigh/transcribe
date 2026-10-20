@@ -226,6 +226,31 @@ if(TRANSCRIBE_ENABLE_FFMPEG)
     target_compile_definitions(transcriber_core PUBLIC TRANSCRIBE_ENABLE_FFMPEG=1)
 endif()
 
+if(MSVC)
+    set(EVAL_WARNINGS "/W4 /permissive-")
+else()
+    set(EVAL_WARNINGS "-Wall -Wextra -Wpedantic")
+endif()
+foreach(variable CMAKE_CXX_COMPILER_ID CMAKE_CXX_COMPILER_VERSION CMAKE_CXX_COMPILER
+                 CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
+                 CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_MINSIZEREL
+                 CMAKE_GENERATOR CMAKE_SYSTEM_NAME)
+    string(REPLACE "\\" "\\\\" EVAL_${variable} "${${variable}}")
+    string(REPLACE "\"" "\\\"" EVAL_${variable} "${EVAL_${variable}}")
+    string(REPLACE "\n" "\\n" EVAL_${variable} "${EVAL_${variable}}")
+    string(REPLACE "\r" "\\r" EVAL_${variable} "${EVAL_${variable}}")
+    string(REPLACE "\t" "\\t" EVAL_${variable} "${EVAL_${variable}}")
+endforeach()
+if(TRANSCRIBE_BUILD_TESTS)
+    set(EVAL_RUNNER "\"$<TARGET_FILE:transcriber-evaluate>\"")
+else()
+    set(EVAL_RUNNER "null")
+endif()
+configure_file(tests/evaluation_build.json.in evaluation-build.json.in @ONLY)
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+    INPUT "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build.json.in"
+    TARGET transcriber)
+
 if(TRANSCRIBE_BUILD_TESTS)
     include(FetchContent)
     FetchContent_Declare(Catch2
@@ -252,8 +277,55 @@ if(TRANSCRIBE_BUILD_TESTS)
     include(Catch)
     catch_discover_tests(transcriber-tests)
 
+    add_executable(transcriber-evaluate tests/evaluation_runner.cpp)
+    target_link_libraries(transcriber-evaluate PRIVATE transcriber_core)
+    if(MSVC)
+        target_compile_options(transcriber-evaluate PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(transcriber-evaluate PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME evaluation_framework
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/evaluation_tests.py"
+                "$<TARGET_FILE:transcriber-evaluate>"
+                "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json")
+        add_test(NAME synthetic_evaluation
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
+                --runner "$<TARGET_FILE:transcriber-evaluate>"
+                --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                --repetitions 1 --warmups 0
+                --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-yin.json"
+                --output-text "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-yin.txt")
+        add_test(NAME synthetic_evaluation_spectral
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
+                --runner "$<TARGET_FILE:transcriber-evaluate>"
+                --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                --backend spectral --mode full --repetitions 1 --warmups 0
+                --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-spectral.json"
+                --output-text "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-spectral.txt")
+        add_test(NAME synthetic_evaluation_realtime
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
+                --runner "$<TARGET_FILE:transcriber-evaluate>"
+                --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                --mode realtime --repetitions 1 --warmups 0
+                --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-realtime.json"
+                --output-text "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-realtime.txt")
+        set_tests_properties(evaluation_framework synthetic_evaluation
+            synthetic_evaluation_spectral synthetic_evaluation_realtime PROPERTIES
+            LABELS "evaluation" TIMEOUT 180)
+        if(TRANSCRIBE_ENABLE_ONNX AND BASIC_PITCH_MODEL_PATH)
+            add_test(NAME synthetic_evaluation_onnx
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
+                    --runner "$<TARGET_FILE:transcriber-evaluate>"
+                    --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                    --backend onnx --mode full --model "${BASIC_PITCH_MODEL_PATH}"
+                    --repetitions 1 --warmups 0
+                    --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-onnx.json"
+                    --output-text "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-onnx.txt")
+            set_tests_properties(synthetic_evaluation_onnx PROPERTIES LABELS "evaluation" TIMEOUT 180)
+        endif()
+
         add_test(NAME cli_export_validation
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_export_smoke.py"
@@ -268,6 +340,8 @@ if(TRANSCRIBE_BUILD_TESTS)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/real_audio_smoke.py"
                 "$<TARGET_FILE:transcriber>")
         set_tests_properties(real_audio_smoke PROPERTIES SKIP_RETURN_CODE 77)
+    else()
+        message(STATUS "Python unavailable: Python integration and evaluation tests are not registered.")
     endif()
 endif()
 

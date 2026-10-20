@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "project_version": "@PROJECT_VERSION@",
+  "compiler": {
+    "id": "@EVAL_CMAKE_CXX_COMPILER_ID@",
+    "version": "@EVAL_CMAKE_CXX_COMPILER_VERSION@",
+    "path": "@EVAL_CMAKE_CXX_COMPILER@"
+  },
+  "build_type": "$<IF:$<BOOL:$<CONFIG>>,$<CONFIG>,unspecified>",
+  "flags": {
+    "common": "@EVAL_CMAKE_CXX_FLAGS@",
+    "debug": "@EVAL_CMAKE_CXX_FLAGS_DEBUG@",
+    "release": "@EVAL_CMAKE_CXX_FLAGS_RELEASE@",
+    "relwithdebinfo": "@EVAL_CMAKE_CXX_FLAGS_RELWITHDEBINFO@",
+    "minsizerel": "@EVAL_CMAKE_CXX_FLAGS_MINSIZEREL@",
+    "warnings": "@EVAL_WARNINGS@",
+    "language": "cxx_std_20"
+  },
+  "generator": "@EVAL_CMAKE_GENERATOR@",
+  "system": "@EVAL_CMAKE_SYSTEM_NAME@",
+  "features": {
+    "onnx": $<IF:$<BOOL:@TRANSCRIBE_ENABLE_ONNX@>,true,false>,
+    "asio": $<IF:$<BOOL:@TRANSCRIBE_ENABLE_ASIO@>,true,false>,
+    "ffmpeg": $<IF:$<BOOL:@TRANSCRIBE_ENABLE_FFMPEG@>,true,false>,
+    "webview2": $<IF:$<BOOL:@TRANSCRIBE_ENABLE_WEBVIEW2@>,true,false>,
+    "onnx_cuda": $<IF:$<BOOL:@TRANSCRIBE_ONNX_ENABLE_CUDA@>,true,false>,
+    "onnx_directml": $<IF:$<BOOL:@TRANSCRIBE_ONNX_ENABLE_DIRECTML@>,true,false>,
+    "onnx_rocm": $<IF:$<BOOL:@TRANSCRIBE_ONNX_ENABLE_ROCM@>,true,false>
+  },
+  "executable": "$<TARGET_FILE:transcriber>",
+  "runner": @EVAL_RUNNER@
+}

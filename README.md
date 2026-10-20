@@ -50,6 +50,12 @@ cmake --build build-tests --config Release
 ctest --test-dir build-tests -C Release --output-on-failure
 ```
 
+For deterministic synthetic quality/performance baselines, compiler-identified
+JSON/text reports, event-versus-frame metrics, comparison gates, and the
+licensed real-audio workflow, see [Evaluation](docs/evaluation.md).
+The synthetic evaluation needs no model or dataset download and is registered
+with CTest when tests and Python are available.
+
 ## CLI
 
 ```text

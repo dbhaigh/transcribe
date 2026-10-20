@@ -5,6 +5,11 @@ deterministic sine waves with light harmonic content and short note envelopes.
 They are intentionally simple and are not real-world recordings or accuracy
 benchmarks. Expected pitch lists are provided beside each fixture.
 
+The additional [versioned evaluation corpus](../docs/evaluation.md#versioned-synthetic-ground-truth)
+generates labeled notes, repetitions, silence, octave changes, vibrato,
+chords, overlaps, attacks/decays, noise, reverb and clipping in a temporary
+directory. It does not alter these checked-in fixtures.
+
 For recorded guitar audio and annotations, the public [GuitarSet
 dataset](https://doi.org/10.5281/zenodo.3371780) is licensed CC BY 4.0
 (Qingyang Xi et al., ISMIR 2018). The full mono-microphone archive is about

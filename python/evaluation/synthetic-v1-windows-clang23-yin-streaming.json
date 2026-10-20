@@ -1,0 +1,2702 @@
+{
+  "audio_sample_rates": [
+    22050
+  ],
+  "build": {
+    "build_type": "Release",
+    "compiler": {
+      "id": "Clang",
+      "path": "C:/Users/ahaig/AppData/Local/Microsoft/WinGet/Packages/MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/llvm-mingw-20260908-ucrt-x86_64/bin/clang++.exe",
+      "version": "23.1.1"
+    },
+    "executable": "C:/Users/ahaig/Source/Repos/transcriber/build-release-mingw/transcriber.exe",
+    "features": {
+      "asio": false,
+      "ffmpeg": false,
+      "onnx": false,
+      "onnx_cuda": false,
+      "onnx_directml": false,
+      "onnx_rocm": false,
+      "webview2": false
+    },
+    "flags": {
+      "common": "",
+      "debug": "-g",
+      "language": "cxx_std_20",
+      "minsizerel": "-Os -DNDEBUG",
+      "release": "-O3 -DNDEBUG",
+      "relwithdebinfo": "-O2 -g -DNDEBUG",
+      "warnings": "-Wall -Wextra -Wpedantic"
+    },
+    "generator": "MinGW Makefiles",
+    "metadata_sha256": "7372bbdd6b7638a14ad0458570312e6b49c0d5dfc5d9bbfbc42421ab260d0dc5",
+    "project_version": "0.1.4",
+    "runner": "C:/Users/ahaig/Source/Repos/transcriber/build-release-mingw/transcriber-evaluate.exe",
+    "runner_sha256": "f5e33f3ebc385885c11dd7c05e96626fc4476d05cdfe91170d3c6f1370069223",
+    "schema_version": 1,
+    "system": "Windows"
+  },
+  "clips": [
+    {
+      "audio_sha256": "5c0f5eca644e9f191a4c694bb0397cacd099df157e171bff7dcfa01fe4867668",
+      "duration_seconds": 2.0,
+      "first_update_seconds": [
+        0.0385486,
+        0.0383709,
+        0.0397743
+      ],
+      "id": "monophonic",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9516129032258065,
+          "fn": 7,
+          "fp": 5,
+          "precision": 0.959349593495935,
+          "recall": 0.944,
+          "tp": 118
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 2
+        },
+        "offset_error_seconds": {
+          "count": 2,
+          "maximum": 0.0498412698412698,
+          "mean": 0.035442176870748354,
+          "median": 0.035442176870748354,
+          "p95": 0.0498412698412698
+        },
+        "onset_error_seconds": {
+          "count": 2,
+          "maximum": 0.029251700680272164,
+          "mean": 0.025770975056689363,
+          "median": 0.025770975056689363,
+          "p95": 0.029251700680272164
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 2
+        },
+        "pitch_accuracy": {
+          "correct": 2,
+          "matched": 2,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9990254832104088,
+          "duration": 0.5224489795918368,
+          "midi": 57,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.9950736481698274,
+          "duration": 0.7082086167800453,
+          "midi": 64,
+          "start": 0.8707482993197279
+        }
+      ],
+      "process_wall_seconds": [
+        0.05047230000491254,
+        0.05141420001746155,
+        0.05137269999249838
+      ],
+      "real_time_factor": [
+        0.01929185,
+        0.01920265,
+        0.0199687
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 0.7,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.7000000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.6,
+          "onset": 0.9,
+          "start": 0.9,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0385835,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0385486,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0038363,
+            "pitch_analysis_seconds": 0.0337983,
+            "preprocessing_seconds": 0.0002267,
+            "resampling_seconds": 0.0001631
+          },
+          "total_seconds": 0.0385837
+        },
+        {
+          "analysis_seconds": 0.038405,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0383709,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0036691,
+            "pitch_analysis_seconds": 0.0338789,
+            "preprocessing_seconds": 0.0002135,
+            "resampling_seconds": 0.0001608
+          },
+          "total_seconds": 0.0384053
+        },
+        {
+          "analysis_seconds": 0.0399369,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0397743,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0039132,
+            "pitch_analysis_seconds": 0.0348474,
+            "preprocessing_seconds": 0.0002799,
+            "resampling_seconds": 0.0002499
+          },
+          "total_seconds": 0.0399374
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "f44550ea83d9d37f9a96bd72e81d8108ddaef586f0f18b4da21b5d2356f25255",
+      "duration_seconds": 2.0,
+      "first_update_seconds": [
+        0.0399067,
+        0.0396458,
+        0.040611
+      ],
+      "id": "repeated",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 2,
+        "frame": {
+          "f1": 0.8823529411764706,
+          "fn": 0,
+          "fp": 32,
+          "precision": 0.7894736842105263,
+          "recall": 1.0,
+          "tp": 120
+        },
+        "missed_notes": 2,
+        "note_event": {
+          "f1": 0.3333333333333333,
+          "fn": 2,
+          "fp": 2,
+          "precision": 0.3333333333333333,
+          "recall": 0.3333333333333333,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 3,
+          "maximum": 0.1306575963718819,
+          "mean": 0.08513983371126217,
+          "median": 0.12337868480725622,
+          "p95": 0.1306575963718819
+        },
+        "onset_error_seconds": {
+          "count": 3,
+          "maximum": 0.030952380952380842,
+          "mean": 0.0266213151927437,
+          "median": 0.02662131519274369,
+          "p95": 0.030952380952380842
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "pitch_accuracy": {
+          "correct": 3,
+          "matched": 3,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9979836475986489,
+          "duration": 0.5456689342403629,
+          "midi": 69,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.9982837101992089,
+          "duration": 0.5572789115646257,
+          "midi": 69,
+          "start": 0.6733786848072563
+        },
+        {
+          "confidence": 0.9987104988186964,
+          "duration": 0.42956916099773235,
+          "midi": 69,
+          "start": 1.2190476190476192
+        }
+      ],
+      "process_wall_seconds": [
+        0.054148899973370135,
+        0.05115210000076331,
+        0.053877700003795326
+      ],
+      "real_time_factor": [
+        0.02003265,
+        0.01984085,
+        0.020324
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 0.4,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 0.55,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.40000000000000013,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.1,
+          "onset": 0.7,
+          "start": 0.7,
+          "velocity": 90
+        },
+        {
+          "duration": 0.3999999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.65,
+          "onset": 1.25,
+          "start": 1.25,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0400629,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0399067,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0037255,
+            "pitch_analysis_seconds": 0.035187,
+            "preprocessing_seconds": 0.0002536,
+            "resampling_seconds": 0.0002332
+          },
+          "total_seconds": 0.0400653
+        },
+        {
+          "analysis_seconds": 0.0396814,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0396458,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0039913,
+            "pitch_analysis_seconds": 0.0348637,
+            "preprocessing_seconds": 0.0002118,
+            "resampling_seconds": 0.0001529
+          },
+          "total_seconds": 0.0396817
+        },
+        {
+          "analysis_seconds": 0.0406476,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.040611,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0042696,
+            "pitch_analysis_seconds": 0.0351389,
+            "preprocessing_seconds": 0.0002503,
+            "resampling_seconds": 0.0002315
+          },
+          "total_seconds": 0.040648
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "842d8ff3d950813e85a6f5cd2e3c0639ea69070ca01766ad47184befd309b8ec",
+      "duration_seconds": 1.0,
+      "first_update_seconds": [],
+      "id": "silence",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.013354700000490993,
+        0.013776900013908744,
+        0.015292900003260002
+      ],
+      "real_time_factor": [
+        0.0026807,
+        0.0023958,
+        0.0025132
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [],
+      "runs": [
+        {
+          "analysis_seconds": 0.0026806,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0019876,
+            "pitch_analysis_seconds": 0.0001789,
+            "preprocessing_seconds": 0.0001106,
+            "resampling_seconds": 7.48e-05
+          },
+          "total_seconds": 0.0026807
+        },
+        {
+          "analysis_seconds": 0.0023957,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0016562,
+            "pitch_analysis_seconds": 0.0001759,
+            "preprocessing_seconds": 0.000111,
+            "resampling_seconds": 7.16e-05
+          },
+          "total_seconds": 0.0023958
+        },
+        {
+          "analysis_seconds": 0.0025131,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0016529,
+            "pitch_analysis_seconds": 0.0002717,
+            "preprocessing_seconds": 0.000113,
+            "resampling_seconds": 7.54e-05
+          },
+          "total_seconds": 0.0025132
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "0c23b090efad343a3edce4adcd5acf6c5da6a131c818d51c75dd4a8347918a0a",
+      "duration_seconds": 2.5,
+      "first_update_seconds": [
+        0.0511249,
+        0.052169,
+        0.0530045
+      ],
+      "id": "octaves",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 1,
+        "frame": {
+          "f1": 0.9578313253012049,
+          "fn": 6,
+          "fp": 8,
+          "precision": 0.9520958083832335,
+          "recall": 0.9636363636363636,
+          "tp": 159
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.8571428571428571,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.75,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "offset_error_seconds": {
+          "count": 3,
+          "maximum": 0.0498412698412698,
+          "mean": 0.033582766439909394,
+          "median": 0.04054421768707517,
+          "p95": 0.0498412698412698
+        },
+        "onset_error_seconds": {
+          "count": 3,
+          "maximum": 0.029251700680272164,
+          "mean": 0.02538170823885108,
+          "median": 0.024603174603174516,
+          "p95": 0.029251700680272164
+        },
+        "onset_pitch": {
+          "f1": 0.8571428571428571,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.75,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "pitch_accuracy": {
+          "correct": 3,
+          "matched": 3,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9967235902200912,
+          "duration": 0.5224489795918368,
+          "midi": 45,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.9977947647310859,
+          "duration": 0.5688888888888889,
+          "midi": 57,
+          "start": 0.8707482993197279
+        },
+        {
+          "confidence": 0.9996190580140506,
+          "duration": 0.5340589569160996,
+          "midi": 69,
+          "start": 1.6253968253968254
+        },
+        {
+          "confidence": 0.9848824662139412,
+          "duration": 0.05804988662131505,
+          "midi": 69,
+          "start": 2.147845804988662
+        }
+      ],
+      "process_wall_seconds": [
+        0.06288509999285452,
+        0.06321719998959452,
+        0.0661666999803856
+      ],
+      "real_time_factor": [
+        0.0204784,
+        0.020883679999999998,
+        0.02123352
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 45,
+          "offset": 0.7,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 1.45,
+          "onset": 0.9,
+          "start": 0.9,
+          "velocity": 90
+        },
+        {
+          "duration": 0.5500000000000003,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 2.2,
+          "onset": 1.65,
+          "start": 1.65,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0511957,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.0511249,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.004635,
+            "pitch_analysis_seconds": 0.0454564,
+            "preprocessing_seconds": 0.0002948,
+            "resampling_seconds": 0.0002053
+          },
+          "total_seconds": 0.051196
+        },
+        {
+          "analysis_seconds": 0.0522089,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.052169,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0049541,
+            "pitch_analysis_seconds": 0.0460088,
+            "preprocessing_seconds": 0.000334,
+            "resampling_seconds": 0.0001933
+          },
+          "total_seconds": 0.0522092
+        },
+        {
+          "analysis_seconds": 0.0530835,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.0530045,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0047176,
+            "pitch_analysis_seconds": 0.0471763,
+            "preprocessing_seconds": 0.0003308,
+            "resampling_seconds": 0.00019
+          },
+          "total_seconds": 0.0530838
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "518941768c022c75dcad53ef3306e755ece46f96790cfd9b6685b73bfa8fd8d1",
+      "duration_seconds": 2.0,
+      "first_update_seconds": [
+        0.0406953,
+        0.0402566,
+        0.0398699
+      ],
+      "id": "vibrato",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9933774834437086,
+          "fn": 0,
+          "fp": 2,
+          "precision": 0.9868421052631579,
+          "recall": 1.0,
+          "tp": 150
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.001383219954648407,
+          "mean": 0.001383219954648407,
+          "median": 0.001383219954648407,
+          "p95": 0.001383219954648407
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.022290249433106563,
+          "mean": 0.022290249433106563,
+          "median": 0.022290249433106563,
+          "p95": 0.022290249433106563
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9949345753474653,
+          "duration": 1.5209070294784581,
+          "midi": 69,
+          "start": 0.12770975056689343
+        }
+      ],
+      "process_wall_seconds": [
+        0.051905899978009984,
+        0.053353199997218326,
+        0.05100820001098327
+      ],
+      "real_time_factor": [
+        0.0203666,
+        0.0201476,
+        0.01995215
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 1.5,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.65,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90,
+          "vibrato_cents": 35.0
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.040733,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0406953,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0045717,
+            "pitch_analysis_seconds": 0.0351926,
+            "preprocessing_seconds": 0.0002133,
+            "resampling_seconds": 0.0002794
+          },
+          "total_seconds": 0.0407332
+        },
+        {
+          "analysis_seconds": 0.040295,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0402566,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0036313,
+            "pitch_analysis_seconds": 0.0356007,
+            "preprocessing_seconds": 0.0003194,
+            "resampling_seconds": 0.0001502
+          },
+          "total_seconds": 0.0402952
+        },
+        {
+          "analysis_seconds": 0.0399041,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0398699,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0040632,
+            "pitch_analysis_seconds": 0.0349868,
+            "preprocessing_seconds": 0.0002149,
+            "resampling_seconds": 0.0001613
+          },
+          "total_seconds": 0.0399043
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "ba216e82f5462d377de78f9da238f074889cdca766932f267da57f2b1ab43fb0",
+      "duration_seconds": 1.8,
+      "first_update_seconds": [
+        0.0367805,
+        0.0357289,
+        0.0348772
+      ],
+      "id": "chord",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 3,
+          "value": 0.0
+        },
+        "false_positives": 1,
+        "frame": {
+          "f1": 0.0,
+          "fn": 375,
+          "fp": 122,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 3,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 3,
+          "fp": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 3,
+          "fp": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 1,
+          "value": 0.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9857019240684082,
+          "duration": 1.2190476190476192,
+          "midi": 36,
+          "start": 0.12770975056689343
+        }
+      ],
+      "process_wall_seconds": [
+        0.049745399999665096,
+        0.04827070000465028,
+        0.045502199995098636
+      ],
+      "real_time_factor": [
+        0.02045433333333333,
+        0.019871944444444446,
+        0.019405555555555558
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 1.25,
+          "instrument": "synthetic_harmonic",
+          "midi": 60,
+          "offset": 1.4,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 65
+        },
+        {
+          "duration": 1.25,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.4,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 65
+        },
+        {
+          "duration": 1.25,
+          "instrument": "synthetic_harmonic",
+          "midi": 67,
+          "offset": 1.4,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 65
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0368176,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1.8,
+          "first_update_seconds": 0.0367805,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0035875,
+            "pitch_analysis_seconds": 0.0322439,
+            "preprocessing_seconds": 0.0002914,
+            "resampling_seconds": 0.0001379
+          },
+          "total_seconds": 0.0368178
+        },
+        {
+          "analysis_seconds": 0.0357693,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1.8,
+          "first_update_seconds": 0.0357289,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0036513,
+            "pitch_analysis_seconds": 0.031318,
+            "preprocessing_seconds": 0.0002055,
+            "resampling_seconds": 0.0001374
+          },
+          "total_seconds": 0.0357695
+        },
+        {
+          "analysis_seconds": 0.0349297,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1.8,
+          "first_update_seconds": 0.0348772,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0033404,
+            "pitch_analysis_seconds": 0.0306367,
+            "preprocessing_seconds": 0.0002408,
+            "resampling_seconds": 0.0001816
+          },
+          "total_seconds": 0.03493
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "feeb436772e487d48d9fac0e73c766dfc3397caeafa060d4bbe2e0fe667271ea",
+      "duration_seconds": 2.2,
+      "first_update_seconds": [
+        0.0431434,
+        0.0425096,
+        0.042223
+      ],
+      "id": "overlap",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 1,
+          "reference": 2,
+          "value": 0.5
+        },
+        "false_positives": 3,
+        "frame": {
+          "f1": 0.48,
+          "fn": 126,
+          "fp": 56,
+          "precision": 0.6,
+          "recall": 0.4,
+          "tp": 84
+        },
+        "missed_notes": 2,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 2,
+          "fp": 3,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.6891609977324263,
+          "mean": 0.6891609977324263,
+          "median": 0.6891609977324263,
+          "p95": 0.6891609977324263
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.022290249433106563,
+          "mean": 0.022290249433106563,
+          "median": 0.022290249433106563,
+          "p95": 0.022290249433106563
+        },
+        "onset_pitch": {
+          "f1": 0.4,
+          "fn": 1,
+          "fp": 2,
+          "precision": 0.3333333333333333,
+          "recall": 0.5,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 2,
+          "value": 0.5
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9998715193824647,
+          "duration": 0.3831292517006803,
+          "midi": 57,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.9970176425203853,
+          "duration": 0.5456689342403629,
+          "midi": 45,
+          "start": 0.6385487528344671
+        },
+        {
+          "confidence": 0.9951711229271483,
+          "duration": 0.47600907029478456,
+          "midi": 64,
+          "start": 1.172607709750567
+        }
+      ],
+      "process_wall_seconds": [
+        0.055104400002164766,
+        0.05617250001523644,
+        0.05407850001938641
+      ],
+      "real_time_factor": [
+        0.01964990909090909,
+        0.019381545454545453,
+        0.01920881818181818
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 1.05,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 1.2,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 70
+        },
+        {
+          "duration": 1.0499999999999998,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.7,
+          "onset": 0.65,
+          "start": 0.65,
+          "velocity": 70
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0431798,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0431434,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0040729,
+            "pitch_analysis_seconds": 0.0378706,
+            "preprocessing_seconds": 0.0002546,
+            "resampling_seconds": 0.0001669
+          },
+          "total_seconds": 0.0432298
+        },
+        {
+          "analysis_seconds": 0.0426362,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0425096,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0044837,
+            "pitch_analysis_seconds": 0.0370843,
+            "preprocessing_seconds": 0.000274,
+            "resampling_seconds": 0.0001791
+          },
+          "total_seconds": 0.0426394
+        },
+        {
+          "analysis_seconds": 0.0422592,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.042223,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0044988,
+            "pitch_analysis_seconds": 0.0368439,
+            "preprocessing_seconds": 0.0002338,
+            "resampling_seconds": 0.000168
+          },
+          "total_seconds": 0.0422594
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "3d1757008f8bc29daa63cfa8cf88e48c012fd6d71902c33ed6253b3940375a06",
+      "duration_seconds": 2.2,
+      "first_update_seconds": [
+        0.0418371,
+        0.0417848,
+        0.0419834
+      ],
+      "id": "decay",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9529780564263323,
+          "fn": 13,
+          "fp": 2,
+          "precision": 0.987012987012987,
+          "recall": 0.9212121212121213,
+          "tp": 152
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.12816326530612243,
+          "mean": 0.12816326530612243,
+          "median": 0.12816326530612243,
+          "p95": 0.12816326530612243
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.022290249433106563,
+          "mean": 0.022290249433106563,
+          "median": 0.022290249433106563,
+          "p95": 0.022290249433106563
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9954044486069349,
+          "duration": 1.5441269841269842,
+          "midi": 64,
+          "start": 0.12770975056689343
+        }
+      ],
+      "process_wall_seconds": [
+        0.05422819999512285,
+        0.054315000015776604,
+        0.05330540001159534
+      ],
+      "real_time_factor": [
+        0.019045,
+        0.019010090909090907,
+        0.019101045454545454
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "decay": 3.0,
+          "duration": 1.6500000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.8,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0418988,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0418371,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.004331,
+            "pitch_analysis_seconds": 0.0364477,
+            "preprocessing_seconds": 0.0002874,
+            "resampling_seconds": 0.0002814
+          },
+          "total_seconds": 0.041899
+        },
+        {
+          "analysis_seconds": 0.041822,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0417848,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0045701,
+            "pitch_analysis_seconds": 0.0363247,
+            "preprocessing_seconds": 0.0002312,
+            "resampling_seconds": 0.0002334
+          },
+          "total_seconds": 0.0418222
+        },
+        {
+          "analysis_seconds": 0.0420221,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0419834,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0045355,
+            "pitch_analysis_seconds": 0.0365134,
+            "preprocessing_seconds": 0.0002343,
+            "resampling_seconds": 0.0001779
+          },
+          "total_seconds": 0.0420223
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "db360547584ea5e14033b41734e976de4ffd16676900c1403335adb400d2aa5b",
+      "duration_seconds": 2.2,
+      "first_update_seconds": [
+        0.0452416,
+        0.0443502,
+        0.0449306
+      ],
+      "id": "attack",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 2,
+        "frame": {
+          "f1": 0.9787234042553191,
+          "fn": 4,
+          "fp": 3,
+          "precision": 0.9817073170731707,
+          "recall": 0.9757575757575757,
+          "tp": 161
+        },
+        "missed_notes": 1,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 2,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 1.498140589569161,
+          "mean": 1.498140589569161,
+          "median": 1.498140589569161,
+          "p95": 1.498140589569161
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.0339002267573696,
+          "mean": 0.0339002267573696,
+          "median": 0.0339002267573696,
+          "p95": 0.0339002267573696
+        },
+        "onset_pitch": {
+          "f1": 0.6666666666666666,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.5,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9992919072648321,
+          "duration": 0.18575963718820865,
+          "midi": 57,
+          "start": 0.11609977324263039
+        },
+        {
+          "confidence": 0.9994701665940131,
+          "duration": 1.4628571428571429,
+          "midi": 57,
+          "start": 0.301859410430839
+        }
+      ],
+      "process_wall_seconds": [
+        0.056664500007173046,
+        0.05595319997519255,
+        0.05657529999734834
+      ],
+      "real_time_factor": [
+        0.02058722727272727,
+        0.02020381818181818,
+        0.020440090909090908
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "attack": 0.25,
+          "duration": 1.6500000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 1.8,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0452915,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0452416,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0046202,
+            "pitch_analysis_seconds": 0.0397366,
+            "preprocessing_seconds": 0.0002395,
+            "resampling_seconds": 0.000182
+          },
+          "total_seconds": 0.0452919
+        },
+        {
+          "analysis_seconds": 0.0444482,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0443502,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0044418,
+            "pitch_analysis_seconds": 0.0389233,
+            "preprocessing_seconds": 0.0002453,
+            "resampling_seconds": 0.0001989
+          },
+          "total_seconds": 0.0444484
+        },
+        {
+          "analysis_seconds": 0.044968,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.2,
+          "first_update_seconds": 0.0449306,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0041603,
+            "pitch_analysis_seconds": 0.0397406,
+            "preprocessing_seconds": 0.0002808,
+            "resampling_seconds": 0.0002648
+          },
+          "total_seconds": 0.0449682
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "59cc892aca97cbe2aa84431990f6fcf0c0354d3a47f4bff34c023242e1da1b12",
+      "duration_seconds": 2.0,
+      "first_update_seconds": [
+        0.0407701,
+        0.040857,
+        0.0410821
+      ],
+      "id": "noise",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9836065573770492,
+          "fn": 0,
+          "fp": 5,
+          "precision": 0.967741935483871,
+          "recall": 1.0,
+          "tp": 150
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.001383219954648407,
+          "mean": 0.001383219954648407,
+          "median": 0.001383219954648407,
+          "p95": 0.001383219954648407
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.045510204081632644,
+          "mean": 0.045510204081632644,
+          "median": 0.045510204081632644,
+          "p95": 0.045510204081632644
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9856730321419409,
+          "duration": 1.5441269841269842,
+          "midi": 69,
+          "start": 0.10448979591836735
+        }
+      ],
+      "process_wall_seconds": [
+        0.052677600004244596,
+        0.05153180001070723,
+        0.05414120000205003
+      ],
+      "real_time_factor": [
+        0.02040195,
+        0.02044805,
+        0.02056135
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 1.5,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.65,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0408037,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0407701,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0037695,
+            "pitch_analysis_seconds": 0.0359317,
+            "preprocessing_seconds": 0.0002359,
+            "resampling_seconds": 0.0001501
+          },
+          "total_seconds": 0.0408039
+        },
+        {
+          "analysis_seconds": 0.0408959,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.040857,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0038828,
+            "pitch_analysis_seconds": 0.0361772,
+            "preprocessing_seconds": 0.0002121,
+            "resampling_seconds": 0.0001687
+          },
+          "total_seconds": 0.0408961
+        },
+        {
+          "analysis_seconds": 0.0411226,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2,
+          "first_update_seconds": 0.0410821,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0044158,
+            "pitch_analysis_seconds": 0.0358118,
+            "preprocessing_seconds": 0.0002147,
+            "resampling_seconds": 0.0002027
+          },
+          "total_seconds": 0.0411227
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "db93f5d146b1eaa59d30d20902a8240bf7b6d7c36770ce86f2a8e25533ad9636",
+      "duration_seconds": 1.0,
+      "first_update_seconds": [],
+      "id": "noise_only",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.03036720000091009,
+        0.0311509000021033,
+        0.03325639999820851
+      ],
+      "real_time_factor": [
+        0.0204474,
+        0.0205639,
+        0.0213702
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [],
+      "runs": [
+        {
+          "analysis_seconds": 0.0204472,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0017961,
+            "pitch_analysis_seconds": 0.0181295,
+            "preprocessing_seconds": 0.0001094,
+            "resampling_seconds": 7.38e-05
+          },
+          "total_seconds": 0.0204474
+        },
+        {
+          "analysis_seconds": 0.0205638,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0020803,
+            "pitch_analysis_seconds": 0.017853,
+            "preprocessing_seconds": 0.000111,
+            "resampling_seconds": 0.0001603
+          },
+          "total_seconds": 0.0205639
+        },
+        {
+          "analysis_seconds": 0.02137,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.001949,
+            "pitch_analysis_seconds": 0.0187267,
+            "preprocessing_seconds": 0.0001563,
+            "resampling_seconds": 7.78e-05
+          },
+          "total_seconds": 0.0213702
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "9b749b5d9098e9072dc82b00817286feea35188f2c22e4b61109250e048e9810",
+      "duration_seconds": 2.5,
+      "first_update_seconds": [
+        0.0427242,
+        0.04311,
+        0.0426112
+      ],
+      "id": "reverberation",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 6,
+        "frame": {
+          "f1": 0.7072243346007605,
+          "fn": 12,
+          "fp": 65,
+          "precision": 0.5886075949367089,
+          "recall": 0.8857142857142857,
+          "tp": 93
+        },
+        "missed_notes": 2,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 2,
+          "fp": 6,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 2,
+          "fp": 6,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9900622731114731,
+          "duration": 0.13931972789115646,
+          "midi": 57,
+          "start": 0
+        },
+        {
+          "confidence": 0.9986066721913935,
+          "duration": 0.5108390022675737,
+          "midi": 57,
+          "start": 0.2089795918367347
+        },
+        {
+          "confidence": 0.8858031180684331,
+          "duration": 0.05804988662131527,
+          "midi": 45,
+          "start": 0.7082086167800453
+        },
+        {
+          "confidence": 0.9676929993286819,
+          "duration": 0.11609977324263032,
+          "midi": 64,
+          "start": 0.7662585034013606
+        },
+        {
+          "confidence": 0.9949966995522708,
+          "duration": 0.615328798185941,
+          "midi": 64,
+          "start": 0.9636281179138322
+        },
+        {
+          "confidence": 0.9916755149460686,
+          "duration": 0.13931972789115643,
+          "midi": 64,
+          "start": 1.5789569160997732
+        }
+      ],
+      "process_wall_seconds": [
+        0.05549009999958798,
+        0.054777100012870505,
+        0.05529950000345707
+      ],
+      "real_time_factor": [
+        0.01712176,
+        0.01727748,
+        0.01708612
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 0.5,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 0.65,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.45,
+          "onset": 0.9,
+          "start": 0.9,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0428011,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.0427242,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0049433,
+            "pitch_analysis_seconds": 0.0366979,
+            "preprocessing_seconds": 0.0003281,
+            "resampling_seconds": 0.0002199
+          },
+          "total_seconds": 0.0428044
+        },
+        {
+          "analysis_seconds": 0.0431927,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.04311,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0046229,
+            "pitch_analysis_seconds": 0.0371406,
+            "preprocessing_seconds": 0.0003314,
+            "resampling_seconds": 0.0001883
+          },
+          "total_seconds": 0.0431937
+        },
+        {
+          "analysis_seconds": 0.0427141,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 2.5,
+          "first_update_seconds": 0.0426112,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0048301,
+            "pitch_analysis_seconds": 0.0368095,
+            "preprocessing_seconds": 0.0003081,
+            "resampling_seconds": 0.0001919
+          },
+          "total_seconds": 0.0427153
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "a6b15193170120d89e88b7755ae878c778550fa0cb3cd661ff408940c783fe4b",
+      "duration_seconds": 1.5,
+      "first_update_seconds": [
+        0.0297255,
+        0.0316412,
+        0.0299017
+      ],
+      "id": "clipping",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 1,
+        "frame": {
+          "f1": 0.9813084112149533,
+          "fn": 0,
+          "fp": 4,
+          "precision": 0.963302752293578,
+          "recall": 1.0,
+          "tp": 105
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.6666666666666666,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.5,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.03900226757369607,
+          "mean": 0.03900226757369607,
+          "median": 0.03900226757369607,
+          "p95": 0.03900226757369607
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.0339002267573696,
+          "mean": 0.0339002267573696,
+          "median": 0.0339002267573696,
+          "p95": 0.0339002267573696
+        },
+        "onset_pitch": {
+          "f1": 0.6666666666666666,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.5,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.999581307882907,
+          "duration": 1.0448979591836736,
+          "midi": 69,
+          "start": 0.11609977324263039
+        },
+        {
+          "confidence": 0.9826834623184981,
+          "duration": 0.05804988662131527,
+          "midi": 69,
+          "start": 1.1493877551020408
+        }
+      ],
+      "process_wall_seconds": [
+        0.041540499980328605,
+        0.04410769999958575,
+        0.04178870000760071
+      ],
+      "real_time_factor": [
+        0.019872466666666668,
+        0.0211356,
+        0.0199592
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 1.05,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.2,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0297795,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1.5,
+          "first_update_seconds": 0.0297255,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0031113,
+            "pitch_analysis_seconds": 0.0259093,
+            "preprocessing_seconds": 0.000159,
+            "resampling_seconds": 0.0001144
+          },
+          "total_seconds": 0.0298087
+        },
+        {
+          "analysis_seconds": 0.0317031,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1.5,
+          "first_update_seconds": 0.0316412,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0035676,
+            "pitch_analysis_seconds": 0.0272259,
+            "preprocessing_seconds": 0.0001825,
+            "resampling_seconds": 0.0001811
+          },
+          "total_seconds": 0.0317034
+        },
+        {
+          "analysis_seconds": 0.0299385,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 1.5,
+          "first_update_seconds": 0.0299017,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0030155,
+            "pitch_analysis_seconds": 0.0259522,
+            "preprocessing_seconds": 0.0001966,
+            "resampling_seconds": 0.0001552
+          },
+          "total_seconds": 0.0299388
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "3987570688d01fdcd0451e5338877cfe41d06bc2793dd8aabf9b84b58f2106f2",
+      "duration_seconds": 0.01,
+      "first_update_seconds": [],
+      "id": "very_short",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 1,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.009829200018430129,
+        0.009779399988474324,
+        0.009508599992841482
+      ],
+      "real_time_factor": [
+        0.02265,
+        0.02234,
+        0.02112
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "attack": 0.001,
+          "duration": 0.01,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 0.01,
+          "onset": 0,
+          "start": 0,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.0002265,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 0.009977324263038548,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 4.2e-06,
+            "pitch_analysis_seconds": 0,
+            "preprocessing_seconds": 4.6e-06,
+            "resampling_seconds": 3e-06
+          },
+          "total_seconds": 0.0002265
+        },
+        {
+          "analysis_seconds": 0.0002233,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 0.009977324263038548,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 4.1e-06,
+            "pitch_analysis_seconds": 0,
+            "preprocessing_seconds": 4.6e-06,
+            "resampling_seconds": 3e-06
+          },
+          "total_seconds": 0.0002234
+        },
+        {
+          "analysis_seconds": 0.0002111,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 0.009977324263038548,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 5.8e-06,
+            "pitch_analysis_seconds": 0,
+            "preprocessing_seconds": 4.6e-06,
+            "resampling_seconds": 2.9e-06
+          },
+          "total_seconds": 0.0002112
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "24d5db4ca2d256752cd049a330cb406196c05f4cfe8036beb309e0e4533d21de",
+      "duration_seconds": 0.0,
+      "first_update_seconds": [],
+      "id": "empty",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.010128399997483939,
+        0.010388800001237541,
+        0.01185720000648871
+      ],
+      "real_time_factor": [
+        null,
+        null,
+        null
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [],
+      "runs": [
+        {
+          "analysis_seconds": 0.0003667,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 0,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0,
+            "pitch_analysis_seconds": 0,
+            "preprocessing_seconds": 0,
+            "resampling_seconds": 0
+          },
+          "total_seconds": 0.0003668
+        },
+        {
+          "analysis_seconds": 0.0002409,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 0,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0,
+            "pitch_analysis_seconds": 0,
+            "preprocessing_seconds": 0,
+            "resampling_seconds": 0
+          },
+          "total_seconds": 0.000241
+        },
+        {
+          "analysis_seconds": 0.0003221,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 0,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0,
+            "pitch_analysis_seconds": 0,
+            "preprocessing_seconds": 0,
+            "resampling_seconds": 0
+          },
+          "total_seconds": 0.0003222
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "eecf2111ad094636e2ccccafcfabfa31947df77fab3db412191edde27a3fdf56",
+      "duration_seconds": 16.5,
+      "first_update_seconds": [
+        0.0731775,
+        0.0703189,
+        0.0698641
+      ],
+      "id": "long_boundary",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 1,
+        "frame": {
+          "f1": 0.9637305699481865,
+          "fn": 11,
+          "fp": 10,
+          "precision": 0.9653979238754326,
+          "recall": 0.9620689655172414,
+          "tp": 279
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.8571428571428571,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.75,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "offset_error_seconds": {
+          "count": 3,
+          "maximum": 0.05696145124716567,
+          "mean": 0.047256235827664174,
+          "median": 0.04766439909296949,
+          "p95": 0.05696145124716567
+        },
+        "onset_error_seconds": {
+          "count": 3,
+          "maximum": 0.03056689342403729,
+          "mean": 0.02819349962207099,
+          "median": 0.028163265306121232,
+          "p95": 0.03056689342403729
+        },
+        "onset_pitch": {
+          "f1": 0.8571428571428571,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.75,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "pitch_accuracy": {
+          "correct": 3,
+          "matched": 3,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.9991950828882655,
+          "duration": 0.5688888888888889,
+          "midi": 57,
+          "start": 0.17414965986394557
+        },
+        {
+          "confidence": 0.9998706667102042,
+          "duration": 1.6934240362811792,
+          "midi": 69,
+          "start": 13.769433106575963
+        },
+        {
+          "confidence": 0.9777840971010571,
+          "duration": 0.05804988662131527,
+          "midi": 69,
+          "start": 15.45124716553288
+        },
+        {
+          "confidence": 0.9952382713643131,
+          "duration": 0.5804988662131518,
+          "midi": 64,
+          "start": 15.671836734693878
+        }
+      ],
+      "process_wall_seconds": [
+        0.1383876999898348,
+        0.13557169999694452,
+        0.13589100001263432
+      ],
+      "real_time_factor": [
+        0.0076887757575757575,
+        0.00760929696969697,
+        0.0075407696969696965
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 0.6000000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 0.8,
+          "onset": 0.2,
+          "start": 0.2,
+          "velocity": 90
+        },
+        {
+          "duration": 1.6999999999999993,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 15.5,
+          "onset": 13.8,
+          "start": 13.8,
+          "velocity": 90
+        },
+        {
+          "duration": 0.6000000000000014,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 16.3,
+          "onset": 15.7,
+          "start": 15.7,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.1268645,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 16.5,
+          "first_update_seconds": 0.0731775,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0327596,
+            "pitch_analysis_seconds": 0.0795134,
+            "preprocessing_seconds": 0.010663899999999999,
+            "resampling_seconds": 0.0015115
+          },
+          "total_seconds": 0.1268648
+        },
+        {
+          "analysis_seconds": 0.1255532,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 16.5,
+          "first_update_seconds": 0.0703189,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0340775,
+            "pitch_analysis_seconds": 0.076902,
+            "preprocessing_seconds": 0.0108261,
+            "resampling_seconds": 0.0014537
+          },
+          "total_seconds": 0.1255534
+        },
+        {
+          "analysis_seconds": 0.1244224,
+          "decode_included_in_analysis": true,
+          "decode_seconds": null,
+          "duration_seconds": 16.5,
+          "first_update_seconds": 0.0698641,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "sample_rate": 22050,
+          "stages": {
+            "onset_fft_seconds": 0.0325978,
+            "pitch_analysis_seconds": 0.0766327,
+            "preprocessing_seconds": 0.010935,
+            "resampling_seconds": 0.0016271
+          },
+          "total_seconds": 0.1244227
+        }
+      ],
+      "sample_rate": 22050
+    }
+  ],
+  "comparison": {
+    "event_f1_delta": 0.0,
+    "frame_f1_delta": 0.0,
+    "median_process_time_ratio": 0.986024338602921,
+    "same_build": false,
+    "same_environment": true
+  },
+  "configuration": {
+    "backend": "yin",
+    "chunk_seconds": 15,
+    "device_id": 0,
+    "fast": false,
+    "instrument_prior": "none",
+    "maximum_pitches_per_frame": 6,
+    "minimum_confidence": 0.25,
+    "mode": "streaming",
+    "onnx_independent_probabilities": true,
+    "onnx_polyphonic_threshold": 0.4,
+    "overlap_seconds": 1,
+    "parallel": true,
+    "provider": "cpu",
+    "realtime_latency_ms": 40,
+    "realtime_minimum_confidence": 0.45,
+    "realtime_update_rate_hz": 100,
+    "spectral_threshold": 0.3
+  },
+  "corpus": {
+    "ground_truth": "Dry oscillator activation; reverb tails are not extra notes",
+    "name": "transcriber-synthetic",
+    "provenance": "Generated locally by synthetic_corpus.py; no sampled recordings",
+    "sample_rate": 22050,
+    "schema_version": 1,
+    "seed": 2026,
+    "sha256": "183c7f68643d6ac54a1b15a26af195e16590f115c5194f25c139366844f6fca9",
+    "version": 1
+  },
+  "environment": {
+    "logical_cpus": 12,
+    "machine": "AMD64",
+    "platform": "Windows-11-10.0.26220-SP0",
+    "processor": "Intel64 Family 6 Model 165 Stepping 2, GenuineIntel",
+    "python": "3.12.10"
+  },
+  "evaluator": {
+    "files_sha256": {
+      "CMakeLists.txt": "324a41f6b57ed16d9825be7ae3d5df64565b36ae3908b2ec466bfe094282dfc7",
+      "include/transcribe/audio.hpp": "1f1f9b59faeb32b2b8e7068956a26e47c20616fe5a391491963c5f040ba4596c",
+      "include/transcribe/transcriber.hpp": "7296e183228996c63162362e2df3dfd56794aeba774dfc56f765bdca747647b0",
+      "python/evaluate.py": "8651eac8d6c656441b7f3d380ff75b6fe204fb900fb9c5283f1ea6a9935c402d",
+      "python/evaluate_guitarset.py": "35754c80b7fd8533dd1848b1d1a2c88be1364ebc657c60d5f7d34e2517c96c8b",
+      "python/evaluation_metrics.py": "97d41d462a57e179c275ce117d276b6cf1beeb0f7ad219777fcb1b4484b337dc",
+      "python/synthetic_corpus.py": "7fd5e1e8df0b07d21c8af142e26436e13dad6d98437990b61b51d3d909c39bac",
+      "src/audio_file.cpp": "e4fde094ee5b28c03ece6ae49f653a5185b535043ddcc83cd9291c2a614bcb84",
+      "src/audio_ring_buffer.cpp": "bf6df2fc41b14616e5ff4357c55f5f82b72cac337d3eb8290cf5bc0b4ad9e922",
+      "src/transcriber.cpp": "67faf275860a07ec76fb3157830909ed10a9d903f208e1b10f36caac53ab13f9",
+      "tests/evaluation_build.json.in": "c39b2e91c5583e75dfdfd77fcb568d59c35ee270a0f5603d3a7c45cca2e46853",
+      "tests/evaluation_runner.cpp": "e5f6f41c32073ea7bf14c01596591a5e3c5f7aa4afce819aa4a1c0bfac1f8bc4"
+    },
+    "git_dirty": true,
+    "git_revision": "0561397b3705aeb8763726ea4b73fd83b4012aac"
+  },
+  "generated_at_utc": "2026-10-20T15:48:52.765178+00:00",
+  "model": {
+    "identifier": "builtin:yin",
+    "sha256": null
+  },
+  "schema_version": 1,
+  "summary": {
+    "analysis_seconds": {
+      "count": 48,
+      "maximum": 0.1268645,
+      "mean": 0.037544420833333335,
+      "median": 0.04017895,
+      "p95": 0.1244224
+    },
+    "chord_note_recall": {
+      "correct": 1,
+      "reference": 5,
+      "value": 0.2
+    },
+    "corpus_audio_seconds": 41.410000000000004,
+    "corpus_real_time_factor": 0.014507214038477018,
+    "false_positives": 17,
+    "first_update_seconds": {
+      "count": 36,
+      "maximum": 0.0731775,
+      "mean": 0.043476425,
+      "median": 0.04143345,
+      "p95": 0.0703189
+    },
+    "frame": {
+      "f1": 0.7833457990526054,
+      "fn": 555,
+      "fp": 314,
+      "precision": 0.83342175066313,
+      "recall": 0.7389463781749764,
+      "tp": 1571
+    },
+    "missed_notes": 11,
+    "note_event": {
+      "f1": 0.48148148148148145,
+      "fn": 11,
+      "fp": 17,
+      "precision": 0.43333333333333335,
+      "recall": 0.5416666666666666,
+      "tp": 13
+    },
+    "offset_error_seconds": {
+      "count": 17,
+      "maximum": 1.498140589569161,
+      "mean": 0.1721208483393357,
+      "median": 0.04766439909296949,
+      "p95": 1.498140589569161
+    },
+    "onset_error_seconds": {
+      "count": 17,
+      "maximum": 0.045510204081632644,
+      "mean": 0.027783113245298093,
+      "median": 0.02662131519274369,
+      "p95": 0.045510204081632644
+    },
+    "onset_pitch": {
+      "f1": 0.6296296296296297,
+      "fn": 7,
+      "fp": 13,
+      "precision": 0.5666666666666667,
+      "recall": 0.7083333333333334,
+      "tp": 17
+    },
+    "pitch_accuracy": {
+      "correct": 17,
+      "matched": 19,
+      "value": 0.8947368421052632
+    },
+    "process_wall_seconds": {
+      "count": 48,
+      "maximum": 0.1383876999898348,
+      "mean": 0.04918301458383212,
+      "median": 0.05171884999435861,
+      "p95": 0.13557169999694452
+    },
+    "realtime_onset_analysis_latency_seconds": {
+      "count": 0,
+      "maximum": null,
+      "mean": null,
+      "median": null,
+      "p95": null
+    },
+    "skipped_inferences": 0,
+    "total_seconds": {
+      "count": 48,
+      "maximum": 0.1268648,
+      "mean": 0.03754648333333333,
+      "median": 0.04018025,
+      "p95": 0.1244227
+    }
+  },
+  "timing_protocol": {
+    "clock": "steady_clock engine / perf_counter parent",
+    "first_update": "wall time to first nonempty streaming update/realtime event",
+    "isolation": "new process per clip and repetition; model/session cold",
+    "offline_latency": "decode + analysis total; no exports/process startup",
+    "realtime_latency": "detected_at - estimated onset in input time; not hardware latency",
+    "repetitions": 3,
+    "warmups": 1
+  },
+  "tolerances": {
+    "frame_seconds": 0.01,
+    "offset_ratio": 0.2,
+    "offset_seconds": 0.05,
+    "onset_seconds": 0.05
+  }
+}

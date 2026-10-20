@@ -3,6 +3,16 @@
 Python is optional and is intended for model experiments, data preparation,
 evaluation, and ONNX export. The product and built-in YIN analysis are C++20.
 
+## Reproducible quality and performance reports
+
+Use [the evaluation framework](../docs/evaluation.md) for the versioned,
+model-free synthetic corpus, explicit event/frame metrics, compiler/build/
+model/provider metadata, repeated timing measurements and baseline comparisons.
+It reuses this directory's GuitarSet provenance and annotation reader and
+supports the same licensed archives without requiring ONNX. The historical
+`evaluate_guitarset.py` entry point and stored results remain available; its
+scoring helpers now come from the shared `evaluation_metrics.py` module.
+
 ## ONNX contract, version 1
 
 The C++ runner expects:
@@ -145,9 +155,10 @@ repository root:
 ```powershell
 python .\python\evaluate_guitarset.py `
   --transcriber .\build-onnx-asio-mingw\transcriber.exe `
+  --build-info .\build-onnx-asio-mingw\evaluation-build-Release.json `
   --audio-zip $audio `
   --annotations-zip $annotations `
-  --output-json .\python\evaluation\guitarset-v1.1.0-results.json
+  --output-json .\build-onnx-asio-mingw\evaluation\guitarset-v1.1.0-new.json
 ```
 
 By default, this evaluates all 360 recordings for both the bundled Basic Pitch
@@ -156,6 +167,14 @@ processing. The per-recording results are written only to the requested JSON
 file; no dataset audio or annotations are copied into the repository. Use
 `--limit 24 --seed 2026` for a repeatable smoke subset. Do not tune thresholds
 against this test set.
+
+Reconfigure the matching CMake build to generate the compiler/configuration
+metadata above; tests can remain disabled for this legacy CLI workflow.
+New reports also identify the executable and
+model digests, input sample rates, provider, and single process-wall timings
+(including exports). The stored historical report predates these additions;
+its absent metadata must not be fabricated. For repeated timing and extended
+quality diagnostics, use `evaluate.py` as documented in the framework guide.
 
 Reported scores are micro-averaged across the evaluated recordings:
 

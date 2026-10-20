@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <numbers>
 #include <string>
 #include <vector>
@@ -691,6 +692,173 @@ TEST_CASE("single-note material is reported as insufficient for metadata inferen
     REQUIRE(metadata.tempo_confidence == 0.0);
     REQUIRE(metadata.meter_confidence == 0.0);
     REQUIRE(metadata.key_confidence == 0.0);
+}
+
+TEST_CASE("evaluation regressions cover empty silence and very short audio", "[evaluation]") {
+    TemporaryDirectory temporary;
+    for (const double duration : {0.0, 1.0 / 44100, 0.01, 1.0}) {
+        const auto path = temporary.path / ("silence-" + std::to_string(duration) + ".wav");
+        create_pcm16_wav(path, 0.0, duration);
+        const auto audio = transcribe::read_wav(path);
+        REQUIRE(audio.sample_rate == 44100);
+        REQUIRE(transcribe::transcribe_monophonic(audio).empty());
+        const auto streaming = transcribe::transcribe_wav_streaming(path);
+        REQUIRE(streaming.notes.empty());
+        REQUIRE(std::abs(streaming.duration_seconds -
+                         static_cast<double>(audio.samples.size()) / audio.sample_rate) < 1e-9);
+    }
+    REQUIRE(transcribe::transcribe_monophonic({44100, {}}).empty());
+    REQUIRE(transcribe::transcribe_monophonic({44100, {1.0f}}).empty());
+}
+
+TEST_CASE("evaluation regressions reject unsupported and malformed WAV formats", "[evaluation]") {
+    TemporaryDirectory temporary;
+    const auto path = temporary.path / "unsupported.wav";
+    for (const std::uint16_t encoding : {std::uint16_t{6}, std::uint16_t{0xfffe}}) {
+        std::ofstream output(path, std::ios::binary);
+        output.write("RIFF", 4);
+        write_u32(output, 38);
+        output.write("WAVEfmt ", 8);
+        write_u32(output, 16);
+        write_u16(output, encoding);
+        write_u16(output, 1);
+        write_u32(output, 44100);
+        write_u32(output, 88200);
+        write_u16(output, 2);
+        write_u16(output, 16);
+        output.write("data", 4);
+        write_u32(output, 2);
+        write_u16(output, 100);
+        output.close();
+        REQUIRE_THROWS(transcribe::read_wav(path));
+    }
+    const auto invalid = temporary.path / "invalid.wav";
+    {
+        std::ofstream output(invalid);
+        output << "Not a WAV file";
+    }
+    REQUIRE_THROWS(transcribe::read_audio(invalid));
+#ifndef TRANSCRIBE_ENABLE_FFMPEG
+    const auto compressed = temporary.path / "unsupported.mp3";
+    REQUIRE_THROWS(transcribe::read_audio(compressed));
+#endif
+}
+
+TEST_CASE("evaluation regressions validate analysis realtime and streaming parameters", "[evaluation]") {
+    transcribe::AudioBuffer audio{44100, std::vector<float>(4410)};
+    transcribe::AnalysisOptions analysis;
+    analysis.maximum_pitches_per_frame = 0;
+    REQUIRE_THROWS(transcribe::transcribe_monophonic(audio, analysis));
+    analysis.maximum_pitches_per_frame = 6;
+    for (const double threshold : {0.0, -0.1, 1.1, std::numeric_limits<double>::quiet_NaN()}) {
+        analysis.spectral_threshold = threshold;
+        REQUIRE_THROWS(transcribe::transcribe_monophonic(audio, analysis));
+    }
+    REQUIRE_THROWS(transcribe::transcribe_monophonic({0, {}}));
+    for (const double latency : {0.0, 19.0, 51.0, std::numeric_limits<double>::quiet_NaN()}) {
+        transcribe::RealtimeOptions options;
+        options.latency_ms = latency;
+        REQUIRE_THROWS(transcribe::RealtimeTranscriber{options});
+    }
+    for (const double chunk : {0.0, 0.99, 301.0, std::numeric_limits<double>::infinity()}) {
+        transcribe::StreamingOptions options;
+        options.chunk_seconds = chunk;
+        REQUIRE_THROWS(transcribe::transcribe_wav_streaming("unused.wav", options));
+    }
+    for (const double overlap : {0.0, 0.24, 15.0, std::numeric_limits<double>::quiet_NaN()}) {
+        transcribe::StreamingOptions options;
+        options.overlap_seconds = overlap;
+        REQUIRE_THROWS(transcribe::transcribe_wav_streaming("unused.wav", options));
+    }
+}
+
+TEST_CASE("evaluation regressions tolerate clipped notes without invalid events", "[evaluation]") {
+    transcribe::AudioBuffer audio{22050, std::vector<float>(22050)};
+    for (std::size_t i = 0; i < audio.samples.size(); ++i) {
+        audio.samples[i] = static_cast<float>(std::clamp(
+            4.0 * std::sin(2.0 * std::numbers::pi * 440.0 * i / audio.sample_rate), -1.0, 1.0));
+    }
+    const auto notes = transcribe::transcribe_monophonic(audio);
+    REQUIRE_FALSE(notes.empty());
+    for (const auto& note : notes) {
+        REQUIRE(std::isfinite(note.start_seconds));
+        REQUIRE(std::isfinite(note.duration_seconds));
+        REQUIRE(std::isfinite(note.confidence));
+        REQUIRE(note.duration_seconds > 0);
+        REQUIRE(note.start_seconds >= 0);
+        REQUIRE(note.start_seconds + note.duration_seconds <= 1.01);
+        REQUIRE(note.midi_pitch == 69);
+    }
+}
+
+TEST_CASE("evaluation regressions preserve a held note across long WAV chunks", "[evaluation]") {
+    TemporaryDirectory temporary;
+    const auto path = temporary.path / "long.wav";
+    create_pcm16_wav(path, 440.0, 31.0, 8000);
+    transcribe::StreamingOptions options;
+    std::size_t largest_block = 0;
+    std::size_t total = 0;
+    options.audio_callback = [&](const transcribe::AudioBlockView& block) {
+        largest_block = std::max(largest_block, block.samples.size());
+        total += block.samples.size();
+    };
+    const auto result = transcribe::transcribe_wav_streaming(path, options);
+    REQUIRE(total == 31 * 8000);
+    REQUIRE(largest_block <= 4096);
+    REQUIRE(result.duration_seconds == 31.0);
+    REQUIRE(result.notes.size() == 1);
+    REQUIRE(result.notes.front().midi_pitch == 69);
+    REQUIRE(result.notes.front().start_seconds < 0.1);
+    REQUIRE(result.notes.front().duration_seconds > 30.5);
+}
+
+TEST_CASE("evaluation regressions sweep note onsets around streaming core boundaries", "[evaluation]") {
+    TemporaryDirectory temporary;
+    constexpr std::uint32_t rate = 11025;
+    for (const double onset : {0.70, 0.80, 0.875, 0.95, 1.05}) {
+        const auto path = temporary.path / ("boundary-" + std::to_string(onset) + ".wav");
+        const auto count = rate * 3;
+        std::ofstream output(path, std::ios::binary);
+        output.write("RIFF", 4);
+        write_u32(output, 36 + count * 2);
+        output.write("WAVEfmt ", 8);
+        write_u32(output, 16);
+        write_u16(output, 1);
+        write_u16(output, 1);
+        write_u32(output, rate);
+        write_u32(output, rate * 2);
+        write_u16(output, 2);
+        write_u16(output, 16);
+        output.write("data", 4);
+        write_u32(output, count * 2);
+        for (std::uint32_t i = 0; i < count; ++i) {
+            const double time = static_cast<double>(i) / rate;
+            const double sample = time >= onset && time < onset + 1.0
+                ? 0.5 * std::sin(2.0 * std::numbers::pi * 440.0 * time) : 0.0;
+            write_u16(output, static_cast<std::uint16_t>(static_cast<std::int16_t>(sample * 32767)));
+        }
+        output.close();
+        transcribe::StreamingOptions options;
+        options.chunk_seconds = 1.0;
+        options.overlap_seconds = 0.25;
+        const auto result = transcribe::transcribe_wav_streaming(path, options);
+        INFO("Onset relative to chunk core boundary: " << onset);
+        REQUIRE_FALSE(result.notes.empty());
+        // Fragmentation is measured as event false positives, not assumed absent.
+        REQUIRE(result.notes.size() <= 4);
+        REQUIRE(std::all_of(result.notes.begin(), result.notes.end(), [](const auto& n) {
+            return n.midi_pitch == 69 && std::isfinite(n.duration_seconds) &&
+                   n.duration_seconds > 0;
+        }));
+        REQUIRE(std::is_sorted(result.notes.begin(), result.notes.end(),
+            [](const auto& left, const auto& right) { return left.start_seconds < right.start_seconds; }));
+        REQUIRE(result.notes.front().start_seconds >= 0);
+        REQUIRE(std::abs(result.notes.front().start_seconds - onset) < 0.25);
+        double detected_duration = 0;
+        for (const auto& n : result.notes) detected_duration += n.duration_seconds;
+        REQUIRE(detected_duration > 0.5);
+        REQUIRE(result.notes.back().start_seconds + result.notes.back().duration_seconds <= 3.01);
+    }
 }
 
 #ifdef TRANSCRIBE_ENABLE_ONNX

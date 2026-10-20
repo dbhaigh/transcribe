@@ -36,6 +36,12 @@ jobs:
           cmake --build build-webview2 --config Release --parallel
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-windows
+          path: build/evaluation/*
+          if-no-files-found: error
       - name: Package WebView2 workstation
         run: cpack --config build-webview2\CPackConfig.cmake -G ZIP -C Release -B build-webview2\packages
       - uses: actions/upload-artifact@v4
@@ -67,12 +73,19 @@ jobs:
         run: >-
           cmake -S . -B build
           -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+          -DCMAKE_BUILD_TYPE=Release
           -DTRANSCRIBE_ENABLE_FFMPEG=${{ matrix.ffmpeg }}
           -DTRANSCRIBE_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-linux-${{ matrix.compiler }}-ffmpeg-${{ matrix.ffmpeg }}
+          path: build/evaluation/*
+          if-no-files-found: error
       - name: Decode a compressed fixture
         if: matrix.ffmpeg == 'ON'
         run: |
@@ -108,8 +121,15 @@ jobs:
         run: >-
           cmake -S . -B build
           -DTRANSCRIBE_ENABLE_ONNX=ON
+          -DCMAKE_BUILD_TYPE=Release
           -DTRANSCRIBE_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-onnx-build
+          path: build/evaluation/*
+          if-no-files-found: error
