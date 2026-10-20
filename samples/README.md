@@ -10,7 +10,10 @@ dataset](https://doi.org/10.5281/zenodo.3371780) is licensed CC BY 4.0
 (Qingyang Xi et al., ISMIR 2018). The full mono-microphone archive is about
 657 MB; no excerpt is redistributed here. Download the archive from Zenodo
 and follow its attribution terms before adding any derived recording to this
-repository.
+repository. The Python evaluation workflow downloads neither archive
+automatically and keeps all recordings outside the repository; see
+[python/README.md](../python/README.md) for commands, checksum validation, and
+the scoring protocol.
 
 Regenerate with Python 3:
 

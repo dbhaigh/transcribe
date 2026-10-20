@@ -1,9 +1,10 @@
 # Transcribe
 
-Transcribe is a C++20 CLI and native Windows GUI for turning audio into a
-first-pass musical score and standard-tuning guitar tablature. Version 0.1.1
-provides a dependency-light WAV/YIN default, optional ONNX inference, optional
-FFmpeg decoding, and optional Windows ASIO capture.
+Transcribe is a C++20 CLI and Windows GUI for turning audio into a first-pass
+musical score and standard-tuning guitar tablature. Version 0.1.2 adds an
+optional WebView2 interface and reproducible real-recording evaluation while
+retaining the dependency-light WAV/YIN default, optional ONNX inference,
+optional FFmpeg decoding, and optional Windows ASIO capture.
 
 This release is an early transcription aid, not a commercial-grade
 polyphonic automatic music transcription (AMT) system. The built-in tracker is
@@ -25,7 +26,7 @@ WAV / optional FFmpeg       Windows ASIO
           /            |             \
      MusicXML       guitar tab       MIDI
           \            |             /
-                  CLI / Win32 GUI
+             CLI / Win32 or WebView2 GUI
 ```
 
 The default executable and core library use only the C++ standard library.
@@ -81,17 +82,40 @@ inputs still use full-buffer inference/decoding.
 
 ## Windows GUI
 
-On Windows, the build also creates `transcribe-gui`. It uses native Win32
-controls and provides file pickers, drag-and-drop, an activity/progress
-indicator, a rolling note preview during ASIO capture, a final note preview,
-remembered paths, and an open-output-folder action. The ONNX/polyphonic
-controls are only enabled in builds with ONNX Runtime.
+On Windows, the default build creates `transcribe-gui` with native Win32
+controls. It provides file pickers, drag-and-drop, progress, a rolling note
+preview during ASIO capture, remembered paths, and an open-output-folder
+action.
+
+An optional WebView2 front end provides a responsive dark interface, a
+pitch-versus-time note preview, live progress, and the same file, ASIO, model,
+and export controls. The UI is local HTML/CSS/JavaScript; all audio decoding,
+analysis, and export remain in the shared C++ backend. The option is off by
+default so the normal build stays dependency-light.
 
 ```powershell
 .\build\Release\transcribe-gui.exe
 ```
 
 ## Optional integrations
+
+### WebView2 GUI
+
+Install the Microsoft Edge WebView2 Runtime and extract the
+`Microsoft.Web.WebView2` NuGet package. Then point CMake to the extracted
+package root:
+
+```powershell
+cmake -S . -B build-webview2 `
+  -DTRANSCRIBE_ENABLE_WEBVIEW2=ON `
+  -DTRANSCRIBE_WEBVIEW2_SDK_ROOT="C:\path\to\Microsoft.Web.WebView2"
+cmake --build build-webview2 --config Release --target transcribe-gui
+```
+
+The build copies `WebView2Loader.dll`, its package license/notice, and the local
+`ui/` assets beside the executable. The Evergreen WebView2 Runtime must be
+installed on each target machine. To keep using the native Win32 form, leave
+`TRANSCRIBE_ENABLE_WEBVIEW2` off.
 
 ### ONNX Runtime
 
@@ -100,7 +124,10 @@ then configure with `-DTRANSCRIBE_ENABLE_ONNX=ON`. Pass `--model model.onnx` to
 use the model. `--polyphonic` requests independent per-pitch probabilities and
 greedy multi-pitch peak picking. The built-in monophonic YIN path remains
 selectable by omitting `--model`. The model input/output contract is
-versioned in [python/README.md](python/README.md).
+versioned in [python/README.md](python/README.md). A compatible Spotify Basic
+Pitch ONNX model is bundled at `python/models/basic_pitch.onnx`; with ONNX
+enabled, use `--model python/models/basic_pitch.onnx --polyphonic` for
+polyphonic inference.
 
 ### FFmpeg
 
@@ -139,12 +166,18 @@ driver, sample-rate support, and buffer configuration.
 ## Accuracy and known limitations
 
 - The built-in tracker is monophonic; chords require a trained ONNX model.
+- On the GuitarSet v1.1.0 diagnostic evaluation, the bundled Basic Pitch
+  model scored 14.58% strict note-event F1 and 72.97% 10 ms frame F1 at default
+  thresholds. This shows useful pitch activity but weak note boundaries and
+  substantial false positives; review exported notes. The evaluation and
+  possible training-data overlap are documented in [python/README.md](python/README.md).
 - YIN confidence, adaptive gating, and spectral-flux/energy onsets are
   heuristics. Distortion, vibrato, reverberation, noisy rooms, and overlapping
   instruments can still create missed or spurious notes.
-- The ONNX path consumes one full audio tensor per request; it is not a
-  persistent streaming neural inference engine. ONNX and FFmpeg decoding
-  currently retain the full decoded input.
+- The ONNX path consumes a full decoded input per request; it is not a
+  persistent streaming neural inference engine. The bundled Basic Pitch model
+  uses overlapping fixed windows and supports piano-range MIDI 28–96, while
+  other ONNX models must follow the generic contract or have an adapter.
 - Tempo, meter, and key are approximate estimates from note events. They are
   not guaranteed musical analysis and should be reviewed before engraving.
   The CLI, GUI summary, and JSON output expose inference flags and heuristic
@@ -165,8 +198,10 @@ driver, sample-rate support, and buffer configuration.
 The `samples/` directory contains short generated tone/phrase WAV files and
 their expected pitch-event lists for repeatable smoke tests. They are
 synthetic signals, not representative recordings; use them to check build and
-pipeline behavior, not to estimate real-world accuracy. See the sample README
-for provenance and license notes.
+pipeline behavior, not to estimate real-world accuracy. For a reproducible
+real-recording evaluation against GuitarSet, see the procedure in
+[python/README.md](python/README.md). See the sample README for fixture
+provenance and license notes.
 
 ## Contributing
 

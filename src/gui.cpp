@@ -23,6 +23,8 @@
 #include <thread>
 #include <vector>
 
+#include "gui_transcription.hpp"
+
 namespace {
 
 constexpr int id_mode = 100;
@@ -309,77 +311,45 @@ void start_transcription(AppState& state) {
                                           : L"Loading and analyzing audio...");
     SendMessageW(state.progress, PBM_SETPOS, 0, 0);
 
-    state.worker = std::jthread([window = state.window, use_asio, streaming_wav,
-                                 capture_seconds, input_path, model_path, musicxml_path,
-                                 tab_path, midi_path
-#ifdef TRANSCRIBE_ENABLE_ONNX
-                                 , polyphonic
-#endif
-                                 ]
+    transcribe::gui::Request request;
+    request.use_asio = use_asio;
+    request.polyphonic = polyphonic;
+    request.capture_seconds = capture_seconds;
+    request.input_path = input_path;
+    request.model_path = model_path;
+    request.musicxml_path = musicxml_path;
+    request.tab_path = tab_path;
+    request.midi_path = midi_path;
+
+    state.worker = std::jthread([window = state.window, request = std::move(request)]
                                 (std::stop_token stop_token) {
         auto result = std::make_unique<WorkResult>();
         try {
-            const auto report_progress = [window](double progress) {
+            const auto progress_callback = [window](double progress, const std::string&) {
                 PostMessageW(window, message_progress, static_cast<WPARAM>(
                     std::clamp(static_cast<int>(progress * 100.0), 0, 100)), 0);
             };
-            std::vector<transcribe::Note> notes;
-            if (streaming_wav) {
-                transcribe::StreamingOptions stream_options;
-                stream_options.analysis.progress_callback = report_progress;
-                notes = transcribe::transcribe_wav_streaming(input_path, stream_options).notes;
-            } else {
-                transcribe::AudioBuffer audio = use_asio
-                    ? transcribe::capture_asio(capture_seconds, stop_token,
-                    [report_progress](double progress) { report_progress(progress * 0.35); },
-                    [window](double offset, const transcribe::AudioBuffer& snapshot) {
-                        auto notes = transcribe::transcribe_monophonic(snapshot);
-                        std::wostringstream text;
-                        text << L"Live notes (recent audio):\r\n";
-                        const std::size_t first = notes.size() > 35 ? notes.size() - 35 : 0;
-                        for (std::size_t i = first; i < notes.size(); ++i) {
-                            text << std::fixed << std::setprecision(2)
-                                 << offset + notes[i].start_seconds << L"s  "
-                                 << to_wide(notes[i].name.c_str()) << L"\r\n";
-                        }
-                        auto preview = std::make_unique<LivePreview>();
-                        preview->text = text.str();
-                        if (PostMessageW(window, message_live_preview, 0,
-                                         reinterpret_cast<LPARAM>(preview.get()))) {
-                            preview.release();
-                        }
-                    })
-                    : transcribe::read_audio(input_path);
-                report_progress(0.4);
-                if (model_path.empty()) {
-                    transcribe::AnalysisOptions analysis_options;
-                    analysis_options.progress_callback = [report_progress](double progress) {
-                        report_progress(0.4 + progress * 0.6);
-                    };
-                    notes = transcribe::transcribe_monophonic(audio, analysis_options);
-                } else {
-#ifdef TRANSCRIBE_ENABLE_ONNX
-                    transcribe::OnnxOptions model_options;
-                    model_options.polyphonic = polyphonic;
-                    model_options.independent_probabilities = polyphonic;
-                    model_options.progress_callback = [report_progress](double progress) {
-                        report_progress(0.4 + progress * 0.6);
-                    };
-                    notes = transcribe::transcribe_with_onnx(audio, model_path, model_options);
-#else
-                    throw std::runtime_error("ONNX Runtime support is disabled.");
-#endif
-                }
-            }
-            if (notes.empty()) {
-                throw std::runtime_error("No stable pitches were detected in the input.");
-            }
-            const auto metadata = transcribe::infer_score_metadata(notes);
-            transcribe::write_musicxml(musicxml_path, notes, metadata);
-            transcribe::write_guitar_tab(tab_path, notes);
-            if (!midi_path.empty()) {
-                transcribe::write_midi(midi_path, notes, metadata);
-            }
+            const auto live_preview_callback =
+                [window](double offset, const std::vector<transcribe::Note>& notes) {
+                    std::wostringstream text;
+                    text << L"Detected notes:\r\n";
+                    const std::size_t first = notes.size() > 35 ? notes.size() - 35 : 0;
+                    for (std::size_t i = first; i < notes.size(); ++i) {
+                        text << std::fixed << std::setprecision(2)
+                             << offset + notes[i].start_seconds << L"s  "
+                             << to_wide(notes[i].name.c_str()) << L"\r\n";
+                    }
+                    auto preview = std::make_unique<LivePreview>();
+                    preview->text = text.str();
+                    if (PostMessageW(window, message_live_preview, 0,
+                                     reinterpret_cast<LPARAM>(preview.get()))) {
+                        preview.release();
+                    }
+                };
+            const auto transcription = transcribe::gui::run_transcription(
+                request, stop_token, progress_callback, live_preview_callback);
+            const auto& notes = transcription.notes;
+            const auto& metadata = transcription.metadata;
             result->success = true;
             std::wostringstream summary;
             summary << L"Detected " << notes.size() << L" notes. Tempo: ";
@@ -405,10 +375,10 @@ void start_transcription(AppState& state) {
             } else {
                 summary << L"uncertain; C major default";
             }
-            summary << L".\r\nMusicXML: " << musicxml_path.wstring()
-                    << L"\r\nGuitar tab: " << tab_path.wstring();
-            if (!midi_path.empty()) {
-                summary << L"\r\nMIDI: " << midi_path.wstring();
+            summary << L".\r\nMusicXML: " << request.musicxml_path.wstring()
+                    << L"\r\nGuitar tab: " << request.tab_path.wstring();
+            if (!request.midi_path.empty()) {
+                summary << L"\r\nMIDI: " << request.midi_path.wstring();
             }
             result->message = summary.str();
             std::wostringstream note_list;

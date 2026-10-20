@@ -10,6 +10,7 @@
 #include <numbers>
 #include <numeric>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -328,6 +329,150 @@ std::vector<int> greedy_peaks(const float* values, std::size_t pitch_count,
         }
     }
     return selected;
+}
+
+std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session& session,
+                                         const OnnxOptions& options) {
+    constexpr std::uint32_t sample_rate = 22050;
+    constexpr std::size_t window_samples = 43844;
+    constexpr std::size_t fft_hop = 256;
+    constexpr std::size_t overlap_frames = 30;
+    constexpr std::size_t edge_frames = overlap_frames / 2;
+    constexpr std::size_t hop_samples = window_samples - overlap_frames * fft_hop;
+    constexpr std::size_t output_frames = 172;
+    constexpr std::size_t usable_frames = output_frames - overlap_frames;
+    constexpr std::size_t first_supported_pitch = 7; // MIDI 28 in Basic Pitch's MIDI 21 range.
+    constexpr std::size_t supported_pitches = 69;     // MIDI 28 through 96.
+    constexpr double frame_step = static_cast<double>(fft_hop) / sample_rate;
+
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto input_name = session.GetInputNameAllocated(0, allocator);
+    const std::size_t output_count = session.GetOutputCount();
+    std::vector<Ort::AllocatedStringPtr> owned_output_names;
+    std::vector<const char*> output_names;
+    owned_output_names.reserve(output_count);
+    output_names.reserve(output_count);
+    std::size_t note_output_index = output_count;
+    for (std::size_t i = 0; i < output_count; ++i) {
+        owned_output_names.emplace_back(session.GetOutputNameAllocated(i, allocator));
+        output_names.push_back(owned_output_names.back().get());
+        if (std::string_view(output_names.back()) == "StatefulPartitionedCall:1") {
+            note_output_index = i;
+        }
+    }
+    if (note_output_index == output_count) {
+        throw std::runtime_error(
+            "Basic Pitch ONNX model is missing its StatefulPartitionedCall:1 note output.");
+    }
+
+    const auto model_audio = resample_linear(audio, sample_rate);
+    std::vector<float> padded(edge_frames * fft_hop + model_audio.samples.size(), 0.0f);
+    std::copy(model_audio.samples.begin(), model_audio.samples.end(),
+              padded.begin() + static_cast<std::ptrdiff_t>(edge_frames * fft_hop));
+    const std::size_t window_count =
+        (padded.size() + hop_samples - 1) / hop_samples;
+    std::vector<std::array<double, supported_pitches>> frame_probabilities;
+    frame_probabilities.reserve(window_count * usable_frames);
+    std::vector<float> window(window_samples, 0.0f);
+    const std::array<std::int64_t, 3> input_shape{
+        1, static_cast<std::int64_t>(window_samples), 1};
+    auto memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
+    for (std::size_t window_index = 0; window_index < window_count; ++window_index) {
+        const std::size_t window_start = window_index * hop_samples;
+        std::fill(window.begin(), window.end(), 0.0f);
+        if (window_start < padded.size()) {
+            const std::size_t count =
+                std::min(window_samples, padded.size() - window_start);
+            std::copy_n(padded.begin() + static_cast<std::ptrdiff_t>(window_start),
+                        count, window.begin());
+        }
+        auto input_tensor = Ort::Value::CreateTensor<float>(
+            memory_info, window.data(), window.size(), input_shape.data(),
+            input_shape.size());
+        const char* input_names[] = {input_name.get()};
+        auto outputs = session.Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1,
+                                  output_names.data(), output_names.size());
+        if (note_output_index >= outputs.size() || !outputs[note_output_index].IsTensor()) {
+            throw std::runtime_error("Basic Pitch note output is not a tensor.");
+        }
+        const auto output_info =
+            outputs[note_output_index].GetTensorTypeAndShapeInfo();
+        const auto shape = output_info.GetShape();
+        if (output_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+            shape.size() != 3 || shape[0] != 1 ||
+            shape[1] != static_cast<std::int64_t>(output_frames) ||
+            shape[2] != 88) {
+            throw std::runtime_error(
+                "Basic Pitch note output must be float32 with shape [1, 172, 88].");
+        }
+        const float* activations = outputs[note_output_index].GetTensorData<float>();
+        for (std::size_t frame = edge_frames; frame < output_frames - edge_frames; ++frame) {
+            std::array<double, supported_pitches> probabilities{};
+            const float* row = activations + frame * 88 + first_supported_pitch;
+            for (std::size_t pitch = 0; pitch < supported_pitches; ++pitch) {
+                probabilities[pitch] = clamp_probability(row[pitch]);
+            }
+            frame_probabilities.push_back(probabilities);
+        }
+        if (options.progress_callback) {
+            options.progress_callback(0.5 + 0.4 *
+                static_cast<double>(window_index + 1) / window_count);
+        }
+    }
+
+    // Match Basic Pitch's overlap stitching length, then decode each pitch as its own voice.
+    const std::size_t expected_frames = std::min(
+        frame_probabilities.size(),
+        static_cast<std::size_t>(static_cast<double>(model_audio.samples.size()) /
+                                 hop_samples * usable_frames));
+    const double duration_seconds =
+        static_cast<double>(audio.samples.size()) / audio.sample_rate;
+    const auto onsets = detect_onsets(preprocess_audio(audio));
+    std::vector<std::vector<PitchFrame>> pitch_frames(supported_pitches);
+    for (std::size_t frame = 0; frame < expected_frames; ++frame) {
+        const auto& probabilities = frame_probabilities[frame];
+        std::vector<int> selected;
+        if (options.polyphonic) {
+            std::array<float, supported_pitches> values{};
+            std::transform(probabilities.begin(), probabilities.end(), values.begin(),
+                           [](double value) { return static_cast<float>(value); });
+            selected = greedy_peaks(values.data(), supported_pitches, true,
+                                    options.polyphonic_threshold,
+                                    options.maximum_pitches_per_frame);
+        } else {
+            const auto best = static_cast<int>(
+                std::max_element(probabilities.begin(), probabilities.end()) -
+                probabilities.begin());
+            if (probabilities[static_cast<std::size_t>(best)] >=
+                options.polyphonic_threshold) {
+                selected.push_back(best);
+            }
+        }
+        const double time = frame * frame_step;
+        for (std::size_t pitch = 0; pitch < supported_pitches; ++pitch) {
+            const bool voiced = std::find(selected.begin(), selected.end(),
+                                          static_cast<int>(pitch)) != selected.end();
+            const double confidence = probabilities[pitch];
+            pitch_frames[pitch].push_back(
+                {voiced ? static_cast<int>(pitch) + 28 : -1, time,
+                 voiced ? confidence : 0.0, voiced ? confidence : 0.0});
+        }
+    }
+
+    std::vector<Note> notes;
+    for (auto& frames : pitch_frames) {
+        auto detected = notes_from_frames(frames, duration_seconds, onsets,
+                                          options.minimum_confidence);
+        notes.insert(notes.end(), detected.begin(), detected.end());
+    }
+    std::sort(notes.begin(), notes.end(), [](const Note& left, const Note& right) {
+        if (left.start_seconds != right.start_seconds) {
+            return left.start_seconds < right.start_seconds;
+        }
+        return left.midi_pitch < right.midi_pitch;
+    });
+    return notes;
 }
 #endif
 
@@ -970,6 +1115,19 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
     }
     const auto model_input_audio = resample_linear(audio, model_sample_rate);
     auto session = load_onnx_session(model_path);
+    const auto input_info = session->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+    const auto model_input_shape = input_info.GetShape();
+    if (model_input_shape.size() == 3 && model_input_shape[1] == 43844 &&
+        model_input_shape[2] == 1) {
+        if (options.progress_callback) {
+            options.progress_callback(0.1);
+        }
+        auto notes = transcribe_basic_pitch(audio, *session, options);
+        if (options.progress_callback) {
+            options.progress_callback(1.0);
+        }
+        return notes;
+    }
     Ort::AllocatorWithDefaultOptions allocator;
     auto input_name = session->GetInputNameAllocated(0, allocator);
     const std::size_t output_count = session->GetOutputCount();

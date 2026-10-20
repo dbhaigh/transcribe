@@ -1,10 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
-project(transcribe VERSION 0.1.1 LANGUAGES CXX)
+project(transcribe VERSION 0.1.2 LANGUAGES CXX)
 
 option(TRANSCRIBE_ENABLE_ASIO "Build real-time capture using RtAudio's ASIO backend" OFF)
 option(TRANSCRIBE_ENABLE_ONNX "Build ONNX Runtime model inference support" OFF)
 option(TRANSCRIBE_ENABLE_FFMPEG "Enable FFmpeg decoding for compressed audio formats" OFF)
+option(TRANSCRIBE_ENABLE_WEBVIEW2 "Use the WebView2 GUI instead of the native Win32 form" OFF)
 option(TRANSCRIBE_BUILD_TESTS "Build Catch2-based unit tests" OFF)
+
+if(TRANSCRIBE_ENABLE_WEBVIEW2 AND NOT WIN32)
+    message(FATAL_ERROR "The WebView2 GUI is supported only on Windows.")
+endif()
 
 add_library(transcribe_core STATIC
     src/audio_file.cpp
@@ -22,9 +27,58 @@ add_executable(transcribe src/main.cpp)
 target_link_libraries(transcribe PRIVATE transcribe_core)
 
 if(WIN32)
-    add_executable(transcribe-gui WIN32 src/gui.cpp)
-    target_link_libraries(transcribe-gui PRIVATE transcribe_core comdlg32 user32 gdi32
-        comctl32 shell32)
+    add_library(transcribe_gui_backend STATIC src/gui_transcription.cpp)
+    target_link_libraries(transcribe_gui_backend PUBLIC transcribe_core)
+    target_compile_features(transcribe_gui_backend PUBLIC cxx_std_20)
+
+    if(TRANSCRIBE_ENABLE_WEBVIEW2)
+        set(TRANSCRIBE_WEBVIEW2_SDK_ROOT "" CACHE PATH
+            "Root of an extracted Microsoft.Web.WebView2 NuGet package")
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(_webview2_arch x64)
+        else()
+            set(_webview2_arch x86)
+        endif()
+        find_path(WEBVIEW2_INCLUDE_DIR WebView2.h
+            HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT
+            PATH_SUFFIXES build/native/include include)
+        find_file(WEBVIEW2_LOADER_DLL WebView2Loader.dll
+            HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT
+            PATH_SUFFIXES "runtimes/win-${_webview2_arch}/native"
+                          "build/native/${_webview2_arch}")
+        find_file(WEBVIEW2_LICENSE_FILE LICENSE.txt
+            HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT)
+        find_file(WEBVIEW2_NOTICE_FILE NOTICE.txt
+            HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT)
+        if(NOT WEBVIEW2_INCLUDE_DIR OR NOT WEBVIEW2_LOADER_DLL OR
+           NOT WEBVIEW2_LICENSE_FILE OR NOT WEBVIEW2_NOTICE_FILE)
+            message(FATAL_ERROR
+                "WebView2 SDK not found. Set TRANSCRIBE_WEBVIEW2_SDK_ROOT to an extracted "
+                "Microsoft.Web.WebView2 NuGet package.")
+        endif()
+        add_executable(transcribe-gui WIN32 src/gui_webview.cpp)
+        target_include_directories(transcribe-gui SYSTEM PRIVATE "${WEBVIEW2_INCLUDE_DIR}")
+        target_compile_definitions(transcribe-gui PRIVATE TRANSCRIBE_ENABLE_WEBVIEW2=1)
+        set_property(SOURCE src/gui_webview.cpp APPEND PROPERTY OBJECT_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/styles.css"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/app.js")
+        target_link_libraries(transcribe-gui PRIVATE transcribe_gui_backend
+            comdlg32 user32 gdi32 shell32 ole32)
+        add_custom_command(TARGET transcribe-gui POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${WEBVIEW2_LOADER_DLL}" "$<TARGET_FILE_DIR:transcribe-gui>/WebView2Loader.dll"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${WEBVIEW2_LICENSE_FILE}" "$<TARGET_FILE_DIR:transcribe-gui>/WebView2-LICENSE.txt"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${WEBVIEW2_NOTICE_FILE}" "$<TARGET_FILE_DIR:transcribe-gui>/WebView2-NOTICE.txt"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/ui" "$<TARGET_FILE_DIR:transcribe-gui>/ui")
+    else()
+        add_executable(transcribe-gui WIN32 src/gui.cpp)
+        target_link_libraries(transcribe-gui PRIVATE transcribe_gui_backend
+            comdlg32 user32 gdi32 comctl32 shell32)
+    endif()
     target_compile_definitions(transcribe-gui PRIVATE UNICODE _UNICODE)
 endif()
 
@@ -38,8 +92,10 @@ endforeach()
 if(WIN32)
     if(MSVC)
         target_compile_options(transcribe-gui PRIVATE /W4 /permissive-)
+        target_compile_options(transcribe_gui_backend PRIVATE /W4 /permissive-)
     else()
         target_compile_options(transcribe-gui PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(transcribe_gui_backend PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endif()
 
@@ -96,6 +152,13 @@ if(TRANSCRIBE_BUILD_TESTS)
     add_executable(transcribe-tests tests/transcribe_tests.cpp)
     target_link_libraries(transcribe-tests PRIVATE transcribe_core Catch2::Catch2WithMain)
     target_compile_features(transcribe-tests PRIVATE cxx_std_20)
+    if(TRANSCRIBE_ENABLE_ONNX)
+        file(TO_CMAKE_PATH
+            "${CMAKE_CURRENT_SOURCE_DIR}/python/models/basic_pitch.onnx"
+            BASIC_PITCH_MODEL_PATH)
+        target_compile_definitions(transcribe-tests PRIVATE
+            TRANSCRIBE_BASIC_PITCH_MODEL_PATH="${BASIC_PITCH_MODEL_PATH}")
+    endif()
     if(MSVC)
         target_compile_options(transcribe-tests PRIVATE /W4 /permissive-)
     else()

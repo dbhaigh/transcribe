@@ -338,3 +338,36 @@ TEST_CASE("single-note material is reported as insufficient for metadata inferen
     REQUIRE(metadata.meter_confidence == 0.0);
     REQUIRE(metadata.key_confidence == 0.0);
 }
+
+#ifdef TRANSCRIBE_ENABLE_ONNX
+TEST_CASE("Basic Pitch ONNX adapter detects a synthetic chord") {
+    constexpr std::uint32_t sample_rate = 22050;
+    constexpr double duration_seconds = 2.5;
+    transcribe::AudioBuffer audio{
+        sample_rate,
+        std::vector<float>(static_cast<std::size_t>(sample_rate * duration_seconds), 0.0f)};
+    constexpr std::array<int, 3> pitches{60, 64, 67};
+    for (std::size_t i = 0; i < audio.samples.size(); ++i) {
+        const double time = static_cast<double>(i) / sample_rate;
+        const double envelope = std::clamp(
+            std::min(time / 0.05, (duration_seconds - time) / 0.05), 0.0, 1.0);
+        for (const int pitch : pitches) {
+            const double frequency = 440.0 * std::pow(2.0, (pitch - 69) / 12.0);
+            audio.samples[i] += static_cast<float>(
+                envelope * 0.22 * std::sin(2.0 * std::numbers::pi * frequency * time));
+        }
+    }
+
+    transcribe::OnnxOptions options;
+    options.polyphonic = true;
+    options.polyphonic_threshold = 0.25;
+    options.minimum_confidence = 0.2;
+    const auto model = std::filesystem::path(TRANSCRIBE_BASIC_PITCH_MODEL_PATH);
+    const auto notes = transcribe::transcribe_with_onnx(audio, model, options);
+    for (const int pitch : pitches) {
+        REQUIRE(std::any_of(notes.begin(), notes.end(), [pitch](const auto& note) {
+            return note.midi_pitch == pitch;
+        }));
+    }
+}
+#endif

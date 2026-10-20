@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Transcribe</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <div>
+          <div class="brand-name">transcribe<span class="brand-dot">.</span></div>
+          <div class="brand-caption">AUDIO TO SCORE</div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <span class="engine-indicator"><i></i><span id="engine-label">C++ analysis engine</span></span>
+        <span class="version">v0.1.2</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="setup-column">
+        <div class="page-heading">
+          <div class="eyebrow">TRANSCRIPTION STUDIO</div>
+          <h1>Turn sound into notation.</h1>
+          <p>Analyze a recording or listen live, then export sheet music and guitar tab.</p>
+        </div>
+
+        <section class="card source-card">
+          <div class="card-heading">
+            <div>
+              <div class="section-kicker">01 <span>INPUT</span></div>
+              <h2>Choose your source</h2>
+            </div>
+            <span class="step-icon" aria-hidden="true">♫</span>
+          </div>
+
+          <div class="segmented" role="group" aria-label="Audio source">
+            <button type="button" class="segment selected" data-mode="file">Audio file</button>
+            <button type="button" class="segment" data-mode="asio" id="asio-mode" disabled>Live ASIO</button>
+          </div>
+
+          <div id="file-source" class="source-fields">
+            <label class="field-label" for="input-path">Recording</label>
+            <div class="path-row">
+              <input id="input-path" autocomplete="off" spellcheck="false" placeholder="Select or drop an audio file">
+              <button class="button button-secondary browse-button" type="button" data-field="input">Browse</button>
+            </div>
+            <div id="drop-zone" class="drop-zone">
+              <span class="drop-icon">↥</span>
+              <span>Drop an audio file here, or <button type="button" class="text-button" id="drop-browse">browse</button></span>
+            </div>
+          </div>
+
+          <div id="asio-source" class="source-fields hidden">
+            <label class="field-label" for="capture-seconds">Capture duration</label>
+            <div class="duration-row">
+              <input id="capture-seconds" type="number" min="0.1" max="300" step="0.5" value="10">
+              <span>seconds</span>
+            </div>
+            <p class="field-hint">Record from the selected Windows ASIO device. Stop early to finalize.</p>
+          </div>
+        </section>
+
+        <section class="card output-card">
+          <div class="card-heading">
+            <div>
+              <div class="section-kicker">02 <span>ANALYSIS & EXPORT</span></div>
+              <h2>Set up your score</h2>
+            </div>
+            <span class="step-icon" aria-hidden="true">⌁</span>
+          </div>
+
+          <label class="field-label" for="model-path">ONNX model <span class="optional">OPTIONAL</span></label>
+          <div class="path-row">
+            <input id="model-path" autocomplete="off" spellcheck="false" placeholder="Use built-in monophonic YIN tracker">
+            <button class="button button-secondary browse-button" type="button" data-field="model" disabled>Browse</button>
+          </div>
+          <label class="check-row" for="polyphonic">
+            <input id="polyphonic" type="checkbox" disabled>
+            <span class="check-custom"></span>
+            <span>Enable polyphonic model inference</span>
+            <span class="tip" title="Requires an ONNX model with independent per-pitch probabilities.">i</span>
+          </label>
+
+          <div class="output-list">
+            <div class="output-item">
+              <div class="output-symbol musicxml-symbol">♪</div>
+              <div class="output-main">
+                <label class="field-label" for="musicxml-path">Sheet music</label>
+                <div class="path-row">
+                  <input id="musicxml-path" autocomplete="off" spellcheck="false" value="transcription.musicxml">
+                  <button class="button button-quiet browse-button" type="button" data-field="musicxml">Choose</button>
+                </div>
+              </div>
+              <span class="file-type">MUSICXML</span>
+            </div>
+            <div class="output-item">
+              <div class="output-symbol tab-symbol">TAB</div>
+              <div class="output-main">
+                <label class="field-label" for="tab-path">Guitar tablature</label>
+                <div class="path-row">
+                  <input id="tab-path" autocomplete="off" spellcheck="false" value="transcription.txt">
+                  <button class="button button-quiet browse-button" type="button" data-field="tab">Choose</button>
+                </div>
+              </div>
+              <span class="file-type">TEXT</span>
+            </div>
+            <div class="output-item">
+              <div class="output-symbol midi-symbol">M</div>
+              <div class="output-main">
+                <label class="field-label" for="midi-path">MIDI file <span class="optional">OPTIONAL</span></label>
+                <div class="path-row">
+                  <input id="midi-path" autocomplete="off" spellcheck="false" placeholder="Not enabled">
+                  <button class="button button-quiet browse-button" type="button" data-field="midi">Choose</button>
+                </div>
+              </div>
+              <span class="file-type">MIDI</span>
+            </div>
+          </div>
+        </section>
+
+        <div class="action-area">
+          <div class="action-row">
+            <button id="transcribe-button" class="button button-primary" type="button">
+              <span class="play-icon">▶</span><span>Transcribe audio</span>
+            </button>
+            <button id="cancel-button" class="button button-stop hidden" type="button">Stop</button>
+            <button id="open-folder-button" class="button button-icon" type="button" title="Open output folder">↗</button>
+          </div>
+          <div class="progress-wrap">
+            <div class="progress-track"><div id="progress-bar"></div></div>
+            <div class="status-row"><span id="status-text">Ready when you are</span><span id="progress-value">0%</span></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="preview-column">
+        <section class="card preview-card">
+          <div class="preview-heading">
+            <div>
+              <div class="section-kicker">LIVE PREVIEW</div>
+              <h2>Your transcription</h2>
+            </div>
+            <span id="preview-badge" class="preview-badge">WAITING</span>
+          </div>
+          <div class="stats-grid">
+            <div class="stat"><span class="stat-label">NOTES</span><strong id="note-count">—</strong></div>
+            <div class="stat"><span class="stat-label">TEMPO</span><strong id="tempo-value">—</strong></div>
+            <div class="stat"><span class="stat-label">KEY</span><strong id="key-value">—</strong></div>
+          </div>
+          <div class="piano-roll-wrap">
+            <div class="roll-labels"><span id="pitch-high">—</span><span>Pitch</span><span id="pitch-low">—</span></div>
+            <canvas id="piano-roll" aria-label="Transcribed notes plotted by time and pitch"></canvas>
+            <div class="roll-time"><span>0s</span><span id="roll-duration">Timeline</span><span id="roll-end">—</span></div>
+            <div id="empty-roll" class="empty-roll">
+              <div class="empty-note">♬</div>
+              <strong>Notes will appear here</strong>
+              <span>Live ASIO notes and completed file results appear here.</span>
+            </div>
+          </div>
+          <div class="notes-heading"><span>NOTE EVENTS</span><span id="confidence-label">CONFIDENCE</span></div>
+          <div id="note-list" class="note-list">
+            <div class="empty-notes">Start a transcription to see detected notes.</div>
+          </div>
+          <div id="result-message" class="result-message hidden"></div>
+        </section>
+        <div class="footer-note"><span class="footer-mark">T</span><span>Analysis runs locally. Your recordings stay on this device.</span></div>
+      </aside>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

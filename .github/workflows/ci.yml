@@ -13,6 +13,21 @@ jobs:
         run: cmake -S . -B build -DTRANSCRIBE_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build --config Release --parallel
+      - name: Build WebView2 GUI
+        shell: pwsh
+        run: |
+          $version = "1.0.4258.31"
+          $package = "$env:RUNNER_TEMP\Microsoft.Web.WebView2.zip"
+          $sdk = "$env:RUNNER_TEMP\webview2-sdk"
+          New-Item -ItemType Directory -Force -Path $sdk | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/$version/microsoft.web.webview2.$version.nupkg" `
+            -OutFile $package
+          Expand-Archive -Path $package -DestinationPath $sdk -Force
+          cmake -S . -B build-webview2 `
+            -DTRANSCRIBE_ENABLE_WEBVIEW2=ON `
+            -DTRANSCRIBE_WEBVIEW2_SDK_ROOT="$sdk"
+          cmake --build build-webview2 --config Release --target transcribe-gui --parallel
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
