@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -75,6 +76,19 @@ struct PitchFrame {
     double amplitude{};
 };
 
+struct FrameEvidenceTrack {
+    // Window-start times are relative to input sample zero; callbacks borrow this track synchronously.
+    std::vector<PitchFrame> frames;
+    double window_seconds{};
+    double hop_seconds{};
+    std::string method;
+    std::string evidence_kind;
+    std::vector<double> spectral_peak_fractions;
+    std::vector<double> raw_values;
+    // Fixed pitch for raw_values, or -1 when raw values follow each frame's selected pitch.
+    int raw_midi_pitch{-1};
+};
+
 struct AudioPreviewData {
     double duration_seconds{};
     std::size_t columns{};
@@ -116,6 +130,8 @@ struct AnalysisOptions {
     double spectral_threshold{0.3};
     std::function<void(double)> progress_callback;
     std::function<void(const AnalysisTimings&)> timing_callback;
+    std::function<void(const FrameEvidenceTrack&)> evidence_callback;
+    std::stop_token cancellation;
 };
 
 struct OnnxOptions {
@@ -127,6 +143,8 @@ struct OnnxOptions {
     std::function<void(double)> progress_callback;
     OnnxExecutionProvider execution_provider{OnnxExecutionProvider::Cpu};
     int device_id{};
+    std::function<void(const FrameEvidenceTrack&)> evidence_callback;
+    std::stop_token cancellation;
 };
 
 struct ScoreMetadata {

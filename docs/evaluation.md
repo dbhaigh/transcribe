@@ -1,5 +1,13 @@
 # Quality and performance evaluation
 
+For the opt-in canonical event API, temporal-decoding parameters, ablations and
+measured event/frame improvements, see [Note-event decoding](decoding.md).
+For adapter compatibility and persistent-session/provider benchmarks, see
+[Model inference](model-inference.md).
+
+For measured DSP optimizations, cold versus in-process warm timings, CPU use
+and peak-memory methodology, see [Performance](performance.md).
+
 The evaluation framework exercises the existing public C++20 engine without
 changing production APIs or CLI behavior. Python 3.10+ and the standard
 library suffice; synthetic runs do not download models, recordings or Python
@@ -244,6 +252,12 @@ No default noisy timing failure threshold is imposed.
 Measured reference snapshots and their limitations are described in
 [the baseline record](../python/evaluation/README.md). Do not overwrite the
 historical GuitarSet results with synthetic or unverified values.
+
+## Live pipeline evaluation
+
+`python/live_evaluation.py` scores the incremental live pipeline and its
+refinement proposal on the same synthetic corpus and matcher, reporting
+latency separately; see [Live transcription](live.md).
 
 ## Licensed real-audio workflow
 

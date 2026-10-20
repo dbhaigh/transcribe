@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <numbers>
@@ -71,6 +72,133 @@ void create_pcm16_wav(const std::filesystem::path& path, double frequency,
 }
 
 } // namespace
+
+TEST_CASE("batched YIN agrees exactly with scalar lag accumulation", "[performance]") {
+    const auto reference = [](std::span<const float> samples, std::uint32_t rate) {
+        transcribe::PitchEstimate result;
+        if (rate < 2000 || samples.size() < 64) return result;
+        double energy = 0;
+        for (const float value : samples) energy += static_cast<double>(value) * value;
+        if (std::sqrt(energy / samples.size()) < .0015) return result;
+        const std::size_t first = std::max<std::size_t>(2, rate / 1000);
+        const std::size_t last = std::min<std::size_t>(samples.size() / 2, rate / 65);
+        std::vector<double> curve(last + 1, 1);
+        double running = 0;
+        for (std::size_t lag = 1; lag <= last; ++lag) {
+            double sum = 0;
+            for (std::size_t i = 0; i + lag < samples.size(); ++i) {
+                const double delta = static_cast<double>(samples[i]) - samples[i + lag];
+                sum += delta * delta;
+            }
+            running += sum;
+            curve[lag] = running > 0 ? sum * lag / running : 1;
+        }
+        std::size_t best = 0;
+        double value = std::numeric_limits<double>::infinity();
+        for (std::size_t lag = first; lag <= last; ++lag) {
+            if (curve[lag] < value) {
+                best = lag;
+                value = curve[lag];
+            }
+            if (curve[lag] < .15) {
+                while (lag < last && curve[lag + 1] < curve[lag]) ++lag;
+                best = lag;
+                value = curve[lag];
+                break;
+            }
+        }
+        if (best == 0 || value > .15) return result;
+        double refined = static_cast<double>(best);
+        if (best > first && best < last) {
+            const double denominator = curve[best - 1] - 2 * curve[best] + curve[best + 1];
+            if (std::abs(denominator) > 1e-9) {
+                refined += std::clamp(.5 * (curve[best - 1] - curve[best + 1]) /
+                                          denominator, -.5, .5);
+            }
+        }
+        const int midi = static_cast<int>(std::lround(69 + 12 * std::log2(rate / refined / 440)));
+        if (midi < 28 || midi > 96) return result;
+        return transcribe::PitchEstimate{midi, std::clamp(1 - value, 0.0, 1.0),
+                                        std::clamp((.15 + .12 - value) / .12, 0.0, 1.0)};
+    };
+    for (const std::uint32_t rate : {2000U, 8000U, 11025U, 44100U, 48000U}) {
+        for (const std::size_t length : {63U, 64U, 65U, 127U, 439U, 1024U, 2048U}) {
+            for (const double frequency : {0.0, 65.406, 110.0, 440.0, 987.77}) {
+                std::vector<float> samples(length);
+                for (std::size_t i = 0; i < length; ++i) {
+                    samples[i] = static_cast<float>(.3 * std::sin(
+                        2 * std::numbers::pi * frequency * i / rate));
+                }
+                const auto expected = reference(samples, rate);
+                const auto actual = transcribe::yin_pitch_estimate(samples, rate);
+                INFO("rate=" << rate << " length=" << length << " frequency=" << frequency);
+                REQUIRE(actual.midi_pitch == expected.midi_pitch);
+                REQUIRE(actual.confidence == expected.confidence);
+                REQUIRE(actual.voicing_probability == expected.voicing_probability);
+            }
+        }
+    }
+}
+
+TEST_CASE("FFT plans and spectral cache preserve concurrent and changed-input results",
+          "[performance]") {
+    transcribe::AudioBuffer audio{11025, std::vector<float>(11025 * 7)};
+    for (std::size_t i = 0; i < audio.samples.size(); ++i) {
+        audio.samples[i] = static_cast<float>(.3 * std::sin(
+            2 * std::numbers::pi * 220 * i / audio.sample_rate));
+    }
+    const auto analyze = [&audio](bool preview, bool parallel) {
+        transcribe::AnalysisOptions options;
+        options.polyphonic = true;
+        options.fast_preview = preview;
+        options.parallel = parallel;
+        return transcribe::transcribe_monophonic(audio, options);
+    };
+    auto first = std::async(std::launch::async, analyze, false, true);
+    auto second = std::async(std::launch::async, analyze, true, false);
+    const auto normal = first.get();
+    const auto preview = second.get();
+    const auto same = [](const auto& left, const auto& right) {
+        REQUIRE(left.size() == right.size());
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            REQUIRE(left[i].midi_pitch == right[i].midi_pitch);
+            REQUIRE(left[i].start_seconds == right[i].start_seconds);
+            REQUIRE(left[i].duration_seconds == right[i].duration_seconds);
+            REQUIRE(left[i].confidence == right[i].confidence);
+        }
+    };
+    same(normal, analyze(false, false));
+    same(preview, analyze(true, true));
+    transcribe::AnalysisOptions options;
+    options.polyphonic = true;
+    bool hit = false;
+    options.timing_callback = [&](const auto& timing) { hit = timing.spectrogram_cache_hit; };
+    (void)transcribe::transcribe_monophonic(audio, options);
+    (void)transcribe::transcribe_monophonic(audio, options);
+    REQUIRE(hit);
+    audio.samples[1234] += .01f;
+    (void)transcribe::transcribe_monophonic(audio, options);
+    REQUIRE_FALSE(hit);
+    audio.sample_rate = 12000;
+    (void)transcribe::transcribe_monophonic(audio, options);
+    REQUIRE_FALSE(hit);
+}
+
+TEST_CASE("FFT plans cover every public audio preview window size", "[performance]") {
+    for (const std::size_t length : {64U, 255U, 256U, 511U, 512U, 1023U, 1024U, 2047U, 2048U}) {
+        std::vector<float> samples(length);
+        for (std::size_t i = 0; i < length; ++i) {
+            samples[i] = static_cast<float>(.5 * std::sin(
+                2 * std::numbers::pi * 440 * i / 22050));
+        }
+        const auto preview = transcribe::make_audio_preview(samples, 22050, 32, 24);
+        REQUIRE(preview.columns > 0);
+        REQUIRE(std::any_of(preview.spectrogram.begin(), preview.spectrogram.end(),
+                            [](float value) { return value > 0; }));
+        REQUIRE(std::all_of(preview.spectrogram.begin(), preview.spectrogram.end(),
+                           [](float value) { return std::isfinite(value); }));
+    }
+}
 
 TEST_CASE("YIN estimates a synthetic concert A with confidence") {
     constexpr std::uint32_t sample_rate = 11025;

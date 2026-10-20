@@ -3,13 +3,17 @@
 #include "transcribe/guitar_tab.hpp"
 #include "transcribe/musicxml.hpp"
 #include "transcribe/transcriber.hpp"
+#include "transcribe/inference.hpp"
+#include "transcribe/live.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cctype>
 #include <cmath>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -20,6 +24,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -32,6 +37,7 @@ struct Options {
     std::optional<std::filesystem::path> midi;
     std::optional<std::filesystem::path> json;
     std::filesystem::path model;
+    std::string backend;
     std::filesystem::path output_directory;
     transcribe::GuitarTabOptions guitar_tab;
     std::optional<double> tempo_bpm;
@@ -52,6 +58,12 @@ struct Options {
     bool preserve_expressive_timing{};
     bool quiet{};
     bool help{};
+    bool live_pipeline{};
+    std::optional<std::filesystem::path> live_events;
+    bool refine{};
+    std::string refine_backend{"builtin:spectral"};
+    std::string refine_mode{"auto"};
+    std::optional<std::filesystem::path> proposal_json;
 };
 
 void print_usage(std::ostream& output) {
@@ -68,6 +80,7 @@ void print_usage(std::ostream& output) {
               "  --midi <path>               Optional Standard MIDI output path\n"
               "  --json <path>               Write notes and analysis metadata as JSON\n"
               "  --model <path.onnx>         Use an ONNX model instead of built-in YIN\n"
+              "  --backend <registry-id>     Opt-in offline model adapter (e.g. builtin:yin)\n"
               "  --provider <name>           ONNX provider: cpu, cuda, directml, or rocm\n"
               "  --device-id <number>        GPU device index for the selected provider\n"
               "  --polyphonic                Enable multi-pitch analysis (built-in or ONNX)\n"
@@ -87,12 +100,20 @@ void print_usage(std::ostream& output) {
               "  --benchmark                 Report analysis time and real-time factor\n"
               "  --config <path>             Load defaults from simple key=value config\n"
               "  --output-dir <directory>    Batch output directory (default: <input>/transcriber-output)\n"
-              "  --quiet                     Suppress progress and per-file summaries\n\n"
+              "  --quiet                     Suppress progress and per-file summaries\n"
+              "  --live-pipeline             Use the incremental live pipeline for WAV replay or --asio\n"
+              "                              (--backend selects a windowed model; default incremental YIN)\n"
+              "  --live-events <path>        Write the original live event stream as JSON lines\n"
+              "  --refine                    After live analysis, run offline refinement\n"
+              "  --refine-backend <id>       Refinement model (default: builtin:spectral)\n"
+              "  --refine-mode <mode>        auto, full or windowed (auto: windowed for onnx:*)\n"
+              "  --proposal-json <path>      Write the refinement proposal; live outputs are unchanged\n\n"
               "Examples:\n"
               "  transcriber guitar.wav --musicxml score.musicxml --tab guitar.txt --midi take.mid\n"
               "  transcriber guitar.wav --model poly.onnx --polyphonic --json notes.json\n"
               "  transcriber --batch samples --output-dir results --benchmark\n"
-              "  transcriber --asio 8 --musicxml live.musicxml --tab live.txt\n";
+              "  transcriber --asio 8 --musicxml live.musicxml --tab live.txt\n"
+              "  transcriber take.wav --live-pipeline --refine --proposal-json proposal.json\n";
 }
 
 std::string trim(std::string value) {
@@ -178,12 +199,12 @@ std::map<std::string, std::string> read_config(const std::filesystem::path& path
 }
 
 void apply_config(Options& options, const std::map<std::string, std::string>& values) {
-    static constexpr std::array<std::string_view, 27> supported_keys{
+    static constexpr std::array<std::string_view, 28> supported_keys{
         "input", "musicxml", "tab", "midi", "json", "model", "provider",
         "device-id", "latency-ms", "tempo", "key-fifths", "mode", "meter",
         "quality", "batch", "output-dir", "asio", "tuning", "capo",
         "tab-alternatives", "preserve-expressive-timing", "fast-preview",
-        "minimum-confidence", "polyphonic", "instrument", "benchmark", "quiet"};
+        "minimum-confidence", "polyphonic", "instrument", "benchmark", "quiet", "backend"};
     for (const auto& [key, value] : values) {
         (void)value;
         if (std::find(supported_keys.begin(), supported_keys.end(), key) ==
@@ -205,6 +226,7 @@ void apply_config(Options& options, const std::map<std::string, std::string>& va
     set_path("midi", options.midi);
     set_path("json", options.json);
     set_path("model", options.model);
+    set_path("backend", options.backend);
     const auto provider = values.find("provider");
     if (provider != values.end()) {
         options.onnx_provider = parse_onnx_provider(provider->second);
@@ -345,6 +367,8 @@ Options parse_options(int argc, char* argv[]) {
             options.json = next_value(i, argc, argv, argument);
         } else if (argument == "--model") {
             options.model = next_value(i, argc, argv, argument);
+        } else if (argument == "--backend") {
+            options.backend = next_value(i, argc, argv, argument);
         } else if (argument == "--provider") {
             options.onnx_provider =
                 parse_onnx_provider(next_value(i, argc, argv, argument));
@@ -419,6 +443,22 @@ Options parse_options(int argc, char* argv[]) {
             options.batch_directory = next_value(i, argc, argv, argument);
         } else if (argument == "--output-dir") {
             options.output_directory = next_value(i, argc, argv, argument);
+        } else if (argument == "--live-pipeline") {
+            options.live_pipeline = true;
+        } else if (argument == "--live-events") {
+            options.live_events = next_value(i, argc, argv, argument);
+        } else if (argument == "--refine") {
+            options.refine = true;
+        } else if (argument == "--refine-backend") {
+            options.refine_backend = next_value(i, argc, argv, argument);
+        } else if (argument == "--refine-mode") {
+            options.refine_mode = next_value(i, argc, argv, argument);
+            if (options.refine_mode != "auto" && options.refine_mode != "full" &&
+                options.refine_mode != "windowed") {
+                throw std::invalid_argument("--refine-mode must be auto, full or windowed.");
+            }
+        } else if (argument == "--proposal-json") {
+            options.proposal_json = next_value(i, argc, argv, argument);
         } else if (argument == "--asio" || argument == "--live") {
             options.asio = true;
             options.capture_seconds = std::stod(next_value(i, argc, argv, argument));
@@ -463,6 +503,24 @@ Options parse_options(int argc, char* argv[]) {
     }
     if (options.asio && options.batch_directory) {
         throw std::invalid_argument("--asio cannot be combined with --batch.");
+    }
+    if (!options.live_pipeline && (options.live_events || options.refine || options.proposal_json)) {
+        throw std::invalid_argument("--live-events, --refine and --proposal-json require --live-pipeline.");
+    }
+    if ((options.proposal_json || options.refine_mode != "auto") && !options.refine) {
+        throw std::invalid_argument("--proposal-json and --refine-mode require --refine.");
+    }
+    if (options.live_pipeline) {
+        if (options.batch_directory) {
+            throw std::invalid_argument("--live-pipeline cannot be combined with --batch.");
+        }
+        if (!options.model.empty() && options.backend.empty()) {
+            throw std::invalid_argument(
+                "--live-pipeline with --model requires an explicit --backend (e.g. onnx:basic-pitch-v1).");
+        }
+        if (options.fast_preview) {
+            throw std::invalid_argument("--fast-preview is not supported by --live-pipeline.");
+        }
     }
     return options;
 }
@@ -540,6 +598,270 @@ std::string progress_bar(double progress) {
            std::to_string(static_cast<int>(progress * 100.0)) + "%";
 }
 
+const char* live_event_kind(transcribe::live::LiveEventKind kind) {
+    using transcribe::live::LiveEventKind;
+    switch (kind) {
+    case LiveEventKind::NoteOn: return "note_on";
+    case LiveEventKind::NoteStabilized: return "note_stabilized";
+    case LiveEventKind::NoteOff: return "note_off";
+    case LiveEventKind::NoteCorrected: return "note_corrected";
+    case LiveEventKind::NoteRetracted: return "note_retracted";
+    case LiveEventKind::AnalysisGap: return "analysis_gap";
+    case LiveEventKind::Status: return "status";
+    }
+    return "unknown";
+}
+
+const char* lifecycle_name(transcribe::EventLifecycle state) {
+    switch (state) {
+    case transcribe::EventLifecycle::Provisional: return "provisional";
+    case transcribe::EventLifecycle::Stabilized: return "stabilized";
+    case transcribe::EventLifecycle::Refined: return "refined";
+    case transcribe::EventLifecycle::ManuallyCorrected: return "manually_corrected";
+    case transcribe::EventLifecycle::Rejected: return "rejected";
+    }
+    return "unknown";
+}
+
+void write_live_note(std::ostream& output, const transcribe::live::LiveNote& note) {
+    output << "{\"id\": \"" << json_escape(note.id) << "\", \"midi\": " << note.midi_pitch
+           << ", \"onset_frame\": " << note.onset_frame << ", \"onset_seconds\": " << note.onset_seconds()
+           << ", \"offset_seconds\": ";
+    if (const auto offset = note.offset_seconds()) output << *offset;
+    else output << "null";
+    output << ", \"sample_rate\": " << note.sample_rate << ", \"state\": \"" << lifecycle_name(note.state)
+           << "\", \"raw_strength\": " << note.raw_strength << ", \"source_model\": \""
+           << json_escape(note.source_model) << "\", \"detection_method\": \""
+           << json_escape(note.detection_method) << "\", \"onset_truncated\": "
+           << (note.onset_truncated ? "true" : "false") << ", \"revision\": " << note.revision << '}';
+}
+
+void write_proposal_json(const std::filesystem::path& path,
+                         const transcribe::InferenceResult<transcribe::live::ScoreProposal>& proposal,
+                         const transcribe::live::ProposalReview* review) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output) throw std::runtime_error("Could not create proposal output: " + path.string());
+    output << std::setprecision(9);
+    if (const auto* failure = std::get_if<transcribe::InferenceError>(&proposal)) {
+        output << "{\"error\": \"" << json_escape(failure->message) << "\"}\n";
+        return;
+    }
+    const auto& value = std::get<transcribe::live::ScoreProposal>(proposal);
+    output << "{\n  \"proposal_id\": \"" << json_escape(value.id) << "\", \"backend\": \""
+           << json_escape(value.backend_id) << "\", \"sample_rate\": " << value.sample_rate
+           << ", \"inference_seconds\": " << value.inference_seconds
+           << ",\n  \"applied\": false, \"base_revision\": " << review->base_revision
+           << ", \"conflicts\": " << review->conflicts << ",\n  \"notes\": [";
+    for (std::size_t i = 0; i < value.notes.size(); ++i) {
+        output << (i ? ",\n    " : "\n    ");
+        write_live_note(output, value.notes[i]);
+    }
+    output << "\n  ],\n  \"changes\": [";
+    for (std::size_t i = 0; i < review->changes.size(); ++i) {
+        const auto& change = review->changes[i];
+        output << (i ? ",\n    " : "\n    ") << "{\"change_id\": \"" << json_escape(change.change_id)
+               << "\", \"kind\": \""
+               << (change.kind == transcribe::live::ProposedChangeKind::Add ? "add" :
+                   change.kind == transcribe::live::ProposedChangeKind::Modify ? "modify" : "remove")
+               << "\", \"note_id\": \"" << json_escape(change.note_id) << "\", \"conflicts_with_manual_edit\": "
+               << (change.conflicts_with_manual_edit ? "true" : "false") << ", \"current\": ";
+        if (change.current) write_live_note(output, *change.current);
+        else output << "null";
+        output << ", \"proposed\": ";
+        if (change.proposed) write_live_note(output, *change.proposed);
+        else output << "null";
+        output << '}';
+    }
+    output << "\n  ]\n}\n";
+    if (!output) throw std::runtime_error("Failed while writing proposal output.");
+}
+
+std::string milliseconds(const transcribe::live::LatencySummary& summary) {
+    if (!summary.count) return "n/a";
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(1) << summary.p50_seconds * 1000.0 << '/'
+         << summary.p95_seconds * 1000.0 << " ms (n=" << summary.count << ')';
+    return text.str();
+}
+
+std::vector<transcribe::Note> run_live_pipeline(const std::filesystem::path& input_path,
+                                                const Options& options, double& audio_seconds) {
+    namespace live = transcribe::live;
+    live::LiveOptions live_options;
+    transcribe::AudioBuffer audio;
+    if (options.asio) {
+        live_options.format = {44100, 1};
+        live_options.lag_policy = live::LagPolicy::SkipAhead;
+        live_options.audio_source_id = "asio";
+        live_options.max_recording_seconds = std::max(600.0, options.capture_seconds + 1.0);
+    } else {
+        audio = transcribe::read_audio(input_path);
+        live_options.format = {audio.sample_rate, 1};
+        live_options.lag_policy = live::LagPolicy::Lossless;
+        live_options.audio_source_id = "file:" + input_path.filename().string();
+        live_options.max_recording_seconds = std::max(
+            600.0, static_cast<double>(audio.samples.size()) / std::max<std::uint32_t>(1, audio.sample_rate) + 1.0);
+    }
+    live_options.yin.realtime.latency_ms = options.realtime_latency_ms;
+    live_options.model_load = {options.onnx_provider, options.device_id, false};
+    auto& request = live_options.window.request;
+    request.analysis.polyphonic = options.polyphonic;
+    request.analysis.minimum_confidence = options.minimum_confidence;
+    request.analysis.instrument = options.instrument;
+    request.onnx.polyphonic = options.polyphonic;
+    request.onnx.independent_probabilities = options.polyphonic;
+    request.onnx.minimum_confidence = options.minimum_confidence;
+    request.onnx.execution_provider = options.onnx_provider;
+    request.onnx.device_id = options.device_id;
+    std::unique_ptr<transcribe::ModelBackend> model;
+    if (!options.backend.empty() && options.backend != "builtin:yin") {
+        transcribe::ModelRegistry registry(options.model);
+        auto created = registry.create(options.backend);
+        if (const auto* failure = std::get_if<transcribe::InferenceError>(&created)) {
+            throw std::runtime_error(failure->message);
+        }
+        model = std::move(std::get<std::unique_ptr<transcribe::ModelBackend>>(created));
+        live_options.backend = live::LiveBackendKind::OverlappingWindow;
+    } else if (!options.model.empty()) {
+        throw std::invalid_argument("--model cannot be combined with incremental builtin:yin");
+    }
+
+    live::LiveTranscriptionSession session(live_options, std::move(model));
+    const auto started = session.start();
+    if (const auto* failure = std::get_if<transcribe::InferenceError>(&started)) {
+        throw std::runtime_error("Live pipeline failed to start: " + failure->message);
+    }
+    std::ofstream events_output;
+    if (options.live_events) {
+        events_output.open(*options.live_events, std::ios::binary);
+        if (!events_output) throw std::runtime_error("Could not create live event output: " + options.live_events->string());
+        events_output << std::setprecision(9);
+    }
+    live::TranscriptionDocument document(live_options.format.sample_rate);
+    const auto consume = [&] {
+        auto batch = session.poll_events();
+        for (const auto& event : batch.events) {
+            if (events_output.is_open()) {
+                events_output << "{\"sequence\": " << event.sequence << ", \"kind\": \""
+                              << live_event_kind(event.kind) << "\", \"note\": ";
+                if (event.kind == live::LiveEventKind::AnalysisGap || event.kind == live::LiveEventKind::Status) {
+                    events_output << "null";
+                } else {
+                    write_live_note(events_output, event.note);
+                }
+                events_output << ", \"gap_first_frame\": " << event.gap_first_frame
+                              << ", \"gap_end_frame\": " << event.gap_end_frame
+                              << ", \"evidence_end_frame\": " << event.timing.evidence_end_frame
+                              << ", \"message\": \"" << json_escape(event.message) << "\"}\n";
+            }
+            if (!options.quiet && event.kind != live::LiveEventKind::NoteStabilized) {
+                std::cerr << "\n[live] " << live_event_kind(event.kind);
+                if (event.kind == live::LiveEventKind::Status || event.kind == live::LiveEventKind::AnalysisGap) {
+                    std::cerr << ": " << event.message;
+                } else {
+                    std::cerr << ' ' << event.note.id << ' ' << transcribe::midi_note_name(event.note.midi_pitch)
+                              << " at " << std::fixed << std::setprecision(3) << event.note.onset_seconds() << 's';
+                    if (const auto offset = event.note.offset_seconds()) std::cerr << " to " << *offset << 's';
+                }
+            }
+        }
+        document.apply(batch);
+        if (document.requires_resync()) document.resync(session.snapshot());
+    };
+
+    if (options.asio) {
+        std::exception_ptr capture_error;
+        std::atomic<bool> capture_done{false};
+        std::jthread capture([&](std::stop_token stop) {
+            try {
+                (void)transcribe::capture_asio_live(options.capture_seconds, session, stop,
+                    [&options](double progress) {
+                        if (!options.quiet) std::cerr << '\r' << progress_bar(progress) << std::flush;
+                    });
+            } catch (...) {
+                capture_error = std::current_exception();
+            }
+            capture_done.store(true, std::memory_order_release);
+        });
+        while (!capture_done.load(std::memory_order_acquire)) {
+            consume();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        capture.join();
+        if (capture_error) {
+            session.cancel();
+            std::rethrow_exception(capture_error);
+        }
+    } else {
+        constexpr std::size_t block_frames = 1024;
+        for (std::size_t offset = 0; offset < audio.samples.size(); offset += block_frames) {
+            const auto count = std::min(block_frames, audio.samples.size() - offset);
+            const live::AudioFrameBlock block{live_options.format, offset,
+                std::span<const float>(audio.samples).subspan(offset, count),
+                std::chrono::duration_cast<live::Nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()), false};
+            auto status = session.push(block);
+            while (status == live::PushStatus::QueueFull) {
+                consume();
+                std::this_thread::sleep_for(std::chrono::microseconds(200));
+                status = session.push(block);
+            }
+            if (status != live::PushStatus::Accepted) {
+                throw std::runtime_error("Live pipeline rejected audio: " + session.last_error());
+            }
+            if (!options.quiet && offset % (block_frames * 64) == 0) {
+                std::cerr << '\r' << progress_bar(static_cast<double>(offset) / audio.samples.size()) << std::flush;
+            }
+        }
+    }
+    session.finish();
+    consume();
+    if (session.state() == live::LiveState::AnalysisFailed) {
+        throw std::runtime_error("Live analysis failed: " + session.last_error());
+    }
+    const auto recording = session.recording();
+    audio_seconds = recording.sample_rate
+        ? static_cast<double>(recording.samples.size()) / recording.sample_rate : 0.0;
+    if (!options.quiet) {
+        const auto metrics = session.metrics();
+        std::cerr << "\n[live] end-to-end p50/p95 " << milliseconds(metrics.end_to_end_latency)
+                  << "; stabilization " << milliseconds(metrics.stabilization_delay)
+                  << "; analysis step " << milliseconds(metrics.analysis_latency)
+                  << "; input queue high-water " << metrics.input_queue_high_water << '/'
+                  << metrics.input_queue_capacity << "; skipped " << metrics.skipped_frames
+                  << " frames; dropped events " << metrics.events_dropped << '\n';
+    }
+    if (options.refine) {
+        live::RefinementOptions refinement;
+        refinement.backend_id = options.refine_backend;
+        refinement.model_path = options.model;
+        refinement.load = {options.onnx_provider, options.device_id, false};
+        refinement.request.analysis = request.analysis;
+        refinement.request.onnx = request.onnx;
+        refinement.audio_source_id = live_options.audio_source_id;
+        const bool windowed = options.refine_mode == "windowed" ||
+            (options.refine_mode == "auto" && options.refine_backend.starts_with("onnx:"));
+        if (windowed) refinement.windowed = live_options.window;
+        const auto proposal = live::refine_recording(recording, refinement);
+        std::optional<live::ProposalReview> review;
+        if (const auto* value = std::get_if<live::ScoreProposal>(&proposal)) {
+            review = document.review(*value);
+            if (!options.quiet) {
+                std::cerr << "[refine] " << value->backend_id << (windowed ? " (windowed)" : " (full-context)")
+                          << " proposal: " << value->notes.size()
+                          << " notes, " << review->changes.size() << " proposed changes ("
+                          << review->conflicts << " conflicts); live score left unchanged\n";
+            }
+        } else if (!options.quiet || !options.proposal_json) {
+            std::cerr << "[refine] failed: " << std::get<transcribe::InferenceError>(proposal).message << '\n';
+        }
+        if (options.proposal_json) {
+            write_proposal_json(*options.proposal_json, proposal, review ? &*review : nullptr);
+        }
+    }
+    return document.to_notes(audio_seconds);
+}
+
 void process_input(const std::filesystem::path& input_path, const Options& options,
                    const std::filesystem::path& musicxml_path,
                    const std::filesystem::path& tab_path,
@@ -569,9 +891,11 @@ void process_input(const std::filesystem::path& input_path, const Options& optio
                    [](unsigned char character) {
                        return static_cast<char>(std::tolower(character));
                    });
-    const bool streaming_wav =
-        !options.asio && options.model.empty() && extension == ".wav";
-    if (streaming_wav) {
+    const bool streaming_wav = !options.live_pipeline && !options.asio && options.model.empty() &&
+        options.backend.empty() && extension == ".wav";
+    if (options.live_pipeline) {
+        notes = run_live_pipeline(input_path, options, audio_seconds);
+    } else if (streaming_wav) {
         transcribe::AnalysisOptions analysis_options;
         analysis_options.minimum_confidence = options.minimum_confidence;
         analysis_options.fast_preview = options.fast_preview;
@@ -631,7 +955,38 @@ void process_input(const std::filesystem::path& input_path, const Options& optio
                   realtime_options)
             : transcribe::read_audio(input_path);
         audio_seconds = static_cast<double>(audio.samples.size()) / audio.sample_rate;
-        if (options.model.empty()) {
+        if (!options.backend.empty()) {
+            transcribe::ModelRegistry registry(options.model);
+            auto created = registry.create(options.backend);
+            if (const auto* failure = std::get_if<transcribe::InferenceError>(&created)) {
+                throw std::runtime_error(failure->message);
+            }
+            auto instance = std::move(std::get<std::unique_ptr<transcribe::ModelBackend>>(created));
+            if (!options.model.empty() && instance->metadata().definition.path.empty()) {
+                throw std::invalid_argument("--model cannot be combined with a built-in --backend");
+            }
+            const auto loaded = instance->load(
+                {options.onnx_provider, options.device_id, options.fast_preview});
+            if (const auto* failure = std::get_if<transcribe::InferenceError>(&loaded)) {
+                throw std::runtime_error(failure->message);
+            }
+            transcribe::InferenceRequest request;
+            request.analysis.polyphonic = options.polyphonic;
+            request.analysis.minimum_confidence = options.minimum_confidence;
+            request.analysis.instrument = options.instrument;
+            if (options.benchmark) request.analysis.timing_callback = accumulate_timings;
+            request.onnx.polyphonic = options.polyphonic;
+            request.onnx.independent_probabilities = options.polyphonic;
+            request.onnx.minimum_confidence = options.minimum_confidence;
+            request.onnx.execution_provider = options.onnx_provider;
+            request.onnx.device_id = options.device_id;
+            if (!options.quiet) request.progress = report_progress;
+            auto result = instance->infer(audio, request);
+            if (const auto* failure = std::get_if<transcribe::InferenceError>(&result)) {
+                throw std::runtime_error(failure->message);
+            }
+            notes = std::move(std::get<transcribe::InferenceOutput>(result).notes);
+        } else if (options.model.empty()) {
             transcribe::AnalysisOptions analysis_options;
             analysis_options.minimum_confidence = options.minimum_confidence;
             analysis_options.fast_preview = options.fast_preview;

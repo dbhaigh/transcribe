@@ -15,6 +15,12 @@ scoring helpers now come from the shared `evaluation_metrics.py` module.
 
 ## ONNX contract, version 1
 
+This section describes the historical **LegacyPitchV1** adapter, not every
+ONNX model. The bundled Basic Pitch model has a different window/rate/output
+contract. See [the inspected model contracts and pluggable C++20
+interface](../docs/model-inference.md) for actual tensor declarations, explicit
+provider selection, discovery, lifecycle and limitations.
+
 The C++ runner expects:
 
 - Input: one mono `float32` waveform, shape `[1, samples]`, resampled by the

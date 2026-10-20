@@ -24,9 +24,12 @@ from evaluate import build_identity, compare, human_report
 import evaluate
 from evaluate_guitarset import md5_file, read_reference_events
 import evaluate_guitarset
+from performance import compare_reports
+from onnx_fixtures import write_model
 
 RUNNER = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else None
 BUILD_INFO = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None
+PERFORMANCE_RUNNER = Path(sys.argv[3]).resolve() if len(sys.argv) > 3 else None
 
 
 def event(pitch=69, start=0.0, duration=1.0):
@@ -34,6 +37,23 @@ def event(pitch=69, start=0.0, duration=1.0):
 
 
 class MetricsTests(unittest.TestCase):
+    def test_performance_comparison_handles_clock_resolution_and_rejects_drift(self):
+        row = dict(id="empty", backend="yin", mode="full", audio_sha256="same",
+                   notes=[], metrics=score_events([], [], 0),
+                   runs=[dict(wall_seconds=0), dict(wall_seconds=0)])
+        before = dict(configuration={}, clips=[row])
+        current = copy.deepcopy(before)
+        compare_reports(before, current)
+        self.assertTrue(current["all_notes_identical"])
+        self.assertIsNone(current["clips"][0]["comparison"]["cold_speedup"])
+        changed = copy.deepcopy(before)
+        changed["clips"][0]["notes"] = [event()]
+        compare_reports(before, changed)
+        self.assertFalse(changed["all_notes_identical"])
+        changed["clips"][0]["audio_sha256"] = "different"
+        with self.assertRaisesRegex(ValueError, "audio differs"):
+            compare_reports(before, changed)
+
     def test_perfect_events_and_empty_convention(self):
         result = score_events([event()], [event()], 1)
         for metric in ("note_event", "onset_pitch", "frame"):
@@ -219,10 +239,222 @@ class IntegrationTests(unittest.TestCase):
         if RUNNER is None or BUILD_INFO is None:
             self.skipTest("Pass runner and build-info paths to execute engine integrations")
 
+    def test_performance_resources_and_warm_cache(self):
+        if PERFORMANCE_RUNNER is None:
+            self.skipTest("Pass performance runner to execute resource instrumentation")
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "performance.json"
+            subprocess.run([str(PERFORMANCE_RUNNER), str(ROOT / "samples" / "single_a4.wav"),
+                            str(output), "spectral", "full", "serial", "3", "15"],
+                           check=True, capture_output=True, timeout=30)
+            report = json.loads(output.read_text())
+            self.assertEqual(len(report["runs"]), 3)
+            self.assertFalse(report["runs"][0]["stages"]["spectrogram_cache_hit"])
+            self.assertTrue(report["runs"][1]["stages"]["spectrogram_cache_hit"])
+            for run in report["runs"]:
+                self.assertGreaterEqual(run["wall_seconds"], 0)
+                self.assertGreaterEqual(run["cpu_seconds"], 0)
+                self.assertGreater(run["peak_resident_bytes"], 0)
+                self.assertGreaterEqual(run["cpu_core_equivalents"], 0)
+                self.assertGreater(run["audio_seconds"], 0)
+            result = subprocess.run([str(PERFORMANCE_RUNNER), str(ROOT / "samples" / "single_a4.wav"),
+                                     str(output), "spectral", "full", "serial", "1", "15"],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Repetitions", result.stderr)
+            for backend in ("yin", "spectral", "onnx"):
+                if backend == "onnx" and not json.loads(BUILD_INFO.read_text())["features"]["onnx"]:
+                    continue
+                model = str(ROOT / "python" / "models" / "basic_pitch.onnx") if backend == "onnx" else "-"
+                subprocess.run([str(PERFORMANCE_RUNNER), str(ROOT / "samples" / "single_a4.wav"),
+                                str(output), backend, "model", "serial", "3", "15", model, "cpu"],
+                               check=True, capture_output=True, timeout=30)
+                report = json.loads(output.read_text())
+                interface = report["model_interface"]
+                self.assertEqual(interface["completed_inferences"], 3)
+                self.assertEqual(interface["live_sessions"], 1 if backend == "onnx" else 0)
+                self.assertEqual(report["live_sessions_after_release"], 0)
+                self.assertEqual(interface["batch_size"], 1)
+                self.assertFalse(interface["incremental"])
+                self.assertEqual(interface["provider"], "cpu")
+                self.assertGreaterEqual(interface["load_seconds"], 0)
+
     def test_build_metadata_rejects_wrong_binary(self):
         self.assertIn("compiler", build_identity(BUILD_INFO, RUNNER))
         with self.assertRaises(ValueError):
             build_identity(BUILD_INFO, RUNNER.with_name("wrong-runner"))
+
+    def test_model_interface_preserves_corpus_predictions(self):
+        backends = ["yin", "spectral"]
+        if json.loads(BUILD_INFO.read_text())["features"]["onnx"]:
+            backends.append("onnx")
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for backend in backends:
+                reports = []
+                for interface in (False, True):
+                    output = directory / f"{backend}-{interface}.json"
+                    command = [sys.executable, str(ROOT / "python" / "evaluate.py"),
+                        "--runner", str(RUNNER), "--build-info", str(BUILD_INFO),
+                        "--backend", backend, "--mode", "full", "--output-json", str(output),
+                        "--warmups", "0", "--repetitions", "1"]
+                    if interface:
+                        command.append("--model-interface")
+                    if backend == "onnx":
+                        command.extend(["--model", str(ROOT / "python" / "models" / "basic_pitch.onnx")])
+                    completed = subprocess.run(command, capture_output=True, text=True, timeout=120)
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    reports.append(json.loads(output.read_text()))
+                self.assertEqual(reports[0]["corpus"]["sha256"], reports[1]["corpus"]["sha256"])
+                for old, new in zip(reports[0]["clips"], reports[1]["clips"]):
+                    self.assertEqual(old["id"], new["id"])
+                    self.assertEqual(old["predictions"], new["predictions"], backend + ":" + old["id"])
+                    self.assertEqual(old["metrics"], new["metrics"])
+                    metadata = new["runs"][0]["model_interface"]
+                    self.assertEqual(metadata["version"], 1)
+                    self.assertEqual(metadata["active_provider"], "cpu")
+                    self.assertFalse(metadata["incremental"])
+                    self.assertEqual(metadata["batch_size"], 1)
+                    if backend == "onnx":
+                        self.assertEqual(metadata["inputs"][0]["dimensions"], [-1, 43844, 1])
+                        self.assertEqual(len(metadata["outputs"]), 3)
+                        self.assertTrue(metadata["runtime_version"])
+            if "onnx" in backends:
+                predictions = []
+                executable = json.loads(BUILD_INFO.read_text())["executable"]
+                for interface in (False, True):
+                    output = directory / f"cli-onnx-{interface}.json"
+                    command = [executable, str(ROOT / "samples" / "single_a4.wav"),
+                        "--model", str(ROOT / "python" / "models" / "basic_pitch.onnx"),
+                        "--provider", "cpu", "--polyphonic", "--quiet", "--json", str(output),
+                        "--musicxml", str(directory / "score.musicxml"), "--tab", str(directory / "tab.txt")]
+                    if interface:
+                        command.extend(["--backend", "onnx:basic-pitch-v1"])
+                    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    predictions.append(json.loads(output.read_text())["notes"])
+                self.assertEqual(predictions[0], predictions[1])
+
+    def test_onnx_contract_validation_with_tiny_local_models(self):
+        if not json.loads(BUILD_INFO.read_text())["features"]["onnx"]:
+            self.skipTest("ONNX build required for tensor-contract validation")
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            audio = directory / "one-second.wav"
+            with wave.open(str(audio), "wb") as output:
+                output.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                output.writeframes(b"\0\0" * 16000)
+            model = directory / "contract.onnx"
+            output = directory / "prediction.json"
+            cases = [
+                ({}, True, ""),
+                ({"classes": 70}, True, ""),
+                ({"inputs": (1, 16000)}, True, ""),
+                ({"inputs": (2, None)}, False, "float32 [1,samples]"),
+                ({"inputs": (1, None, 1)}, False, "float32 [1,samples]"),
+                ({"inputs": (1, 8000)}, False, "length"),
+                ({"input_type": 11}, False, "float32"),
+                ({"classes": 68}, False, "69|70"),
+                ({"output_type": 11}, False, "float32"),
+                ({"nonfinite": True}, False, "NaN/Infinity"),
+            ]
+            for options, success, diagnostic in cases:
+                with self.subTest(options=options):
+                    write_model(model, **options)
+                    output.unlink(missing_ok=True)
+                    result = subprocess.run([
+                        str(RUNNER), str(audio), str(output), "--backend", "onnx",
+                        "--model", str(model), "--mode", "full", "--model-interface",
+                        "--model-contract", "legacy-pitch-v1",
+                    ], capture_output=True, text=True, timeout=30)
+                    if success:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertTrue(json.loads(output.read_text())["notes"])
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(diagnostic, result.stderr)
+                        self.assertFalse(output.exists())
+            model.write_bytes(b"invalid ONNX model")
+            result = subprocess.run([str(RUNNER), str(audio), str(output), "--backend", "onnx",
+                "--model", str(model), "--model-interface"],
+                capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Cannot load model", result.stderr)
+
+    def test_temporal_quality_provenance_and_streaming_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+
+            def report(backend, temporal=False, mode="full"):
+                output = directory / f"{backend}-{temporal}-{mode}.json"
+                command = [
+                    sys.executable, str(ROOT / "python" / "evaluate.py"),
+                    "--runner", str(RUNNER), "--build-info", str(BUILD_INFO),
+                    "--backend", backend, "--mode", mode, "--output-json", str(output),
+                    "--warmups", "0", "--repetitions", "1", "--serial",
+                ]
+                if temporal:
+                    command.append("--temporal")
+                if backend == "onnx":
+                    command.extend(["--model", str(ROOT / "python" / "models" / "basic_pitch.onnx")])
+                result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(output.read_text(encoding="utf-8"))
+
+            backends = ["yin", "spectral"]
+            if json.loads(BUILD_INFO.read_text())["features"]["onnx"]:
+                backends.append("onnx")
+            for backend in backends:
+                legacy = report(backend)
+                decoded = report(backend, True)
+                streamed = report(backend, True, "streaming") if backend != "onnx" else None
+                baseline = json.loads((ROOT / "python" / "evaluation" /
+                    f"synthetic-v1-windows-clang23-{backend}-temporal-full.json").read_text())
+                self.assertEqual(decoded["corpus"]["sha256"], baseline["corpus"]["sha256"])
+                self.assertEqual(decoded["configuration"]["temporal_decoding"],
+                                 baseline["configuration"]["temporal_decoding"])
+                self.assertEqual(decoded["model"], baseline["model"])
+                self.assertGreaterEqual(decoded["summary"]["note_event"]["tp"],
+                                        baseline["summary"]["note_event"]["tp"])
+                self.assertLessEqual(decoded["summary"]["note_event"]["fp"],
+                                     baseline["summary"]["note_event"]["fp"])
+                self.assertEqual(legacy["corpus"]["sha256"], decoded["corpus"]["sha256"])
+                for metric in ("precision", "recall", "f1"):
+                    self.assertGreater(decoded["summary"]["note_event"][metric],
+                                       legacy["summary"]["note_event"][metric])
+                for metric in ("onset_error_seconds", "offset_error_seconds"):
+                    self.assertLess(decoded["summary"][metric]["median"],
+                                    legacy["summary"][metric]["median"])
+                for index, (old, current) in enumerate(zip(legacy["clips"], decoded["clips"])):
+                    chunked = streamed["clips"][index] if streamed else None
+                    if chunked:
+                        self.assertEqual(current["id"], chunked["id"])
+                        self.assertEqual(current["metrics"]["note_event"], chunked["metrics"]["note_event"])
+                    if current["id"] in ("repeated", "very_short", "silence", "long_boundary"):
+                        for metric in ("precision", "recall", "f1"):
+                            self.assertGreaterEqual(current["metrics"]["note_event"][metric],
+                                                    old["metrics"]["note_event"][metric])
+                    for row in (current, chunked) if chunked else (current,):
+                        events = row["canonical_events"]
+                        self.assertEqual(len(events), len({e["id"] for e in events}))
+                        self.assertEqual(len(events), len(row["predictions"]))
+                        self.assertTrue(all(n["confidence"] is None for n in row["predictions"]))
+                        for e in events:
+                            self.assertEqual(e["audio_source_id"], "sha256:" + row["audio_sha256"])
+                            self.assertEqual(e["source_model"], decoded["model"]["identifier"])
+                            self.assertIsNone(e["calibrated_confidence"])
+                            self.assertIsNone(e["velocity"])
+                            self.assertEqual(e["source_sample_rate"], row["sample_rate"])
+                            self.assertAlmostEqual(e["onset_seconds"],
+                                                   e["onset_sample"] / row["sample_rate"])
+                            self.assertAlmostEqual(e["offset_seconds"],
+                                                   e["offset_sample"] / row["sample_rate"])
+                            times = [f["time_seconds"] for f in e["evidence"]]
+                            self.assertEqual(times, sorted(times))
+                            self.assertTrue(times)
+                            for f in e["evidence"]:
+                                self.assertIn("raw_model_value", f)
+                                self.assertIsNone(f["fractional_midi"])
 
     def test_report_end_to_end_and_comparison_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -281,6 +513,13 @@ class IntegrationTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertTrue(result.stderr)
                 self.assertFalse(output.exists())
+            source = 'audio:"quoted"\\path\ncontrol:\x01'
+            subprocess.run([str(RUNNER), str(ROOT / "samples" / "single_a4.wav"), str(output),
+                            "--temporal", "--audio-source-id", source],
+                           check=True, capture_output=True, timeout=30)
+            decoded = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(decoded["canonical_events"])
+            self.assertEqual(decoded["canonical_events"][0]["audio_source_id"], source)
 
 
 if __name__ == "__main__":

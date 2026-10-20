@@ -53,8 +53,19 @@ ctest --test-dir build-tests -C Release --output-on-failure
 For deterministic synthetic quality/performance baselines, compiler-identified
 JSON/text reports, event-versus-frame metrics, comparison gates, and the
 licensed real-audio workflow, see [Evaluation](docs/evaluation.md).
+The [opt-in temporal decoder](docs/decoding.md) preserves raw evidence and adds
+sample-referenced canonical events without changing existing CLI/GUI outputs.
+The [versioned model interface](docs/model-inference.md) provides model
+discovery, explicit contracts/providers, owned sessions and optional
+`--backend <registry-id>` CLI selection.
 The synthetic evaluation needs no model or dataset download and is registered
 with CTest when tests and Python are available.
+Measured DSP optimizations and the cold/warm CPU/memory benchmark workflow are
+documented in [Performance](docs/performance.md).
+The opt-in [incremental live pipeline](docs/live.md) (`--live-pipeline`) emits
+provisional, stabilized, corrected and retracted note events with stable IDs,
+bounded queues and separate latency metrics, plus a refinement proposal that
+never overwrites manual edits.
 
 ## CLI
 

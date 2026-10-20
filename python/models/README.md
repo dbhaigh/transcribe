@@ -4,6 +4,9 @@
 commit `fa5997af0a8210982619003269994a1be25eddf3`. Its license and inference
 contract are documented in [../README.md](../README.md). The C++ adapter
 supports this model's fixed-window input and note-output head.
+Its actual tensor declarations, supported versus unused heads, window
+stitching and explicit `BasicPitchV1` adapter are described in
+[Model inference](../../docs/model-inference.md).
 
 New models must include their source and dataset licenses, supported
 instrument/use case, evaluation methodology and results, and export/runtime

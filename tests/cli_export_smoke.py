@@ -29,7 +29,7 @@ def main():
     help_result = subprocess.run(
         [str(executable), "--help"], check=True, capture_output=True, text=True
     )
-    for flag in ("--live", "--quality", "--tempo", "--key-fifths", "--mode", "--meter"):
+    for flag in ("--live", "--quality", "--tempo", "--key-fifths", "--mode", "--meter", "--backend"):
         require(flag in help_result.stdout, f"CLI help is missing {flag}")
     live_validation = subprocess.run(
         [str(executable), "--live", "0"], capture_output=True, text=True
@@ -42,6 +42,21 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="transcribe-cli-smoke-") as directory:
         output = Path(directory)
+        for backend, extra in (("builtin:yin", []), ("builtin:spectral", ["--polyphonic"])):
+            predictions = []
+            for registered in (False, True):
+                path = output / f"{backend.split(':')[1]}-{registered}.json"
+                command = [str(executable), str(audio), "--json", str(path), "--quiet",
+                           "--musicxml", str(output / "adapter.musicxml"), "--tab", str(output / "adapter.tab")]
+                command.extend(["--backend", backend] if registered else extra)
+                completed = subprocess.run(command, capture_output=True, text=True, timeout=30)
+                require(completed.returncode == 0, completed.stderr)
+                predictions.append(json.loads(path.read_text())["notes"])
+            require(predictions[0] == predictions[1], f"Registered CLI backend changed notes: {backend}")
+        missing = subprocess.run([str(executable), str(audio), "--backend", "missing", "--quiet"],
+                                 capture_output=True, text=True, timeout=30)
+        require(missing.returncode != 0 and "Unknown model ID" in missing.stderr,
+                "Unknown model registry ID was not reported")
         defaults = output / "defaults.conf"
         defaults.write_text("quality=high\nmode=major\n", encoding="utf-8")
         invalid_config = output / "invalid.conf"
@@ -160,7 +175,42 @@ def main():
             "Batch mode failed to preserve outputs for the successful file",
         )
 
-    print("CLI exports, MusicXML semantic parsing, and batch partial-results checks passed")
+        live_json = output / "live.json"
+        events_path = output / "live-events.jsonl"
+        proposal_path = output / "proposal.json"
+        live = subprocess.run(
+            [str(executable), str(audio), "--live-pipeline", "--quiet",
+             "--musicxml", str(output / "live.musicxml"), "--tab", str(output / "live.txt"),
+             "--json", str(live_json), "--live-events", str(events_path),
+             "--refine", "--refine-backend", "builtin:yin", "--refine-mode", "windowed",
+             "--proposal-json", str(proposal_path)],
+            capture_output=True, text=True,
+        )
+        require(live.returncode == 0, f"Live pipeline CLI failed: {live.stderr}")
+        live_notes = json.loads(live_json.read_text(encoding="utf-8"))["notes"]
+        require(live_notes, "Live pipeline exported no notes")
+        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+        require(events and events[-1]["kind"] == "status" and events[-1]["message"] == "finished",
+                "Live event stream did not finish cleanly")
+        require([e["sequence"] for e in events] == sorted({e["sequence"] for e in events}),
+                "Live event sequence numbers are not strictly increasing")
+        require(all(e["note"]["id"] for e in events if e["note"] is not None),
+                "Live note events lack stable identifiers")
+        proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+        require(proposal["applied"] is False and proposal["notes"],
+                "Refinement proposal must be separate from the live score")
+        rejected = subprocess.run([str(executable), str(audio), "--refine"],
+                                  capture_output=True, text=True)
+        require(rejected.returncode != 0 and "--live-pipeline" in rejected.stderr,
+                "--refine without --live-pipeline was not rejected")
+        rejected_mode = subprocess.run(
+            [str(executable), str(audio), "--refine-mode", "windowed"],
+            capture_output=True, text=True,
+        )
+        require(rejected_mode.returncode != 0 and "--refine-mode" in rejected_mode.stderr,
+                "--refine-mode without --refine was not rejected")
+
+    print("CLI exports, MusicXML semantic parsing, batch partial-results and live pipeline checks passed")
 
 
 if __name__ == "__main__":

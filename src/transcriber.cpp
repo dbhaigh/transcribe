@@ -1,7 +1,9 @@
 #include "transcribe/transcriber.hpp"
+#include "onnx_backend.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -26,6 +28,10 @@
 
 namespace transcribe {
 namespace {
+
+void check_cancelled(std::stop_token token) {
+    if (token.stop_requested()) throw std::runtime_error("Inference cancelled");
+}
 
 constexpr std::size_t analysis_window = 2048;
 constexpr std::size_t short_window = 1024;
@@ -78,7 +84,31 @@ PitchEstimate yin_with_workspace(std::span<const float> samples, std::uint32_t s
     }
     workspace.difference.assign(max_lag + 1, 0.0);
     workspace.cumulative.assign(max_lag + 1, 1.0);
-    for (std::size_t lag = 1; lag <= max_lag; ++lag) {
+    std::size_t lag = 1;
+    // Independent lags share the input scan; each sum retains its original order.
+    for (; lag + 3 <= max_lag; lag += 4) {
+        std::array<double, 4> sums{};
+        const std::size_t common = samples.size() - lag - 3;
+        for (std::size_t i = 0; i < common; ++i) {
+            const double sample = samples[i];
+            const double d0 = sample - samples[i + lag];
+            const double d1 = sample - samples[i + lag + 1];
+            const double d2 = sample - samples[i + lag + 2];
+            const double d3 = sample - samples[i + lag + 3];
+            sums[0] += d0 * d0;
+            sums[1] += d1 * d1;
+            sums[2] += d2 * d2;
+            sums[3] += d3 * d3;
+        }
+        for (std::size_t lane = 0; lane < sums.size(); ++lane) {
+            for (std::size_t i = common; i + lag + lane < samples.size(); ++i) {
+                const double delta = static_cast<double>(samples[i]) - samples[i + lag + lane];
+                sums[lane] += delta * delta;
+            }
+            workspace.difference[lag + lane] = sums[lane];
+        }
+    }
+    for (; lag <= max_lag; ++lag) {
         double sum = 0.0;
         for (std::size_t i = 0; i + lag < samples.size(); ++i) {
             const double delta = static_cast<double>(samples[i]) - samples[i + lag];
@@ -191,29 +221,58 @@ AudioBuffer resample_linear(const AudioBuffer& source, std::uint32_t destination
     return result;
 }
 
-void fft(std::vector<std::complex<double>>& values) {
-    const std::size_t size = values.size();
-    for (std::size_t i = 1, j = 0; i < size; ++i) {
-        std::size_t bit = size >> 1;
-        for (; (j & bit) != 0; bit >>= 1) {
+struct FftPlan {
+    explicit FftPlan(std::size_t size) : factors(size - 1) {
+        for (std::size_t i = 1, j = 0; i < size; ++i) {
+            std::size_t bit = size >> 1;
+            for (; (j & bit) != 0; bit >>= 1) {
+                j ^= bit;
+            }
             j ^= bit;
+            if (i < j) swaps.emplace_back(i, j);
         }
-        j ^= bit;
-        if (i < j) {
-            std::swap(values[i], values[j]);
-        }
-    }
-    for (std::size_t length = 2; length <= size; length <<= 1) {
-        const double angle = -2.0 * std::numbers::pi / length;
-        const std::complex<double> root(std::cos(angle), std::sin(angle));
-        for (std::size_t offset = 0; offset < size; offset += length) {
+        for (std::size_t length = 2; length <= size; length <<= 1) {
+            const double angle = -2.0 * std::numbers::pi / length;
+            const std::complex<double> root(std::cos(angle), std::sin(angle));
             std::complex<double> factor(1.0, 0.0);
             for (std::size_t i = 0; i < length / 2; ++i) {
+                factors[length / 2 - 1 + i] = factor;
+                factor *= root;
+            }
+        }
+    }
+    std::vector<std::pair<std::size_t, std::size_t>> swaps;
+    std::vector<std::complex<double>> factors;
+};
+
+template <std::size_t Size>
+const FftPlan& fft_plan() {
+    static const FftPlan plan(Size);
+    return plan;
+}
+
+void fft(std::vector<std::complex<double>>& values) {
+    const std::size_t size = values.size();
+    const FftPlan* plan = nullptr;
+    switch (size) {
+    case 256: plan = &fft_plan<256>(); break;
+    case 512: plan = &fft_plan<512>(); break;
+    case 1024: plan = &fft_plan<1024>(); break;
+    case 2048: plan = &fft_plan<2048>(); break;
+    case 4096: plan = &fft_plan<4096>(); break;
+    default: throw std::logic_error("Unsupported internal FFT size");
+    }
+    for (const auto& [i, j] : plan->swaps) {
+        std::swap(values[i], values[j]);
+    }
+    for (std::size_t length = 2; length <= size; length <<= 1) {
+        const auto* factors = plan->factors.data() + length / 2 - 1;
+        for (std::size_t offset = 0; offset < size; offset += length) {
+            for (std::size_t i = 0; i < length / 2; ++i) {
                 const auto even = values[offset + i];
-                const auto odd = values[offset + i + length / 2] * factor;
+                const auto odd = values[offset + i + length / 2] * factors[i];
                 values[offset + i] = even + odd;
                 values[offset + i + length / 2] = even - odd;
-                factor *= root;
             }
         }
     }
@@ -283,11 +342,9 @@ std::shared_ptr<const Spectrogram> get_spectrogram(
     computed->frame_count = frame_count;
     computed->bin_count = bin_count;
     computed->magnitudes.resize(frame_count * bin_count);
-    std::vector<double> window(window_size);
-    for (std::size_t i = 0; i < window_size; ++i) {
-        window[i] = 0.5 - 0.5 * std::cos(
-            2.0 * std::numbers::pi * i / (window_size - 1));
-    }
+    const std::span<const double> window = window_size == 2048
+        ? std::span<const double>(hann_window<2048>())
+        : std::span<const double>(hann_window<4096>());
     const auto analyze_range = [&audio, &window, &computed, window_size,
                                 hop_size, bin_count](std::size_t begin,
                                                      std::size_t end) {
@@ -334,10 +391,12 @@ std::shared_ptr<const Spectrogram> get_spectrogram(
     }
 
     constexpr std::size_t cache_capacity_bytes = 64 * 1024 * 1024;
+    std::shared_ptr<const Spectrogram> retired;
     if (computed->magnitudes.size() <=
         cache_capacity_bytes / sizeof(double)) {
         std::lock_guard lock(cache_mutex);
         cached_key = key;
+        retired = std::move(cached_spectrogram);
         cached_spectrogram = computed;
     }
     cache_hit = false;
@@ -403,15 +462,24 @@ std::vector<Note> transcribe_spectral_polyphonic(
         }
     }
     std::array<double, pitch_count> salience{};
+    std::vector<double> peak_fractions;
+    std::array<std::vector<double>, pitch_count> raw_salience;
+    if (options.evidence_callback) peak_fractions.reserve(frame_count);
     std::vector<std::pair<std::size_t, double>> candidates;
     candidates.reserve(pitch_count);
     for (std::size_t frame = 0; frame < frame_count; ++frame) {
+        check_cancelled(options.cancellation);
         const double* const magnitudes =
             spectrogram->magnitudes.data() + frame * spectrogram->bin_count;
         const std::size_t start = frame * hop_size;
         double maximum_spectrum = 0.0;
         for (std::size_t bin = 1; bin <= window_size / 2; ++bin) {
             maximum_spectrum = std::max(maximum_spectrum, magnitudes[bin]);
+        }
+        if (options.evidence_callback) {
+            const double total = std::accumulate(magnitudes + 1,
+                                                 magnitudes + window_size / 2 + 1, 0.0);
+            peak_fractions.push_back(total > 0 ? maximum_spectrum / total : 0.0);
         }
 
         salience.fill(0.0);
@@ -450,6 +518,11 @@ std::vector<Note> transcribe_spectral_polyphonic(
         }
 
         const double strongest = *std::max_element(salience.begin(), salience.end());
+        if (options.evidence_callback) {
+            for (std::size_t pitch = 0; pitch < pitch_count; ++pitch) {
+                raw_salience[pitch].push_back(salience[pitch]);
+            }
+        }
         candidates.clear();
         if (strongest > 0.0) {
             for (int midi = minimum_pitch; midi <= maximum_pitch; ++midi) {
@@ -487,7 +560,13 @@ std::vector<Note> transcribe_spectral_polyphonic(
     }
 
     std::vector<Note> notes;
-    for (auto& frames : pitch_frames) {
+    for (std::size_t pitch = 0; pitch < pitch_frames.size(); ++pitch) {
+        auto& frames = pitch_frames[pitch];
+        if (options.evidence_callback) {
+            options.evidence_callback({frames, static_cast<double>(window_size) / sample_rate,
+                static_cast<double>(hop_size) / sample_rate, "spectral", "normalized-salience",
+                peak_fractions, raw_salience[pitch], static_cast<int>(pitch + first_pitch)});
+        }
         auto detected = notes_from_frames(frames, duration_seconds, onsets,
                                           options.minimum_confidence);
         notes.insert(notes.end(), detected.begin(), detected.end());
@@ -532,6 +611,17 @@ void append_execution_provider(Ort::SessionOptions& options,
                                OnnxExecutionProvider provider, int device_id) {
     (void)options;
     (void)device_id;
+    const auto providers = detail::onnx_providers();
+    const auto found = std::find_if(providers.begin(), providers.end(), [&](const auto& p) {
+        return p.provider == provider && p.compiled && p.runtime_available;
+    });
+    if (found == providers.end()) {
+        throw std::runtime_error("Requested ONNX provider '" + inference_provider_name(provider) +
+            "' is not enabled in this build/runtime; install a matching runtime and enable its CMake option");
+    }
+    if (provider != OnnxExecutionProvider::Cpu) {
+        options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
+    }
     switch (provider) {
     case OnnxExecutionProvider::Cpu:
         return;
@@ -580,6 +670,19 @@ void append_execution_provider(Ort::SessionOptions& options,
     throw std::invalid_argument("Unknown ONNX execution provider.");
 }
 
+std::shared_ptr<Ort::Session> create_onnx_session(
+    const std::filesystem::path& path, OnnxExecutionProvider provider, int device_id) {
+    if (device_id < 0) throw std::invalid_argument("ONNX device ID must be nonnegative");
+    if (!std::filesystem::is_regular_file(path)) {
+        throw std::invalid_argument("ONNX model file does not exist: " + path.string());
+    }
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    append_execution_provider(options, provider, device_id);
+    return std::make_shared<Ort::Session>(onnx_environment(), path.c_str(), options);
+}
+
 std::shared_ptr<Ort::Session> load_onnx_session(
     const std::filesystem::path& path, OnnxExecutionProvider provider,
     int device_id) {
@@ -593,14 +696,75 @@ std::shared_ptr<Ort::Session> load_onnx_session(
     if (existing != cache.end()) {
         return existing->second;
     }
-    Ort::SessionOptions options;
-    options.SetIntraOpNumThreads(1);
-    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-    append_execution_provider(options, provider, device_id);
-    auto session =
-        std::make_shared<Ort::Session>(onnx_environment(), path.c_str(), options);
+    auto session = create_onnx_session(path, provider, device_id);
     cache.emplace(key, session);
     return session;
+}
+
+void validate_onnx_contract(Ort::Session& session, ModelContract contract) {
+    if (session.GetInputCount() != 1) {
+        throw std::invalid_argument("Supported ONNX contracts require exactly one waveform input");
+    }
+    const auto input = session.GetInputTypeInfo(0);
+    if (input.GetONNXType() != ONNX_TYPE_TENSOR) {
+        throw std::invalid_argument("ONNX waveform input must be a float32 tensor");
+    }
+    const auto info = input.GetTensorTypeAndShapeInfo();
+    const auto shape = info.GetShape();
+    const bool basic = contract == ModelContract::BasicPitchV1;
+    if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+        (basic ? (shape.size() != 3 || (shape[0] != 1 && shape[0] != -1) ||
+                  shape[1] != 43844 || shape[2] != 1) :
+                 (shape.size() != 2 || (shape[0] != 1 && shape[0] != -1) ||
+                  shape[1] == 0 || shape[1] < -1))) {
+        throw std::invalid_argument(basic ?
+            "BasicPitchV1 requires float32 [1,43844,1] at 22050 Hz; batch size is fixed at one" :
+            "LegacyPitchV1 requires float32 [1,samples] at 16000 Hz; other layouts need another adapter");
+    }
+    Ort::AllocatorWithDefaultOptions allocator;
+    bool supported_output = false;
+    for (std::size_t i = 0; i < session.GetOutputCount(); ++i) {
+        const auto name = session.GetOutputNameAllocated(i, allocator);
+        if (basic && std::string_view(name.get()) != "StatefulPartitionedCall:1") continue;
+        const auto type = session.GetOutputTypeInfo(i);
+        if (type.GetONNXType() != ONNX_TYPE_TENSOR) continue;
+        const auto tensor = type.GetTensorTypeAndShapeInfo();
+        const auto dims = tensor.GetShape();
+        const bool matches = tensor.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT &&
+            dims.size() == 3 && (dims[0] == 1 || dims[0] == -1) &&
+            (basic ? (dims[1] == 172 && dims[2] == 88) :
+                     ((dims[1] > 0 || dims[1] == -1) && (dims[2] == 69 || dims[2] == 70)));
+        if (matches && (basic || i < 2)) supported_output = true;
+    }
+    if (!supported_output) {
+        throw std::invalid_argument(basic ?
+            "BasicPitchV1 requires note head StatefulPartitionedCall:1 float32 [1,172,88]" :
+            "LegacyPitchV1 requires a first/second float32 [1,frames,69|70] output (MIDI 28-96)");
+    }
+}
+
+void validate_activations(const float* data, std::size_t size) {
+    if (std::any_of(data, data + size, [](float v) { return !std::isfinite(v); })) {
+        throw std::runtime_error("ONNX output contains NaN/Infinity; check model contract and input scaling");
+    }
+}
+
+std::vector<Ort::Value> run_onnx(Ort::Session& session, std::stop_token cancellation,
+    const char* const* input_names, const Ort::Value* inputs, std::size_t input_count,
+    const char* const* output_names, std::size_t output_count) {
+    check_cancelled(cancellation);
+    Ort::RunOptions run;
+    std::atomic<bool> termination_failed{false};
+    std::stop_callback terminate(cancellation, [&] {
+        if (auto* status = Ort::GetApi().RunOptionsSetTerminate(run)) {
+            termination_failed.store(true);
+            Ort::GetApi().ReleaseStatus(status);
+        }
+    });
+    auto result = session.Run(run, input_names, inputs, input_count, output_names, output_count);
+    if (termination_failed.load()) throw std::runtime_error("ONNX Runtime could not terminate the cancelled run");
+    check_cancelled(cancellation);
+    return result;
 }
 
 double sigmoid(double value) {
@@ -717,13 +881,17 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
     const std::size_t window_count =
         (padded.size() + hop_samples - 1) / hop_samples;
     std::vector<std::array<double, supported_pitches>> frame_probabilities;
+    std::array<std::vector<double>, supported_pitches> raw_activations;
     frame_probabilities.reserve(window_count * usable_frames);
     std::vector<float> window(window_samples, 0.0f);
     const std::array<std::int64_t, 3> input_shape{
         1, static_cast<std::int64_t>(window_samples), 1};
     auto memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    auto input_tensor = Ort::Value::CreateTensor<float>(
+        memory_info, window.data(), window.size(), input_shape.data(), input_shape.size());
 
     for (std::size_t window_index = 0; window_index < window_count; ++window_index) {
+        check_cancelled(options.cancellation);
         const std::size_t window_start = window_index * hop_samples;
         std::fill(window.begin(), window.end(), 0.0f);
         if (window_start < padded.size()) {
@@ -732,12 +900,9 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
             std::copy_n(padded.begin() + static_cast<std::ptrdiff_t>(window_start),
                         count, window.begin());
         }
-        auto input_tensor = Ort::Value::CreateTensor<float>(
-            memory_info, window.data(), window.size(), input_shape.data(),
-            input_shape.size());
         const char* input_names[] = {input_name.get()};
-        auto outputs = session.Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1,
-                                  output_names.data(), output_names.size());
+        auto outputs = run_onnx(session, options.cancellation, input_names, &input_tensor, 1,
+                               output_names.data(), output_names.size());
         if (note_output_index >= outputs.size() || !outputs[note_output_index].IsTensor()) {
             throw std::runtime_error("Basic Pitch note output is not a tensor.");
         }
@@ -752,11 +917,13 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
                 "Basic Pitch note output must be float32 with shape [1, 172, 88].");
         }
         const float* activations = outputs[note_output_index].GetTensorData<float>();
+        validate_activations(activations, output_info.GetElementCount());
         for (std::size_t frame = edge_frames; frame < output_frames - edge_frames; ++frame) {
             std::array<double, supported_pitches> probabilities{};
             const float* row = activations + frame * 88 + first_supported_pitch;
             for (std::size_t pitch = 0; pitch < supported_pitches; ++pitch) {
                 probabilities[pitch] = clamp_probability(row[pitch]);
+                if (options.evidence_callback) raw_activations[pitch].push_back(row[pitch]);
             }
             frame_probabilities.push_back(probabilities);
         }
@@ -806,7 +973,14 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
     }
 
     std::vector<Note> notes;
-    for (auto& frames : pitch_frames) {
+    for (std::size_t pitch = 0; pitch < pitch_frames.size(); ++pitch) {
+        auto& frames = pitch_frames[pitch];
+        if (options.evidence_callback) {
+            raw_activations[pitch].resize(expected_frames);
+            options.evidence_callback({frames, 0.0, frame_step, "basic-pitch",
+                                       "selected-note-head-activation", {}, raw_activations[pitch],
+                                       static_cast<int>(pitch) + 28});
+        }
         auto detected = notes_from_frames(frames, duration_seconds, onsets,
                                           options.minimum_confidence);
         notes.insert(notes.end(), detected.begin(), detected.end());
@@ -1262,6 +1436,9 @@ std::vector<double> detect_onsets(const AudioBuffer& audio) {
     }
     std::vector<double> flux;
     std::vector<double> energy;
+    const std::size_t frame_count = 1 + (audio.samples.size() - onset_window) / onset_hop;
+    flux.reserve(frame_count);
+    energy.reserve(frame_count);
     std::vector<double> previous_magnitudes(onset_window / 2 + 1, 0.0);
     std::vector<std::complex<double>> spectrum(onset_window);
     const auto& window = hann_window<onset_window>();
@@ -1648,6 +1825,7 @@ std::vector<Note> transcribe_monophonic(const AudioBuffer& audio,
     if (options.maximum_pitches_per_frame == 0) {
         throw std::invalid_argument("Maximum pitches per frame must be positive.");
     }
+    check_cancelled(options.cancellation);
     if (!std::isfinite(options.spectral_threshold) ||
         !(options.spectral_threshold > 0.0 && options.spectral_threshold <= 1.0)) {
         throw std::invalid_argument("Spectral threshold must be greater than 0 and at most 1.");
@@ -1720,10 +1898,11 @@ std::vector<Note> transcribe_monophonic(const AudioBuffer& audio,
 
     stage_started = std::chrono::steady_clock::now();
     const auto analyze_range = [&analysis_audio, &frames, adaptive_yin_threshold,
-                                selected_window, selected_hop](
+                                selected_window, selected_hop, &options](
                                    std::size_t begin, std::size_t end) {
         YinWorkspace workspace;
         for (std::size_t index = begin; index < end; ++index) {
+            check_cancelled(options.cancellation);
             const std::size_t start = index * selected_hop;
             const auto sample_span = std::span<const float>(analysis_audio.samples)
                                          .subspan(start, selected_window);
@@ -1780,6 +1959,11 @@ std::vector<Note> transcribe_monophonic(const AudioBuffer& audio,
     timings.pitch_analysis_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - stage_started).count();
     report_timings();
+    if (options.evidence_callback) {
+        options.evidence_callback({frames, static_cast<double>(selected_window) / selected_sample_rate,
+            static_cast<double>(selected_hop) / selected_sample_rate, "yin",
+            "one-minus-cmnd-and-voicing-heuristic", {}, {}, -1});
+    }
     const double duration_seconds =
         static_cast<double>(audio.samples.size()) / audio.sample_rate;
     return notes_from_frames(frames, duration_seconds, onsets,
@@ -1959,9 +2143,9 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
     return transcribe_with_onnx(audio, model_path, OnnxOptions{});
 }
 
-std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
-                                       const std::filesystem::path& model_path,
-                                       const OnnxOptions& options) {
+namespace {
+std::vector<Note> infer_onnx_session(const AudioBuffer& audio,
+    const std::shared_ptr<Ort::Session>& session, const OnnxOptions& options) {
     if (audio.sample_rate < 2000 || audio.samples.empty()) {
         throw std::invalid_argument("ONNX inference requires non-empty audio sampled at 2000 Hz or higher.");
     }
@@ -1975,13 +2159,22 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
     if (options.device_id < 0) {
         throw std::invalid_argument("ONNX execution provider device ID must be non-negative.");
     }
-    const auto model_input_audio = resample_linear(audio, model_sample_rate);
-    auto session = load_onnx_session(
-        model_path, options.execution_provider, options.device_id);
+    check_cancelled(options.cancellation);
+    if (std::any_of(audio.samples.begin(), audio.samples.end(),
+                   [](float v) { return !std::isfinite(v); }) ||
+        !std::isfinite(options.minimum_confidence) || options.minimum_confidence < 0 ||
+        options.minimum_confidence > 1 || !std::isfinite(options.polyphonic_threshold) ||
+        options.polyphonic_threshold < 0 || options.polyphonic_threshold > 1) {
+        throw std::invalid_argument("ONNX requires finite audio and activation/confidence thresholds in [0,1]");
+    }
+    if (session->GetInputCount() != 1) {
+        throw std::invalid_argument("ONNX adapter requires exactly one waveform input");
+    }
     const auto input_info = session->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
     const auto model_input_shape = input_info.GetShape();
     if (model_input_shape.size() == 3 && model_input_shape[1] == 43844 &&
         model_input_shape[2] == 1) {
+        validate_onnx_contract(*session, ModelContract::BasicPitchV1);
         if (options.progress_callback) {
             options.progress_callback(0.1);
         }
@@ -1990,6 +2183,12 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
             options.progress_callback(1.0);
         }
         return notes;
+    }
+    validate_onnx_contract(*session, ModelContract::LegacyPitchV1);
+    const auto model_input_audio = resample_linear(audio, model_sample_rate);
+    if (model_input_shape[1] > 0 && static_cast<std::size_t>(model_input_shape[1]) !=
+        model_input_audio.samples.size()) {
+        throw std::invalid_argument("Fixed LegacyPitchV1 waveform length does not match resampled input");
     }
     Ort::AllocatorWithDefaultOptions allocator;
     auto input_name = session->GetInputNameAllocated(0, allocator);
@@ -2013,8 +2212,8 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
     const char* output_names[] = {
         first_output_name.get(), second_output_name ? second_output_name->get() : nullptr};
     const std::size_t requested_outputs = second_output_name ? 2 : 1;
-    auto outputs = session->Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1,
-                                output_names, requested_outputs);
+    auto outputs = run_onnx(*session, options.cancellation, input_names, &input_tensor, 1,
+                            output_names, requested_outputs);
     if (outputs.empty() || !outputs.front().IsTensor()) {
         throw std::runtime_error("ONNX model did not return a tensor output.");
     }
@@ -2039,6 +2238,7 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
     const std::size_t frame_count = static_cast<std::size_t>(shape[1]);
     const std::size_t class_count = static_cast<std::size_t>(shape[2]);
     const float* activations = outputs[selected_output].GetTensorData<float>();
+    validate_activations(activations, output_info.GetElementCount());
 
     if (options.progress_callback) {
         options.progress_callback(0.5);
@@ -2049,6 +2249,7 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
     const auto onsets = detect_onsets(filtered);
     if (!options.polyphonic) {
         std::vector<PitchFrame> frames;
+        std::vector<double> raw_selected;
         frames.reserve(frame_count);
         for (std::size_t frame = 0; frame < frame_count; ++frame) {
             const float* row = activations + frame * class_count;
@@ -2062,12 +2263,17 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
             const double confidence = voiced ? probabilities[best] : 0.0;
             frames.push_back({pitch, frame * frame_step_seconds, confidence,
                               voiced ? confidence : 0.0});
+            if (options.evidence_callback) raw_selected.push_back(row[best]);
         }
         if (options.progress_callback) {
             options.progress_callback(0.9);
         }
         auto notes = notes_from_frames(frames, duration_seconds, onsets,
                                        options.minimum_confidence);
+        if (options.evidence_callback) {
+            options.evidence_callback({frames, 0.0, frame_step_seconds, "onnx-generic",
+                                       "selected-normalized-activation", {}, raw_selected, -1});
+        }
         if (options.progress_callback) {
             options.progress_callback(1.0);
         }
@@ -2102,7 +2308,18 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
         }
     }
     std::vector<Note> notes;
-    for (auto& frames : pitch_frames) {
+    for (std::size_t pitch = 0; pitch < pitch_frames.size(); ++pitch) {
+        auto& frames = pitch_frames[pitch];
+        if (options.evidence_callback) {
+            std::vector<double> raw;
+            raw.reserve(frame_count);
+            for (std::size_t frame = 0; frame < frame_count; ++frame) {
+                raw.push_back(activations[frame * class_count + pitch]);
+            }
+            options.evidence_callback({frames, 0.0, frame_step_seconds, "onnx-generic",
+                                       "selected-normalized-activation", {}, raw,
+                                       static_cast<int>(pitch) + 28});
+        }
         auto detected = notes_from_frames(frames, duration_seconds, onsets,
                                           options.minimum_confidence);
         notes.insert(notes.end(), detected.begin(), detected.end());
@@ -2118,6 +2335,116 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
     }
     return notes;
 }
+}
+
+std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
+    const std::filesystem::path& model_path, const OnnxOptions& options) {
+    return infer_onnx_session(audio,
+        load_onnx_session(model_path, options.execution_provider, options.device_id), options);
+}
 #endif
+
+namespace detail {
+#ifdef TRANSCRIBE_ENABLE_ONNX
+class RuntimeSession final : public OnnxSession {
+public:
+    RuntimeSession(const ModelDefinition& definition, const ModelLoadOptions& options) :
+        session_(create_onnx_session(definition.path, options.provider, options.device_id)) {
+        validate_onnx_contract(*session_, definition.contract);
+    }
+    std::vector<Note> infer(const AudioBuffer& audio, const OnnxOptions& options) override {
+        return infer_onnx_session(audio, session_, options);
+    }
+    void describe(ModelMetadata& metadata) const override {
+        Ort::AllocatorWithDefaultOptions allocator;
+        const auto describe_tensors = [&](bool inputs) {
+            std::vector<TensorContract> tensors;
+            const auto count = inputs ? session_->GetInputCount() : session_->GetOutputCount();
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto name = inputs ? session_->GetInputNameAllocated(i, allocator) :
+                    session_->GetOutputNameAllocated(i, allocator);
+                const auto type = inputs ? session_->GetInputTypeInfo(i) : session_->GetOutputTypeInfo(i);
+                if (type.GetONNXType() != ONNX_TYPE_TENSOR) {
+                    tensors.push_back({name.get(), "non-tensor", {}});
+                } else {
+                    const auto tensor = type.GetTensorTypeAndShapeInfo();
+                    tensors.push_back({name.get(),
+                        tensor.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ? "float32" :
+                            "onnx-type:" + std::to_string(tensor.GetElementType()), tensor.GetShape()});
+                }
+            }
+            return tensors;
+        };
+        metadata.inputs = describe_tensors(true);
+        metadata.outputs = describe_tensors(false);
+    }
+private:
+    std::shared_ptr<Ort::Session> session_;
+};
+#endif
+
+std::unique_ptr<OnnxSession> open_onnx_session(
+    const ModelDefinition& definition, const ModelLoadOptions& options) {
+#ifdef TRANSCRIBE_ENABLE_ONNX
+    return std::make_unique<RuntimeSession>(definition, options);
+#else
+    (void)definition; (void)options;
+    throw std::runtime_error("ONNX support is disabled; configure TRANSCRIBE_ENABLE_ONNX=ON");
+#endif
+}
+
+std::string onnx_runtime_version() {
+#ifdef TRANSCRIBE_ENABLE_ONNX
+    return Ort::GetVersionString();
+#else
+    return "disabled";
+#endif
+}
+
+std::vector<ProviderAvailability> onnx_providers() {
+    std::vector<ProviderAvailability> result;
+    std::vector<std::string> runtime;
+#ifdef TRANSCRIBE_ENABLE_ONNX
+    runtime = Ort::GetAvailableProviders();
+#endif
+    for (const auto provider : {OnnxExecutionProvider::Cpu, OnnxExecutionProvider::Cuda,
+                               OnnxExecutionProvider::DirectML, OnnxExecutionProvider::Rocm}) {
+        bool compiled = false;
+        std::string name;
+        switch (provider) {
+        case OnnxExecutionProvider::Cpu:
+            name = "CPUExecutionProvider";
+#ifdef TRANSCRIBE_ENABLE_ONNX
+            compiled = true;
+#endif
+            break;
+        case OnnxExecutionProvider::Cuda:
+            name = "CUDAExecutionProvider";
+#ifdef TRANSCRIBE_ONNX_ENABLE_CUDA
+            compiled = true;
+#endif
+            break;
+        case OnnxExecutionProvider::DirectML:
+            name = "DmlExecutionProvider";
+#ifdef TRANSCRIBE_ONNX_ENABLE_DIRECTML
+            compiled = true;
+#endif
+            break;
+        case OnnxExecutionProvider::Rocm:
+            name = "ROCMExecutionProvider";
+#ifdef TRANSCRIBE_ONNX_ENABLE_ROCM
+            compiled = true;
+#endif
+            break;
+        }
+        const bool available = std::find(runtime.begin(), runtime.end(), name) != runtime.end();
+        result.push_back({provider, compiled, available,
+            !compiled ? "Not enabled in this build" :
+                (available ? "Runtime advertises provider; device/session validation occurs at load" :
+                             "Provider absent from loaded ONNX Runtime")});
+    }
+    return result;
+}
+}
 
 } // namespace transcribe

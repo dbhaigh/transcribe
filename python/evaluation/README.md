@@ -109,6 +109,57 @@ CPU ONNX also completed all 16 synthetic clips locally (one repetition,
 no warmup), with empty-input inference explicitly skipped. That smoke report
 is a build artifact, not one of the three repeated baselines above.
 
+## Opt-in temporal decoding records
+
+The original legacy records above are unchanged. New full-buffer, opt-in
+canonical-event baselines use the same corpus/tolerances and one warmup plus
+three measured fresh-process repetitions:
+
+- [YIN](synthetic-v1-windows-clang23-yin-temporal-full.json):
+  15 TP / 7 FP / 9 FN; strict event F1 65.22%, frame F1 80.95%.
+- [Spectral](synthetic-v1-windows-clang23-spectral-temporal-full.json):
+  20 TP / 3 FP / 4 FN; strict event F1 85.11%, frame F1 97.74%.
+- [Basic Pitch CPU ONNX](synthetic-v1-windows-clang23-onnx-temporal-full.json):
+  20 TP / 3 FP / 4 FN; strict event F1 85.11%, frame F1 98.26%.
+
+These include accepted canonical events, raw per-event evidence, sample-time
+provenance and explicit null calibrated confidence/velocity. They describe an
+uncommitted implementation through source and executable digests, not a clean
+release commit. The optional record identifies the bundled model by SHA-256;
+the built-in runs require no models or datasets. Private recorded-audio
+predictions are not included.
+
+See [decoder methods, same-mode legacy comparisons, ablations and
+limitations](../../docs/decoding.md). Do not use a temporal snapshot as
+`--compare` for legacy output; configurations intentionally differ.
+
+## Versioned model-interface records
+
+These full-buffer records use contract version 1 and preserve the legacy
+outputs on the same synthetic-v1 corpus. They do not enable temporal decoding:
+
+- [YIN](synthetic-v1-windows-clang23-yin-interface-full.json):
+  strict event F1 48.15%, frame F1 78.43%.
+- [Spectral](synthetic-v1-windows-clang23-spectral-interface-full.json):
+  strict event F1 26.67%, frame F1 81.01%.
+- [Basic Pitch CPU](synthetic-v1-windows-clang23-onnx-interface-full.json):
+  strict event F1 53.13%, frame F1 95.57%.
+
+Each quality record uses one fresh-process warmup plus three measured runs.
+Per-run metadata includes the actual input/output tensor descriptors, analysis
+rate, pitch range, windows, activation semantics, provider and runtime.
+
+The separate [persistent-session CPU benchmark](model-interface-windows-clang23-cpu.json)
+uses four in-process calls per clip, with load time separated from cold/warm
+inference. Its 60 workloads include the corpus plus low-note, dense-chord and
+90-second stress fixtures. All legacy note comparisons matched exactly;
+empty ONNX inference was explicitly skipped. No private recording is included.
+Only CPU was available; no GPU result is implied.
+
+See [model contracts, measurements, reproduction and limits](../../docs/model-inference.md).
+These reports record dirty-source/binary digests, not a clean release commit.
+Do not compare interface snapshots against temporal/streaming configurations.
+
 ## Historical real-audio record
 
 [guitarset-v1.1.0-results.json](guitarset-v1.1.0-results.json) is the existing

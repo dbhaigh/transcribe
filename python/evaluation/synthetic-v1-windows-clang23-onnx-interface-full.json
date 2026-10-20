@@ -1,0 +1,5375 @@
+{
+  "audio_sample_rates": [
+    22050
+  ],
+  "build": {
+    "build_type": "Release",
+    "compiler": {
+      "id": "Clang",
+      "path": "clang++.exe",
+      "version": "23.1.1"
+    },
+    "executable": "transcriber.exe",
+    "features": {
+      "asio": true,
+      "ffmpeg": false,
+      "onnx": true,
+      "onnx_cuda": false,
+      "onnx_directml": false,
+      "onnx_rocm": false,
+      "webview2": false
+    },
+    "flags": {
+      "common": "",
+      "debug": "-g",
+      "language": "cxx_std_20",
+      "minsizerel": "-Os -DNDEBUG",
+      "release": "-O3 -DNDEBUG",
+      "relwithdebinfo": "-O2 -g -DNDEBUG",
+      "warnings": "-Wall -Wextra -Wpedantic"
+    },
+    "generator": "MinGW Makefiles",
+    "metadata_sha256": "b57fcc99e14f3c30fcc03c56273cea1887d29442c3d65e8f83db4f15cb50cdf9",
+    "project_version": "0.1.4",
+    "runner": "transcriber-evaluate.exe",
+    "runner_sha256": "99d11e10738e55e3f01f96c1c0e2bc9ab9aab88465fbae92de93d3abca7c71bd",
+    "schema_version": 1,
+    "system": "Windows"
+  },
+  "clips": [
+    {
+      "audio_sha256": "5c0f5eca644e9f191a4c694bb0397cacd099df157e171bff7dcfa01fe4867668",
+      "canonical_events": [],
+      "duration_seconds": 2.0,
+      "first_update_seconds": [],
+      "id": "monophonic",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 1,
+        "frame": {
+          "f1": 0.9609375,
+          "fn": 2,
+          "fp": 8,
+          "precision": 0.9389312977099237,
+          "recall": 0.984,
+          "tp": 123
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.8,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.6666666666666666,
+          "recall": 1.0,
+          "tp": 2
+        },
+        "offset_error_seconds": {
+          "count": 2,
+          "maximum": 0.0498412698412698,
+          "mean": 0.035442176870748354,
+          "median": 0.035442176870748354,
+          "p95": 0.0498412698412698
+        },
+        "onset_error_seconds": {
+          "count": 2,
+          "maximum": 0.029251700680272164,
+          "mean": 0.025770975056689363,
+          "median": 0.025770975056689363,
+          "p95": 0.029251700680272164
+        },
+        "onset_pitch": {
+          "f1": 0.8,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.6666666666666666,
+          "recall": 1.0,
+          "tp": 2
+        },
+        "pitch_accuracy": {
+          "correct": 2,
+          "matched": 2,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.7922636568546295,
+          "duration": 0.5224489795918368,
+          "midi": 57,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.6286122798919678,
+          "duration": 0.08126984126984127,
+          "midi": 57,
+          "start": 0.6501587301587302
+        },
+        {
+          "confidence": 0.7974658461867786,
+          "duration": 0.7082086167800453,
+          "midi": 64,
+          "start": 0.8707482993197279
+        }
+      ],
+      "process_wall_seconds": [
+        0.17073889999301173,
+        0.17290920001687482,
+        0.17382009999710135
+      ],
+      "real_time_factor": [
+        0.0746069,
+        0.0755314,
+        0.0758874
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 0.7,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.7000000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.6,
+          "onset": 0.9,
+          "start": 0.9,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.148689,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.000524,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.060945,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1492138
+        },
+        {
+          "analysis_seconds": 0.1504548,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.000607,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0620122,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1510628
+        },
+        {
+          "analysis_seconds": 0.1511812,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005929,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0630901,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1517748
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "f44550ea83d9d37f9a96bd72e81d8108ddaef586f0f18b4da21b5d2356f25255",
+      "canonical_events": [],
+      "duration_seconds": 2.0,
+      "first_update_seconds": [],
+      "id": "repeated",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9375,
+          "fn": 0,
+          "fp": 16,
+          "precision": 0.8823529411764706,
+          "recall": 1.0,
+          "tp": 120
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "offset_error_seconds": {
+          "count": 3,
+          "maximum": 0.033446712018140756,
+          "mean": 0.026167800453514745,
+          "median": 0.026167800453514634,
+          "p95": 0.033446712018140756
+        },
+        "onset_error_seconds": {
+          "count": 3,
+          "maximum": 0.030952380952380842,
+          "mean": 0.0266213151927437,
+          "median": 0.02662131519274369,
+          "p95": 0.030952380952380842
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "pitch_accuracy": {
+          "correct": 3,
+          "matched": 3,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.7861740706782592,
+          "duration": 0.44117913832199546,
+          "midi": 69,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.7725510566662519,
+          "duration": 0.45278911564625846,
+          "midi": 69,
+          "start": 0.6733786848072563
+        },
+        {
+          "confidence": 0.7797688459738706,
+          "duration": 0.4643990929705215,
+          "midi": 69,
+          "start": 1.2190476190476192
+        }
+      ],
+      "process_wall_seconds": [
+        0.17530899998382665,
+        0.17632359999697655,
+        0.17664220000733621
+      ],
+      "real_time_factor": [
+        0.07673045,
+        0.07736545,
+        0.07735895
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 0.4,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 0.55,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.40000000000000013,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.1,
+          "onset": 0.7,
+          "start": 0.7,
+          "velocity": 90
+        },
+        {
+          "duration": 0.3999999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.65,
+          "onset": 1.25,
+          "start": 1.25,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.1528366,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006235,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0627453,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1534609
+        },
+        {
+          "analysis_seconds": 0.1541736,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005565,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0646874,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1547309
+        },
+        {
+          "analysis_seconds": 0.1539342,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.000783,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.063887,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1547179
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "842d8ff3d950813e85a6f5cd2e3c0639ea69070ca01766ad47184befd309b8ec",
+      "canonical_events": [],
+      "duration_seconds": 1.0,
+      "first_update_seconds": [],
+      "id": "silence",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.1282993000058923,
+        0.1301392999885138,
+        0.12999190000118688
+      ],
+      "real_time_factor": [
+        0.1075046,
+        0.1076913,
+        0.1072589
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [],
+      "runs": [
+        {
+          "analysis_seconds": 0.107034,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0003905,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0623168,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1075046
+        },
+        {
+          "analysis_seconds": 0.1070438,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006467,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0629393,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1076913
+        },
+        {
+          "analysis_seconds": 0.1067918,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004664,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0619523,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1072589
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "0c23b090efad343a3edce4adcd5acf6c5da6a131c818d51c75dd4a8347918a0a",
+      "canonical_events": [],
+      "duration_seconds": 2.5,
+      "first_update_seconds": [],
+      "id": "octaves",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 2,
+        "frame": {
+          "f1": 0.9565217391304348,
+          "fn": 0,
+          "fp": 15,
+          "precision": 0.9166666666666666,
+          "recall": 1.0,
+          "tp": 165
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.75,
+          "fn": 0,
+          "fp": 2,
+          "precision": 0.6,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "offset_error_seconds": {
+          "count": 3,
+          "maximum": 0.052154195011338,
+          "mean": 0.042154195011337915,
+          "median": 0.0498412698412698,
+          "p95": 0.052154195011338
+        },
+        "onset_error_seconds": {
+          "count": 3,
+          "maximum": 0.029251700680272164,
+          "mean": 0.02538170823885108,
+          "median": 0.024603174603174516,
+          "p95": 0.029251700680272164
+        },
+        "onset_pitch": {
+          "f1": 0.75,
+          "fn": 0,
+          "fp": 2,
+          "precision": 0.6,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "pitch_accuracy": {
+          "correct": 3,
+          "matched": 3,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.7673585858609941,
+          "duration": 0.5224489795918368,
+          "midi": 45,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.510931887796947,
+          "duration": 0.08126984126984127,
+          "midi": 45,
+          "start": 0.6501587301587302
+        },
+        {
+          "confidence": 0.7564428285056469,
+          "duration": 0.603718820861678,
+          "midi": 57,
+          "start": 0.8707482993197279
+        },
+        {
+          "confidence": 0.8118867622481452,
+          "duration": 0.5224489795918368,
+          "midi": 69,
+          "start": 1.6253968253968254
+        },
+        {
+          "confidence": 0.6531628625733512,
+          "duration": 0.08126984126984116,
+          "midi": 69,
+          "start": 2.147845804988662
+        }
+      ],
+      "process_wall_seconds": [
+        0.1785047999874223,
+        0.17139430000679567,
+        0.1817553000000771
+      ],
+      "real_time_factor": [
+        0.06247588,
+        0.0602002,
+        0.06323456
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 45,
+          "offset": 0.7,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 1.45,
+          "onset": 0.9,
+          "start": 0.9,
+          "velocity": 90
+        },
+        {
+          "duration": 0.5500000000000003,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 2.2,
+          "onset": 1.65,
+          "start": 1.65,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.155435,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006659,
+          "duration_seconds": 2.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0683193,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1561897
+        },
+        {
+          "analysis_seconds": 0.1498087,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.00061,
+          "duration_seconds": 2.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0616172,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1505005
+        },
+        {
+          "analysis_seconds": 0.1575274,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005579,
+          "duration_seconds": 2.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0610039,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1580864
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "518941768c022c75dcad53ef3306e755ece46f96790cfd9b6685b73bfa8fd8d1",
+      "canonical_events": [],
+      "duration_seconds": 2.0,
+      "first_update_seconds": [],
+      "id": "vibrato",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9836065573770492,
+          "fn": 0,
+          "fp": 5,
+          "precision": 0.967741935483871,
+          "recall": 1.0,
+          "tp": 150
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.033446712018140756,
+          "mean": 0.033446712018140756,
+          "median": 0.033446712018140756,
+          "p95": 0.033446712018140756
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.022290249433106563,
+          "mean": 0.022290249433106563,
+          "median": 0.022290249433106563,
+          "p95": 0.022290249433106563
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.8540126318807033,
+          "duration": 1.5557369614512473,
+          "midi": 69,
+          "start": 0.12770975056689343
+        }
+      ],
+      "process_wall_seconds": [
+        0.17474180000135675,
+        0.17207060000509955,
+        0.16953769998508506
+      ],
+      "real_time_factor": [
+        0.07616435,
+        0.07480715,
+        0.07448365
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 1.5,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.65,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90,
+          "vibrato_cents": 35.0
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.1517842,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005436,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0643747,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1523287
+        },
+        {
+          "analysis_seconds": 0.1489305,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006831,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0608965,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1496143
+        },
+        {
+          "analysis_seconds": 0.1483468,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006197,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0611956,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1489673
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "ba216e82f5462d377de78f9da238f074889cdca766932f267da57f2b1ab43fb0",
+      "canonical_events": [],
+      "duration_seconds": 1.8,
+      "first_update_seconds": [],
+      "id": "chord",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 3,
+          "reference": 3,
+          "value": 1.0
+        },
+        "false_positives": 2,
+        "frame": {
+          "f1": 0.9827357237715804,
+          "fn": 5,
+          "fp": 8,
+          "precision": 0.9788359788359788,
+          "recall": 0.9866666666666667,
+          "tp": 370
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.75,
+          "fn": 0,
+          "fp": 2,
+          "precision": 0.6,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "offset_error_seconds": {
+          "count": 3,
+          "maximum": 0.05324263038548738,
+          "mean": 0.05324263038548738,
+          "median": 0.05324263038548738,
+          "p95": 0.05324263038548738
+        },
+        "onset_error_seconds": {
+          "count": 3,
+          "maximum": 0.022290249433106563,
+          "mean": 0.022290249433106563,
+          "median": 0.022290249433106563,
+          "p95": 0.022290249433106563
+        },
+        "onset_pitch": {
+          "f1": 0.75,
+          "fn": 0,
+          "fp": 2,
+          "precision": 0.6,
+          "recall": 1.0,
+          "tp": 3
+        },
+        "pitch_accuracy": {
+          "correct": 3,
+          "matched": 3,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.7055046587314421,
+          "duration": 1.2190476190476192,
+          "midi": 60,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.8013649565669206,
+          "duration": 1.2190476190476192,
+          "midi": 64,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.781759469565891,
+          "duration": 1.2190476190476192,
+          "midi": 67,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.5498810887336731,
+          "duration": 0.05804988662131505,
+          "midi": 64,
+          "start": 1.3467573696145125
+        },
+        {
+          "confidence": 0.5556611766417822,
+          "duration": 0.0696598639455781,
+          "midi": 67,
+          "start": 1.3467573696145125
+        }
+      ],
+      "process_wall_seconds": [
+        0.1726388999959454,
+        0.1726339000160806,
+        0.17342289999942295
+      ],
+      "real_time_factor": [
+        0.08412655555555555,
+        0.08423894444444444,
+        0.08398627777777778
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 1.25,
+          "instrument": "synthetic_harmonic",
+          "midi": 60,
+          "offset": 1.4,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 65
+        },
+        {
+          "duration": 1.25,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.4,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 65
+        },
+        {
+          "duration": 1.25,
+          "instrument": "synthetic_harmonic",
+          "midi": 67,
+          "offset": 1.4,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 65
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.1509107,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005165,
+          "duration_seconds": 1.8,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0634737,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1514278
+        },
+        {
+          "analysis_seconds": 0.150941,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006882,
+          "duration_seconds": 1.8,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0616301,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1516301
+        },
+        {
+          "analysis_seconds": 0.1504051,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0007301,
+          "duration_seconds": 1.8,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0630548,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1511753
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "feeb436772e487d48d9fac0e73c766dfc3397caeafa060d4bbe2e0fe667271ea",
+      "canonical_events": [],
+      "duration_seconds": 2.2,
+      "first_update_seconds": [],
+      "id": "overlap",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 2,
+          "reference": 2,
+          "value": 1.0
+        },
+        "false_positives": 5,
+        "frame": {
+          "f1": 0.9764150943396226,
+          "fn": 3,
+          "fp": 7,
+          "precision": 0.9672897196261683,
+          "recall": 0.9857142857142858,
+          "tp": 207
+        },
+        "missed_notes": 2,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 2,
+          "fp": 5,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 2,
+          "maximum": 0.561451247165533,
+          "mean": 0.5444217687074829,
+          "median": 0.5444217687074829,
+          "p95": 0.561451247165533
+        },
+        "onset_error_seconds": {
+          "count": 2,
+          "maximum": 0.022290249433106563,
+          "mean": 0.01687074829931974,
+          "median": 0.01687074829931974,
+          "p95": 0.022290249433106563
+        },
+        "onset_pitch": {
+          "f1": 0.5714285714285714,
+          "fn": 0,
+          "fp": 3,
+          "precision": 0.4,
+          "recall": 1.0,
+          "tp": 2
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 2,
+          "value": 0.5
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.7930011397058313,
+          "duration": 0.5108390022675737,
+          "midi": 57,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.7387342854686405,
+          "duration": 0.5340589569160998,
+          "midi": 57,
+          "start": 0.6385487528344671
+        },
+        {
+          "confidence": 0.8278439511423525,
+          "duration": 0.5340589569160998,
+          "midi": 64,
+          "start": 0.6385487528344671
+        },
+        {
+          "confidence": 0.8013630029631824,
+          "duration": 0.47600907029478456,
+          "midi": 64,
+          "start": 1.172607709750567
+        },
+        {
+          "confidence": 0.6378004513680935,
+          "duration": 0.09287981859410421,
+          "midi": 64,
+          "start": 1.6486167800453515
+        }
+      ],
+      "process_wall_seconds": [
+        0.18658760000835173,
+        0.1798564000055194,
+        0.1864468999847304
+      ],
+      "real_time_factor": [
+        0.07095599999999999,
+        0.07096536363636363,
+        0.0736470909090909
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 1.05,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 1.2,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 70
+        },
+        {
+          "duration": 1.0499999999999998,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.7,
+          "onset": 0.65,
+          "start": 0.65,
+          "velocity": 70
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.1554733,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006292,
+          "duration_seconds": 2.2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0620058,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1561032
+        },
+        {
+          "analysis_seconds": 0.155203,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0008407,
+          "duration_seconds": 2.2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0650431,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1561238
+        },
+        {
+          "analysis_seconds": 0.1612421,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006981,
+          "duration_seconds": 2.2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0690704,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1620236
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "3d1757008f8bc29daa63cfa8cf88e48c012fd6d71902c33ed6253b3940375a06",
+      "canonical_events": [],
+      "duration_seconds": 2.2,
+      "first_update_seconds": [],
+      "id": "decay",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 1,
+        "frame": {
+          "f1": 0.9850746268656716,
+          "fn": 0,
+          "fp": 5,
+          "precision": 0.9705882352941176,
+          "recall": 1.0,
+          "tp": 165
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.6666666666666666,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.5,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.07011337868480716,
+          "mean": 0.07011337868480716,
+          "median": 0.07011337868480716,
+          "p95": 0.07011337868480716
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.022290249433106563,
+          "mean": 0.022290249433106563,
+          "median": 0.022290249433106563,
+          "p95": 0.022290249433106563
+        },
+        "onset_pitch": {
+          "f1": 0.6666666666666666,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.5,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.7752326649168263,
+          "duration": 1.6021768707482995,
+          "midi": 64,
+          "start": 0.12770975056689343
+        },
+        {
+          "confidence": 0.7088006337483724,
+          "duration": 0.10448979591836749,
+          "midi": 64,
+          "start": 1.7298866213151927
+        }
+      ],
+      "process_wall_seconds": [
+        0.1760200000135228,
+        0.17100120001123287,
+        0.17569299999740906
+      ],
+      "real_time_factor": [
+        0.06966295454545454,
+        0.06810754545454545,
+        0.06991527272727271
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "decay": 3.0,
+          "duration": 1.6500000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.8,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.1525816,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006759,
+          "duration_seconds": 2.2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0620764,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1532585
+        },
+        {
+          "analysis_seconds": 0.1491593,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005961,
+          "duration_seconds": 2.2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0613302,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1498366
+        },
+        {
+          "analysis_seconds": 0.1530844,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005576,
+          "duration_seconds": 2.2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0617411,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1538136
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "db360547584ea5e14033b41734e976de4ffd16676900c1403335adb400d2aa5b",
+      "canonical_events": [],
+      "duration_seconds": 2.2,
+      "first_update_seconds": [],
+      "id": "attack",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 3,
+        "frame": {
+          "f1": 0.9763313609467456,
+          "fn": 0,
+          "fp": 8,
+          "precision": 0.953757225433526,
+          "recall": 1.0,
+          "tp": 165
+        },
+        "missed_notes": 1,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 3,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 1.498140589569161,
+          "mean": 1.498140589569161,
+          "median": 1.498140589569161,
+          "p95": 1.498140589569161
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.0339002267573696,
+          "mean": 0.0339002267573696,
+          "median": 0.0339002267573696,
+          "p95": 0.0339002267573696
+        },
+        "onset_pitch": {
+          "f1": 0.5,
+          "fn": 0,
+          "fp": 2,
+          "precision": 0.3333333333333333,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.7819379846254985,
+          "duration": 0.18575963718820865,
+          "midi": 57,
+          "start": 0.11609977324263039
+        },
+        {
+          "confidence": 0.8290404744148254,
+          "duration": 1.4512471655328798,
+          "midi": 57,
+          "start": 0.301859410430839
+        },
+        {
+          "confidence": 0.6203306317329407,
+          "duration": 0.09287981859410444,
+          "midi": 57,
+          "start": 1.7531065759637188
+        }
+      ],
+      "process_wall_seconds": [
+        0.17213819999597035,
+        0.17406970000592992,
+        0.17804970001452602
+      ],
+      "real_time_factor": [
+        0.06821245454545453,
+        0.068391,
+        0.07132713636363636
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "attack": 0.25,
+          "duration": 1.6500000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 1.8,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.1495083,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005581,
+          "duration_seconds": 2.2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0620217,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1500674
+        },
+        {
+          "analysis_seconds": 0.1497553,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006015,
+          "duration_seconds": 2.2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0617338,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1504602
+        },
+        {
+          "analysis_seconds": 0.1561253,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0007936,
+          "duration_seconds": 2.2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.065064,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1569197
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "59cc892aca97cbe2aa84431990f6fcf0c0354d3a47f4bff34c023242e1da1b12",
+      "canonical_events": [],
+      "duration_seconds": 2.0,
+      "first_update_seconds": [],
+      "id": "noise",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.9802631578947368,
+          "fn": 1,
+          "fp": 5,
+          "precision": 0.9675324675324676,
+          "recall": 0.9933333333333333,
+          "tp": 149
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.012993197278911461,
+          "mean": 0.012993197278911461,
+          "median": 0.012993197278911461,
+          "p95": 0.012993197278911461
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.045510204081632644,
+          "mean": 0.045510204081632644,
+          "median": 0.045510204081632644,
+          "p95": 0.045510204081632644
+        },
+        "onset_pitch": {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.6859637352136465,
+          "duration": 1.5325170068027212,
+          "midi": 69,
+          "start": 0.10448979591836735
+        }
+      ],
+      "process_wall_seconds": [
+        0.17235730000538751,
+        0.1733405999839306,
+        0.1724005000141915
+      ],
+      "real_time_factor": [
+        0.0756176,
+        0.075716,
+        0.07510345
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 1.5,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.65,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.150576,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005256,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0613967,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1512352
+        },
+        {
+          "analysis_seconds": 0.1508368,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005942,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0633973,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.151432
+        },
+        {
+          "analysis_seconds": 0.1495914,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0006145,
+          "duration_seconds": 2,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0613664,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1502069
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "db93f5d146b1eaa59d30d20902a8240bf7b6d7c36770ce86f2a8e25533ad9636",
+      "canonical_events": [],
+      "duration_seconds": 1.0,
+      "first_update_seconds": [],
+      "id": "noise_only",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.1437185000104364,
+        0.12859279999975115,
+        0.12740120000671595
+      ],
+      "real_time_factor": [
+        0.1210322,
+        0.1063646,
+        0.1055818
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [],
+      "runs": [
+        {
+          "analysis_seconds": 0.1205279,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004349,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0672812,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1210322
+        },
+        {
+          "analysis_seconds": 0.1059065,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004573,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0611844,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1063646
+        },
+        {
+          "analysis_seconds": 0.1051008,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004025,
+          "duration_seconds": 1,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0613741,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1055818
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "9b749b5d9098e9072dc82b00817286feea35188f2c22e4b61109250e048e9810",
+      "canonical_events": [],
+      "duration_seconds": 2.5,
+      "first_update_seconds": [],
+      "id": "reverberation",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 4,
+        "frame": {
+          "f1": 0.744,
+          "fn": 12,
+          "fp": 52,
+          "precision": 0.6413793103448275,
+          "recall": 0.8857142857142857,
+          "tp": 93
+        },
+        "missed_notes": 2,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 2,
+          "fp": 4,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 2,
+          "fp": 4,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.7899226504702901,
+          "duration": 0.4992290249433106,
+          "midi": 57,
+          "start": 0.2089795918367347
+        },
+        {
+          "confidence": 0.6027545907667705,
+          "duration": 0.16253968253968254,
+          "midi": 57,
+          "start": 0.7082086167800453
+        },
+        {
+          "confidence": 0.7856997780080112,
+          "duration": 0.615328798185941,
+          "midi": 64,
+          "start": 0.9636281179138322
+        },
+        {
+          "confidence": 0.6634068131446839,
+          "duration": 0.1741496598639456,
+          "midi": 64,
+          "start": 1.5789569160997732
+        }
+      ],
+      "process_wall_seconds": [
+        0.1768496000149753,
+        0.1771883999754209,
+        0.17419089999748394
+      ],
+      "real_time_factor": [
+        0.06159744,
+        0.061822,
+        0.0609666
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 0.5,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 0.65,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        },
+        {
+          "duration": 0.5499999999999999,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 1.45,
+          "onset": 0.9,
+          "start": 0.9,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.1533935,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005993,
+          "duration_seconds": 2.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0642341,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1539936
+        },
+        {
+          "analysis_seconds": 0.1534195,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0010348,
+          "duration_seconds": 2.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.064426,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.154555
+        },
+        {
+          "analysis_seconds": 0.1518312,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0005846,
+          "duration_seconds": 2.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0623628,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1524165
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "a6b15193170120d89e88b7755ae878c778550fa0cb3cd661ff408940c783fe4b",
+      "canonical_events": [],
+      "duration_seconds": 1.5,
+      "first_update_seconds": [],
+      "id": "clipping",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 1,
+        "frame": {
+          "f1": 0.9722222222222222,
+          "fn": 0,
+          "fp": 6,
+          "precision": 0.9459459459459459,
+          "recall": 1.0,
+          "tp": 105
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.6666666666666666,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.5,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "offset_error_seconds": {
+          "count": 1,
+          "maximum": 0.050612244897959235,
+          "mean": 0.050612244897959235,
+          "median": 0.050612244897959235,
+          "p95": 0.050612244897959235
+        },
+        "onset_error_seconds": {
+          "count": 1,
+          "maximum": 0.0339002267573696,
+          "mean": 0.0339002267573696,
+          "median": 0.0339002267573696,
+          "p95": 0.0339002267573696
+        },
+        "onset_pitch": {
+          "f1": 0.6666666666666666,
+          "fn": 0,
+          "fp": 1,
+          "precision": 0.5,
+          "recall": 1.0,
+          "tp": 1
+        },
+        "pitch_accuracy": {
+          "correct": 1,
+          "matched": 1,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.7840575123655384,
+          "duration": 1.0332879818594105,
+          "midi": 69,
+          "start": 0.11609977324263039
+        },
+        {
+          "confidence": 0.7010724118777684,
+          "duration": 0.08126984126984138,
+          "midi": 69,
+          "start": 1.1493877551020408
+        }
+      ],
+      "process_wall_seconds": [
+        0.17410720000043511,
+        0.17245230000116862,
+        0.17242119999718852
+      ],
+      "real_time_factor": [
+        0.1010514,
+        0.1001994,
+        0.10028866666666668
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 1.05,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 1.2,
+          "onset": 0.15,
+          "start": 0.15,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.15109,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004863,
+          "duration_seconds": 1.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0622125,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1515771
+        },
+        {
+          "analysis_seconds": 0.1495975,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0007004,
+          "duration_seconds": 1.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0620415,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1502991
+        },
+        {
+          "analysis_seconds": 0.1499336,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0004967,
+          "duration_seconds": 1.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0615095,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.150433
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "3987570688d01fdcd0451e5338877cfe41d06bc2793dd8aabf9b84b58f2106f2",
+      "canonical_events": [],
+      "duration_seconds": 0.01,
+      "first_update_seconds": [],
+      "id": "very_short",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 1,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 1,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.12484809997840784,
+        0.13168099999893457,
+        0.12597809999715537
+      ],
+      "real_time_factor": [
+        10.373019999999999,
+        10.80251,
+        10.36215
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "attack": 0.001,
+          "duration": 0.01,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 0.01,
+          "onset": 0,
+          "start": 0,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.1035433,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0001864,
+          "duration_seconds": 0.009977324263038548,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0616047,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1037302
+        },
+        {
+          "analysis_seconds": 0.106962,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0010626,
+          "duration_seconds": 0.009977324263038548,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.064864,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1080251
+        },
+        {
+          "analysis_seconds": 0.1033004,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0003199,
+          "duration_seconds": 0.009977324263038548,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0617438,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.1036215
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "24d5db4ca2d256752cd049a330cb406196c05f4cfe8036beb309e0e4533d21de",
+      "canonical_events": [],
+      "duration_seconds": 0.0,
+      "first_update_seconds": [],
+      "id": "empty",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 0,
+        "frame": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "missed_notes": 0,
+        "note_event": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "offset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_error_seconds": {
+          "count": 0,
+          "maximum": null,
+          "mean": null,
+          "median": null,
+          "p95": null
+        },
+        "onset_pitch": {
+          "f1": 0.0,
+          "fn": 0,
+          "fp": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "tp": 0
+        },
+        "pitch_accuracy": {
+          "correct": 0,
+          "matched": 0,
+          "value": null
+        }
+      },
+      "predictions": [],
+      "process_wall_seconds": [
+        0.08486350000021048,
+        0.08513239998137578,
+        0.08468170001287945
+      ],
+      "real_time_factor": [
+        null,
+        null,
+        null
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [],
+      "runs": [
+        {
+          "analysis_seconds": 0.0632092,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0001564,
+          "duration_seconds": 0,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": true,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0622703,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0633659
+        },
+        {
+          "analysis_seconds": 0.0633839,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0002594,
+          "duration_seconds": 0,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": true,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0622746,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0636436
+        },
+        {
+          "analysis_seconds": 0.0622868,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0001883,
+          "duration_seconds": 0,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": true,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0613701,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.0624754
+        }
+      ],
+      "sample_rate": 22050
+    },
+    {
+      "audio_sha256": "eecf2111ad094636e2ccccafcfabfa31947df77fab3db412191edde27a3fdf56",
+      "canonical_events": [],
+      "duration_seconds": 16.5,
+      "first_update_seconds": [],
+      "id": "long_boundary",
+      "metrics": {
+        "chord_note_recall": {
+          "correct": 0,
+          "reference": 0,
+          "value": null
+        },
+        "false_positives": 4,
+        "frame": {
+          "f1": 0.9413735343383585,
+          "fn": 9,
+          "fp": 26,
+          "precision": 0.9153094462540716,
+          "recall": 0.9689655172413794,
+          "tp": 281
+        },
+        "missed_notes": 1,
+        "note_event": {
+          "f1": 0.4444444444444444,
+          "fn": 1,
+          "fp": 4,
+          "precision": 0.3333333333333333,
+          "recall": 0.6666666666666666,
+          "tp": 2
+        },
+        "offset_error_seconds": {
+          "count": 2,
+          "maximum": 0.05696145124716567,
+          "mean": 0.0520408163265309,
+          "median": 0.0520408163265309,
+          "p95": 0.05696145124716567
+        },
+        "onset_error_seconds": {
+          "count": 2,
+          "maximum": 0.03909297052154237,
+          "mean": 0.03247165532879841,
+          "median": 0.03247165532879841,
+          "p95": 0.03909297052154237
+        },
+        "onset_pitch": {
+          "f1": 0.4444444444444444,
+          "fn": 1,
+          "fp": 4,
+          "precision": 0.3333333333333333,
+          "recall": 0.6666666666666666,
+          "tp": 2
+        },
+        "pitch_accuracy": {
+          "correct": 2,
+          "matched": 2,
+          "value": 1.0
+        }
+      },
+      "predictions": [
+        {
+          "confidence": 0.7940355040589158,
+          "duration": 0.5688888888888889,
+          "midi": 57,
+          "start": 0.17414965986394557
+        },
+        {
+          "confidence": 0.6242264583706856,
+          "duration": 0.09287981859410432,
+          "midi": 57,
+          "start": 0.7430385487528345
+        },
+        {
+          "confidence": 0.8326220317281408,
+          "duration": 1.6137868480725608,
+          "midi": 69,
+          "start": 13.839092970521543
+        },
+        {
+          "confidence": 0.7048850109179815,
+          "duration": 0.13931972789115754,
+          "midi": 69,
+          "start": 15.452879818594104
+        },
+        {
+          "confidence": 0.8136260747909546,
+          "duration": 0.5224489795918377,
+          "midi": 64,
+          "start": 15.754739229024944
+        },
+        {
+          "confidence": 0.6867940588430925,
+          "duration": 0.12770975056689338,
+          "midi": 64,
+          "start": 16.27718820861678
+        }
+      ],
+      "process_wall_seconds": [
+        0.5657994999783114,
+        0.5638101999938954,
+        0.5625046000059228
+      ],
+      "real_time_factor": [
+        0.032858727272727276,
+        0.03274194545454545,
+        0.03263158181818182
+      ],
+      "realtime_events": [],
+      "realtime_onset_analysis_latency_seconds": [],
+      "references": [
+        {
+          "duration": 0.6000000000000001,
+          "instrument": "synthetic_harmonic",
+          "midi": 57,
+          "offset": 0.8,
+          "onset": 0.2,
+          "start": 0.2,
+          "velocity": 90
+        },
+        {
+          "duration": 1.6999999999999993,
+          "instrument": "synthetic_harmonic",
+          "midi": 69,
+          "offset": 15.5,
+          "onset": 13.8,
+          "start": 13.8,
+          "velocity": 90
+        },
+        {
+          "duration": 0.6000000000000014,
+          "instrument": "synthetic_harmonic",
+          "midi": 64,
+          "offset": 16.3,
+          "onset": 15.7,
+          "start": 15.7,
+          "velocity": 90
+        }
+      ],
+      "runs": [
+        {
+          "analysis_seconds": 0.539762,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0023236,
+          "duration_seconds": 16.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0621575,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.542169
+        },
+        {
+          "analysis_seconds": 0.5363823,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0037722,
+          "duration_seconds": 16.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0618486,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.5402421
+        },
+        {
+          "analysis_seconds": 0.5353501,
+          "canonical_event_count": 0,
+          "decode_included_in_analysis": false,
+          "decode_seconds": 0.0030095,
+          "duration_seconds": 16.5,
+          "first_update_seconds": null,
+          "hardware_concurrency": 12,
+          "inference_skipped": false,
+          "model_interface": {
+            "activation_semantics": "unclamped note-head activations; selected/clamped strengths",
+            "active_provider": "cpu",
+            "analysis_sample_rate": 22050,
+            "batch_size": 1,
+            "hop_samples": 36164,
+            "id": "evaluation:onnx",
+            "incremental": false,
+            "inputs": [
+              {
+                "dimensions": [
+                  -1,
+                  43844,
+                  1
+                ],
+                "element_type": "float32",
+                "name": "serving_default_input_2:0"
+              }
+            ],
+            "load_seconds": 0.0614906,
+            "maximum_midi": 96,
+            "minimum_midi": 28,
+            "model_file_bytes": 230444,
+            "output_frame_step_samples": 256,
+            "outputs": [
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:2"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  88
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:1"
+              },
+              {
+                "dimensions": [
+                  -1,
+                  172,
+                  264
+                ],
+                "element_type": "float32",
+                "name": "StatefulPartitionedCall:0"
+              }
+            ],
+            "overlap_samples": 7680,
+            "runtime_version": "1.20.1",
+            "version": 1,
+            "window_samples": 43844
+          },
+          "raw_track_count": 0,
+          "sample_rate": 22050,
+          "stages": null,
+          "total_seconds": 0.5384211
+        }
+      ],
+      "sample_rate": 22050
+    }
+  ],
+  "configuration": {
+    "backend": "onnx",
+    "chunk_seconds": 15,
+    "device_id": 0,
+    "fast": false,
+    "instrument_prior": "none",
+    "maximum_pitches_per_frame": 6,
+    "minimum_confidence": 0.25,
+    "mode": "full",
+    "model_interface": {
+      "batch_size": 1,
+      "contract": "basic-pitch-v1",
+      "cpu_fallback_disabled": false,
+      "incremental": false,
+      "version": 1
+    },
+    "onnx_independent_probabilities": true,
+    "onnx_polyphonic_threshold": 0.4,
+    "overlap_seconds": 1,
+    "parallel": true,
+    "provider": "cpu",
+    "realtime_latency_ms": 40,
+    "realtime_minimum_confidence": 0.45,
+    "realtime_update_rate_hz": 100,
+    "spectral_threshold": 0.3
+  },
+  "corpus": {
+    "ground_truth": "Dry oscillator activation; reverb tails are not extra notes",
+    "name": "transcriber-synthetic",
+    "provenance": "Generated locally by synthetic_corpus.py; no sampled recordings",
+    "sample_rate": 22050,
+    "schema_version": 1,
+    "seed": 2026,
+    "sha256": "183c7f68643d6ac54a1b15a26af195e16590f115c5194f25c139366844f6fca9",
+    "version": 1
+  },
+  "environment": {
+    "logical_cpus": 12,
+    "machine": "AMD64",
+    "platform": "Windows-11-10.0.26220-SP0",
+    "processor": "Intel64 Family 6 Model 165 Stepping 2, GenuineIntel",
+    "python": "3.12.10"
+  },
+  "evaluator": {
+    "files_sha256": {
+      "CMakeLists.txt": "998a78baa11f92f9372ef1094bad3b6daf2b0f00f552a0841d86583821b6364c",
+      "include/transcribe/audio.hpp": "1f1f9b59faeb32b2b8e7068956a26e47c20616fe5a391491963c5f040ba4596c",
+      "include/transcribe/decoding.hpp": "c4b29754baa908838c9da5483cb4f6185bcf6ed2a97cca1e5f0f049fb2d21ac2",
+      "include/transcribe/inference.hpp": "151c62ea3814973b17541cff458f41963276cb9df6b681bc463f46529c3c48cb",
+      "include/transcribe/transcriber.hpp": "5f8cfd4c83860d3e89221bfddb46de70d978655603e68b7df556e1d1cfa4f9fc",
+      "python/evaluate.py": "49a1f7f24d879af76025881330acaec8a61cbfade2f67f4c7173a8fd7baa52e0",
+      "python/evaluate_guitarset.py": "35754c80b7fd8533dd1848b1d1a2c88be1364ebc657c60d5f7d34e2517c96c8b",
+      "python/evaluation_metrics.py": "97d41d462a57e179c275ce117d276b6cf1beeb0f7ad219777fcb1b4484b337dc",
+      "python/synthetic_corpus.py": "7fd5e1e8df0b07d21c8af142e26436e13dad6d98437990b61b51d3d909c39bac",
+      "src/audio_file.cpp": "e4fde094ee5b28c03ece6ae49f653a5185b535043ddcc83cd9291c2a614bcb84",
+      "src/audio_ring_buffer.cpp": "bf6df2fc41b14616e5ff4357c55f5f82b72cac337d3eb8290cf5bc0b4ad9e922",
+      "src/decoding.cpp": "3f3396577c4be58415880b835bf57e4aed5f535f897bb0344c81832ef0bf40fb",
+      "src/inference.cpp": "1e2327e69b67bbfcce2e7b86af20e0716770faa9fc376e77e669cd8f6c5bd10a",
+      "src/onnx_backend.hpp": "d8868b524a65580b4a08b01d22c599a0735d4dbd1d0f6aa52e029510f5d844b0",
+      "src/transcriber.cpp": "0d7f4eaf05baa3704e0e23e9dd013df431cf0be3f0b814962ce90d91e89d736f",
+      "tests/evaluation_build.json.in": "c39b2e91c5583e75dfdfd77fcb568d59c35ee270a0f5603d3a7c45cca2e46853",
+      "tests/evaluation_runner.cpp": "d26f12fb5bf241bccc91ee34a23ab5870fee81c25e5532842a666e1f61d0c0f3"
+    },
+    "git_dirty": true,
+    "git_revision": "721d254da15c4d99fa7669d5606ab0939647b2ad"
+  },
+  "generated_at_utc": "2026-10-20T18:00:30.099534+00:00",
+  "model": {
+    "identifier": "onnx:2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec",
+    "sha256": "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec"
+  },
+  "schema_version": 1,
+  "summary": {
+    "analysis_seconds": {
+      "count": 48,
+      "maximum": 0.539762,
+      "mean": 0.16217386875,
+      "median": 0.1505154,
+      "p95": 0.5353501
+    },
+    "chord_note_recall": {
+      "correct": 5,
+      "reference": 5,
+      "value": 1.0
+    },
+    "corpus_audio_seconds": 41.410000000000004,
+    "corpus_real_time_factor": 0.06295390404894148,
+    "false_positives": 23,
+    "first_update_seconds": {
+      "count": 0,
+      "maximum": null,
+      "mean": null,
+      "median": null,
+      "p95": null
+    },
+    "frame": {
+      "f1": 0.9557077625570777,
+      "fn": 33,
+      "fp": 161,
+      "precision": 0.9285714285714286,
+      "recall": 0.98447789275635,
+      "tp": 2093
+    },
+    "missed_notes": 7,
+    "note_event": {
+      "f1": 0.53125,
+      "fn": 7,
+      "fp": 23,
+      "precision": 0.425,
+      "recall": 0.7083333333333334,
+      "tp": 17
+    },
+    "offset_error_seconds": {
+      "count": 20,
+      "maximum": 1.498140589569161,
+      "mean": 0.16469047619047622,
+      "median": 0.050226757369614516,
+      "p95": 0.561451247165533
+    },
+    "onset_error_seconds": {
+      "count": 20,
+      "maximum": 0.045510204081632644,
+      "mean": 0.0265498866213152,
+      "median": 0.02344671201814054,
+      "p95": 0.03909297052154237
+    },
+    "onset_pitch": {
+      "f1": 0.625,
+      "fn": 4,
+      "fp": 20,
+      "precision": 0.5,
+      "recall": 0.8333333333333334,
+      "tp": 20
+    },
+    "pitch_accuracy": {
+      "correct": 19,
+      "matched": 20,
+      "value": 0.95
+    },
+    "process_wall_seconds": {
+      "count": 48,
+      "maximum": 0.5657994999783114,
+      "mean": 0.18531366666623703,
+      "median": 0.1727740500064101,
+      "p95": 0.5625046000059228
+    },
+    "realtime_onset_analysis_latency_seconds": {
+      "count": 0,
+      "maximum": null,
+      "mean": null,
+      "median": null,
+      "p95": null
+    },
+    "skipped_inferences": 3,
+    "total_seconds": {
+      "count": 48,
+      "maximum": 0.542169,
+      "mean": 0.16293257291666666,
+      "median": 0.15120525,
+      "p95": 0.5384211
+    }
+  },
+  "timing_protocol": {
+    "clock": "steady_clock engine / perf_counter parent",
+    "first_update": "wall time to first nonempty streaming update/realtime event",
+    "isolation": "new process per clip and repetition; model/session cold",
+    "offline_latency": "decode + analysis total; no exports/process startup",
+    "realtime_latency": "detected_at - estimated onset in input time; not hardware latency",
+    "repetitions": 3,
+    "warmups": 1
+  },
+  "tolerances": {
+    "frame_seconds": 0.01,
+    "offset_ratio": 0.2,
+    "offset_seconds": 0.05,
+    "onset_seconds": 0.05
+  }
+}

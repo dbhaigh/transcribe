@@ -32,6 +32,10 @@ add_library(transcriber_core STATIC
     src/audio_ring_buffer.cpp
     src/asio_capture.cpp
     src/transcriber.cpp
+    src/decoding.cpp
+    src/inference.cpp
+    src/live.cpp
+    src/live_document.cpp
     src/musicxml.cpp
     src/guitar_tab.cpp
 )
@@ -259,7 +263,7 @@ if(TRANSCRIBE_BUILD_TESTS)
         GIT_SHALLOW TRUE)
     FetchContent_MakeAvailable(Catch2)
     enable_testing()
-    add_executable(transcriber-tests tests/transcribe_tests.cpp)
+    add_executable(transcriber-tests tests/transcribe_tests.cpp tests/decoding_tests.cpp tests/inference_tests.cpp tests/live_tests.cpp)
     target_link_libraries(transcriber-tests PRIVATE transcriber_core Catch2::Catch2WithMain)
     target_compile_features(transcriber-tests PRIVATE cxx_std_20)
     if(TRANSCRIBE_ENABLE_ONNX)
@@ -279,17 +283,29 @@ if(TRANSCRIBE_BUILD_TESTS)
 
     add_executable(transcriber-evaluate tests/evaluation_runner.cpp)
     target_link_libraries(transcriber-evaluate PRIVATE transcriber_core)
+    add_executable(transcriber-performance tests/performance_runner.cpp)
+    add_executable(transcriber-live tests/live_runner.cpp)
+    target_link_libraries(transcriber-live PRIVATE transcriber_core)
+    target_link_libraries(transcriber-performance PRIVATE transcriber_core)
+    if(WIN32)
+        target_link_libraries(transcriber-performance PRIVATE psapi)
+    endif()
     if(MSVC)
         target_compile_options(transcriber-evaluate PRIVATE /W4 /permissive-)
+        target_compile_options(transcriber-performance PRIVATE /W4 /permissive-)
+        target_compile_options(transcriber-live PRIVATE /W4 /permissive-)
     else()
         target_compile_options(transcriber-evaluate PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(transcriber-performance PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(transcriber-live PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
         add_test(NAME evaluation_framework
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/evaluation_tests.py"
                 "$<TARGET_FILE:transcriber-evaluate>"
-                "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json")
+                "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                "$<TARGET_FILE:transcriber-performance>")
         add_test(NAME synthetic_evaluation
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
                 --runner "$<TARGET_FILE:transcriber-evaluate>"
@@ -314,6 +330,28 @@ if(TRANSCRIBE_BUILD_TESTS)
         set_tests_properties(evaluation_framework synthetic_evaluation
             synthetic_evaluation_spectral synthetic_evaluation_realtime PROPERTIES
             LABELS "evaluation" TIMEOUT 180)
+        foreach(backend yin spectral)
+            add_test(NAME model_interface_evaluation_${backend}
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
+                    --runner "$<TARGET_FILE:transcriber-evaluate>"
+                    --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                    --backend "${backend}" --mode full --model-interface
+                    --repetitions 1 --warmups 0
+                    --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/interface-${backend}.json")
+            set_tests_properties(model_interface_evaluation_${backend} PROPERTIES
+                LABELS "evaluation" TIMEOUT 180)
+        endforeach()
+        foreach(backend yin spectral)
+            add_test(NAME live_evaluation_${backend}
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/live_evaluation.py"
+                    --runner "$<TARGET_FILE:transcriber-live>"
+                    --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                    --backend "${backend}" --refine-backend spectral
+                    --max-refinement-f1-drop 0 --check
+                    --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/live-${backend}.json"
+                    --output-text "${CMAKE_CURRENT_BINARY_DIR}/evaluation/live-${backend}.txt")
+            set_tests_properties(live_evaluation_${backend} PROPERTIES LABELS "evaluation;live" TIMEOUT 300)
+        endforeach()
         if(TRANSCRIBE_ENABLE_ONNX AND BASIC_PITCH_MODEL_PATH)
             add_test(NAME synthetic_evaluation_onnx
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
@@ -324,6 +362,24 @@ if(TRANSCRIBE_BUILD_TESTS)
                     --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-onnx.json"
                     --output-text "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-onnx.txt")
             set_tests_properties(synthetic_evaluation_onnx PROPERTIES LABELS "evaluation" TIMEOUT 180)
+            add_test(NAME model_interface_evaluation_onnx
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
+                    --runner "$<TARGET_FILE:transcriber-evaluate>"
+                    --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                    --backend onnx --mode full --model-interface
+                    --model "${BASIC_PITCH_MODEL_PATH}" --model-contract basic-pitch-v1
+                    --repetitions 1 --warmups 0
+                    --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/interface-onnx.json")
+            set_tests_properties(model_interface_evaluation_onnx PROPERTIES LABELS "evaluation" TIMEOUT 180)
+            add_test(NAME live_evaluation_onnx
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/live_evaluation.py"
+                    --runner "$<TARGET_FILE:transcriber-live>"
+                    --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                    --backend onnx --refine-backend onnx --model "${BASIC_PITCH_MODEL_PATH}"
+                    --max-refinement-f1-drop 0 --check
+                    --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/live-onnx.json"
+                    --output-text "${CMAKE_CURRENT_BINARY_DIR}/evaluation/live-onnx.txt")
+            set_tests_properties(live_evaluation_onnx PROPERTIES LABELS "evaluation;live" TIMEOUT 600)
         endif()
 
         add_test(NAME cli_export_validation

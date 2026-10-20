@@ -46,7 +46,8 @@ def source_identity() -> dict:
              "python/evaluate_guitarset.py", "tests/evaluation_runner.cpp", "CMakeLists.txt",
              "tests/evaluation_build.json.in", "src/transcriber.cpp", "src/audio_file.cpp",
              "src/audio_ring_buffer.cpp", "include/transcribe/transcriber.hpp",
-             "include/transcribe/audio.hpp"]
+             "include/transcribe/audio.hpp", "src/decoding.cpp", "include/transcribe/decoding.hpp"]
+    files.extend(["include/transcribe/inference.hpp", "src/inference.cpp", "src/onnx_backend.hpp"])
     identity = {name: sha256_file(ROOT / name) for name in files}
     result: dict[str, Any] = {"files_sha256": identity, "git_revision": None, "git_dirty": None}
     if shutil.which("git"):
@@ -133,8 +134,21 @@ def invoke(args, audio: Path, output: Path) -> tuple[dict, float]:
         command.append("--fast")
     if args.serial:
         command.append("--serial")
+    if args.model_interface:
+        command.extend(["--model-interface", "--model-contract", args.model_contract])
+    if args.temporal:
+        command.extend(["--temporal", "--audio-source-id", "sha256:" + sha256_file(audio),
+                        "--activation-on", str(args.activation_on),
+                        "--activation-off", str(args.activation_off),
+                        "--maximum-gap", str(args.maximum_gap),
+                        "--audio-refinement", str(int(not args.no_audio_refinement))])
+        if args.correct_isolated_octaves:
+            command.append("--correct-isolated-octaves")
     if args.model:
         command.extend(["--model", str(args.model), "--provider", args.provider])
+        if args.temporal:
+            command.extend(["--model-identifier",
+                            args.model_identifier or "onnx:" + sha256_file(args.model)])
     environment = os.environ.copy()
     environment["PATH"] = os.pathsep.join([str(args.runner.parent), environment.get("PATH", "")])
     output.unlink(missing_ok=True)
@@ -210,6 +224,17 @@ def evaluate(args) -> dict:
                   realtime_minimum_confidence=.45, maximum_pitches_per_frame=6,
                   spectral_threshold=.3, onnx_polyphonic_threshold=.4,
                   onnx_independent_probabilities=True, device_id=0, instrument_prior="none")
+    if args.temporal:
+        config["temporal_decoding"] = dict(activation_on=args.activation_on,
+            activation_off=args.activation_off, maximum_gap_seconds=args.maximum_gap,
+            audio_refinement=not args.no_audio_refinement, minimum_duration_seconds=.055,
+            energy_floor_rms=.0015, energy_relative_threshold=.08, spectral_peak_fraction=.02)
+        config["temporal_decoding"]["correct_isolated_octaves"] = args.correct_isolated_octaves
+    if args.model_interface:
+        config["model_interface"] = dict(version=1,
+            contract=args.model_contract if args.backend == "onnx" else args.backend,
+            incremental=False, batch_size=1,
+            cpu_fallback_disabled=args.provider != "cpu")
     with tempfile.TemporaryDirectory(prefix="transcriber-evaluation-") as temporary:
         directory = Path(temporary)
         corpus = generate(directory) if args.corpus == "synthetic" else real_corpus(args, directory)
@@ -228,6 +253,9 @@ def evaluate(args) -> dict:
             predictions = data_runs[0]["notes"]
             if any(run["notes"] != predictions for run in data_runs[1:]):
                 raise RuntimeError(f"Nondeterministic predictions across repetitions: {clip['id']}")
+            if any(run.get("canonical_events") != data_runs[0].get("canonical_events")
+                   for run in data_runs[1:]):
+                raise RuntimeError(f"Nondeterministic canonical evidence: {clip['id']}")
             metrics = score_events(clip["notes"], predictions, clip["duration_seconds"], tolerances)
             latencies = [
                 event["detected_at_seconds"] - event["time_seconds"]
@@ -237,9 +265,11 @@ def evaluate(args) -> dict:
                 id=clip["id"], sample_rate=clip["sample_rate"], audio_sha256=clip["sha256"],
                 duration_seconds=clip["duration_seconds"], references=clip["notes"],
                 predictions=predictions, metrics=metrics, runs=[
-                    {key: value for key, value in run.items() if key not in ("notes", "events")}
+                    {key: value for key, value in run.items()
+                     if key not in ("notes", "events", "canonical_events")}
                     for run in data_runs],
                 realtime_events=data_runs[0]["events"],
+                canonical_events=data_runs[0].get("canonical_events", []),
                 realtime_onset_analysis_latency_seconds=latencies,
                 first_update_seconds=[run["first_update_seconds"] for run in data_runs
                                       if run["first_update_seconds"] is not None],
@@ -294,6 +324,8 @@ def human_report(report: dict) -> str:
              f"Build: {report['build']['compiler']['id']} {report['build']['compiler']['version']} "
              f"{report['build']['build_type']}; model {report['model']['identifier']}; "
              f"provider {report['configuration']['provider']}"]
+    if "temporal_decoding" in report["configuration"]:
+        lines.append("Opt-in temporal decoder; calibrated confidence and velocity unavailable.")
     for metric in ("note_event", "onset_pitch", "frame"):
         m = summary[metric]
         lines.append(f"{metric:12} P {m['precision']:.4f} R {m['recall']:.4f} F1 {m['f1']:.4f}"
@@ -329,6 +361,15 @@ def parse_args():
     parser.add_argument("--provider", choices=("cpu", "cuda", "directml", "rocm"), default="cpu")
     parser.add_argument("--fast", action="store_true")
     parser.add_argument("--serial", action="store_true")
+    parser.add_argument("--temporal", action="store_true")
+    parser.add_argument("--model-interface", action="store_true")
+    parser.add_argument("--model-contract", choices=("basic-pitch-v1", "legacy-pitch-v1"),
+                        default="basic-pitch-v1")
+    parser.add_argument("--activation-on", type=float, default=.4)
+    parser.add_argument("--activation-off", type=float, default=.4)
+    parser.add_argument("--maximum-gap", type=float, default=0)
+    parser.add_argument("--no-audio-refinement", action="store_true")
+    parser.add_argument("--correct-isolated-octaves", action="store_true")
     parser.add_argument("--minimum-confidence", type=float, default=.25)
     parser.add_argument("--chunk-seconds", type=float, default=15)
     parser.add_argument("--overlap-seconds", type=float, default=1)
@@ -347,14 +388,25 @@ def parse_args():
     parser.add_argument("--compare", type=Path)
     parser.add_argument("--max-event-f1-drop", type=float)
     args = parser.parse_args()
+    if args.model_interface and (args.mode != "full" or args.temporal):
+        parser.error("--model-interface requires --mode full without --temporal")
+    if args.temporal and args.mode == "realtime":
+        parser.error("Temporal evaluation is offline only")
+    if not args.temporal and (args.activation_on != .4 or args.activation_off != .4 or
+                             args.maximum_gap != 0 or args.no_audio_refinement or
+                             args.correct_isolated_octaves):
+        parser.error("Temporal decoding options require --temporal")
     if args.repetitions < 1 or args.warmups < 0 or (args.limit is not None and args.limit < 1):
         parser.error("Repetitions/limit must be positive; warmups must be nonnegative")
     for name in ("minimum_confidence", "chunk_seconds", "overlap_seconds", "latency_ms",
-                 "timeout_seconds", "onset_tolerance", "offset_tolerance", "offset_ratio", "frame_step"):
+                 "timeout_seconds", "onset_tolerance", "offset_tolerance", "offset_ratio", "frame_step",
+                 "activation_on", "activation_off", "maximum_gap"):
         if not math.isfinite(getattr(args, name)):
             parser.error(f"{name} must be finite")
     if args.timeout_seconds <= 0 or not 0 <= args.minimum_confidence <= 1:
         parser.error("Invalid timeout or minimum confidence")
+    if not 0 <= args.activation_off <= args.activation_on <= 1 or args.maximum_gap < 0:
+        parser.error("Temporal thresholds require 0 <= off <= on <= 1 and a nonnegative gap")
     if ((args.backend == "onnx") != bool(args.model) or
         (args.backend != "onnx" and args.provider != "cpu") or
         (args.backend == "onnx" and (args.mode != "full" or args.fast)) or
