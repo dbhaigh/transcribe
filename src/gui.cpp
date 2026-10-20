@@ -257,7 +257,7 @@ void save_preferences_or_warn(const AppState& state) {
     if (!save_preferences(state)) {
         MessageBoxW(state.window,
                     L"Recent paths could not be saved and will not be remembered.",
-                    L"Transcribe", MB_OK | MB_ICONWARNING);
+                    L"Transcriber", MB_OK | MB_ICONWARNING);
     }
 }
 
@@ -283,7 +283,7 @@ void start_transcription(AppState& state) {
     const auto tuning_selection = SendMessageW(state.guitar_tuning, CB_GETCURSEL, 0, 0);
     if (tuning_selection < 0 ||
         tuning_selection >= static_cast<LRESULT>(tunings.size())) {
-        MessageBoxW(state.window, L"Select a supported guitar tuning.", L"Transcribe",
+        MessageBoxW(state.window, L"Select a supported guitar tuning.", L"Transcriber",
                     MB_OK | MB_ICONWARNING);
         return;
     }
@@ -303,17 +303,17 @@ void start_transcription(AppState& state) {
         }
     } catch (const std::exception&) {
         MessageBoxW(state.window, L"Enter a capo fret from 0 to 24 and 0 to 5 alternative fingerings.",
-                    L"Transcribe", MB_OK | MB_ICONWARNING);
+                    L"Transcriber", MB_OK | MB_ICONWARNING);
         return;
     }
 
     if (!use_asio && input_text.empty()) {
-        MessageBoxW(state.window, L"Choose a WAV audio file first.", L"Transcribe",
+        MessageBoxW(state.window, L"Choose a WAV audio file first.", L"Transcriber",
                     MB_OK | MB_ICONINFORMATION);
         return;
     }
     if (musicxml_text.empty() || tab_text.empty()) {
-        MessageBoxW(state.window, L"Choose both output file paths.", L"Transcribe",
+        MessageBoxW(state.window, L"Choose both output file paths.", L"Transcriber",
                     MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -322,7 +322,7 @@ void start_transcription(AppState& state) {
         MessageBoxW(state.window,
                     L"ONNX Runtime support is not enabled in this build. "
                     L"Configure with -DTRANSCRIBE_ENABLE_ONNX=ON to use a model.",
-                    L"Transcribe", MB_OK | MB_ICONWARNING);
+                    L"Transcriber", MB_OK | MB_ICONWARNING);
         return;
     }
 #endif
@@ -344,7 +344,7 @@ void start_transcription(AppState& state) {
         } catch (const std::exception&) {
             MessageBoxW(state.window,
                         L"Enter a capture duration up to 300 seconds and a live latency from 20 to 50 ms.",
-                        L"Transcribe", MB_OK | MB_ICONWARNING);
+                        L"Transcriber", MB_OK | MB_ICONWARNING);
             return;
         }
     }
@@ -609,7 +609,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         set_mode_controls(*state);
         return 0;
         } catch (const std::exception& error) {
-            MessageBoxW(window, to_wide(error.what()).c_str(), L"Transcribe",
+            MessageBoxW(window, to_wide(error.what()).c_str(), L"Transcriber",
                         MB_OK | MB_ICONERROR);
             return -1;
         }
@@ -656,7 +656,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             const auto result = reinterpret_cast<INT_PTR>(
                 ShellExecuteW(window, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
             if (result <= 32) {
-                MessageBoxW(window, L"Could not open the output folder.", L"Transcribe",
+                MessageBoxW(window, L"Could not open the output folder.", L"Transcriber",
                             MB_OK | MB_ICONERROR);
             }
             return 0;
@@ -665,7 +665,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             try {
                 start_transcription(*state);
             } catch (const std::exception& error) {
-                MessageBoxW(window, to_wide(error.what()).c_str(), L"Transcribe",
+                MessageBoxW(window, to_wide(error.what()).c_str(), L"Transcriber",
                             MB_OK | MB_ICONERROR);
             }
             return 0;
@@ -718,7 +718,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
 #ifndef TRANSCRIBE_ENABLE_FFMPEG
             const auto extension = std::filesystem::path(dropped_path.data()).extension();
             if (extension != L".wav" && extension != L".WAV") {
-                MessageBoxW(window, L"This build accepts WAV files only.", L"Transcribe",
+                MessageBoxW(window, L"This build accepts WAV files only.", L"Transcriber",
                             MB_OK | MB_ICONINFORMATION);
                 DragFinish(drop);
                 return 0;
@@ -760,12 +760,12 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
     common_controls.dwSize = sizeof(common_controls);
     common_controls.dwICC = ICC_PROGRESS_CLASS;
     if (!InitCommonControlsEx(&common_controls)) {
-        MessageBoxW(nullptr, L"Could not initialize common controls.", L"Transcribe",
+        MessageBoxW(nullptr, L"Could not initialize common controls.", L"Transcriber",
                     MB_OK | MB_ICONERROR);
         return 1;
     }
     AppState state;
-    const wchar_t class_name[] = L"TranscribeMainWindow";
+    const wchar_t class_name[] = L"TranscriberMainWindow";
     WNDCLASSEXW window_class{};
     window_class.cbSize = sizeof(window_class);
     window_class.lpfnWndProc = window_proc;
@@ -774,7 +774,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
     window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     window_class.lpszClassName = class_name;
     if (RegisterClassExW(&window_class) == 0) {
-        MessageBoxW(nullptr, L"Could not register the application window.", L"Transcribe",
+        MessageBoxW(nullptr, L"Could not register the application window.", L"Transcriber",
                     MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -782,11 +782,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
     RECT bounds{0, 0, 760, 660};
     AdjustWindowRect(&bounds, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     HWND window = CreateWindowExW(
-        0, class_name, L"Transcribe", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        0, class_name, L"Transcriber", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
         nullptr, nullptr, instance, &state);
     if (window == nullptr) {
-        MessageBoxW(nullptr, L"Could not create the application window.", L"Transcribe",
+        MessageBoxW(nullptr, L"Could not create the application window.", L"Transcriber",
                     MB_OK | MB_ICONERROR);
         return 1;
     }

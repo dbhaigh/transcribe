@@ -131,7 +131,7 @@
     "note_event_offset_tolerance": "max(50 ms, 20% of reference duration)",
     "onset_pitch_tolerance_seconds": 0.05,
     "platform": "Windows-11-10.0.26220-SP0",
-    "prediction_thresholds": "Transcribe defaults; not tuned on this dataset",
+    "prediction_thresholds": "Transcriber defaults; not tuned on this dataset",
     "python": "3.12.10",
     "seed": null
   },

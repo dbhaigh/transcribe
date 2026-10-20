@@ -1,6 +1,6 @@
-# Transcribe
+# Transcriber
 
-Transcribe is a C++20 CLI and Windows GUI for turning audio into a first-pass
+Transcriber is a C++20 CLI and Windows GUI for turning audio into a first-pass
 musical score and configurable guitar tablature. Version 0.1.4 adds interactive
 score editing, configurable guitar tablature, and more expressive MusicXML
 exports, while retaining the dependency-light WAV/YIN default, optional ONNX
@@ -53,26 +53,26 @@ ctest --test-dir build-tests -C Release --output-on-failure
 ## CLI
 
 ```text
-transcribe <input> [options]
-transcribe --asio <seconds> [options]
-transcribe --batch <directory> [options]
+transcriber <input> [options]
+transcriber --asio <seconds> [options]
+transcriber --batch <directory> [options]
 ```
 
 Examples:
 
 ```powershell
-.\build\Release\transcribe.exe guitar.wav --musicxml score.musicxml --tab guitar.txt
-.\build\Release\transcribe.exe guitar.wav --polyphonic --instrument guitar --json notes.json
-.\build\Release\transcribe.exe take.wav --midi take.mid --json take.json --benchmark
-.\build\Release\transcribe.exe take.wav --fast-preview --benchmark
-.\build\Release\transcribe.exe take.wav --quality fast --tempo 96 --key-fifths 2 --mode minor --meter 6/8
-.\build\Release\transcribe.exe --batch .\recordings --output-dir .\scores --quiet
-.\build\Release\transcribe.exe --asio 8 --musicxml live.musicxml --tab live.txt
-.\build\Release\transcribe.exe --live 8 --benchmark
+.\build\Release\transcriber.exe guitar.wav --musicxml score.musicxml --tab guitar.txt
+.\build\Release\transcriber.exe guitar.wav --polyphonic --instrument guitar --json notes.json
+.\build\Release\transcriber.exe take.wav --midi take.mid --json take.json --benchmark
+.\build\Release\transcriber.exe take.wav --fast-preview --benchmark
+.\build\Release\transcriber.exe take.wav --quality fast --tempo 96 --key-fifths 2 --mode minor --meter 6/8
+.\build\Release\transcriber.exe --batch .\recordings --output-dir .\scores --quiet
+.\build\Release\transcriber.exe --asio 8 --musicxml live.musicxml --tab live.txt
+.\build\Release\transcriber.exe --live 8 --benchmark
 ```
 
-Run `transcribe --help` for all options. Batch mode writes outputs into the
-selected output directory (or a `transcribe-output` subdirectory) and supports
+Run `transcriber --help` for all options. Batch mode writes outputs into the
+selected output directory (or a `transcriber-output` subdirectory) and supports
 WAV by default; its input filter expands when FFmpeg is enabled. The simple
 `key=value` config file uses the same long-option names without `--`, such as
 `minimum-confidence=0.3`, `latency-ms=35`, `quality=fast`, `tempo=96`,
@@ -143,7 +143,7 @@ inference/decoding.
 
 ## Windows GUI
 
-On Windows, the default build creates `transcribe-gui` with native Win32
+On Windows, the default build creates `transcriber-gui` with native Win32
 controls. It provides file pickers, drag-and-drop, progress, a rolling note
 preview during ASIO capture, remembered paths, and an open-output-folder
 action. This dependency-light native form remains available as a fallback.
@@ -166,7 +166,7 @@ uncalibrated confidence, not additional model predictions. The WebView2 option
 is off by default so the normal build stays dependency-light.
 
 ```powershell
-.\build\Release\transcribe-gui.exe
+.\build\Release\transcriber-gui.exe
 ```
 
 ASIO capture analyzes a second, callback-fed ring buffer on a dedicated worker;
@@ -196,7 +196,7 @@ extracted package root:
 cmake -S . -B build-webview2 `
   -DTRANSCRIBE_ENABLE_WEBVIEW2=ON `
   -DTRANSCRIBE_WEBVIEW2_SDK_ROOT="C:\path\to\Microsoft.Web.WebView2"
-cmake --build build-webview2 --config Release --target transcribe-gui
+cmake --build build-webview2 --config Release --target transcriber-gui
 ```
 
 The build downloads Microsoft's Evergreen WebView2 bootstrapper and copies it,
@@ -205,10 +205,10 @@ beside the executable. You can provide a pre-downloaded bootstrapper with
 `-DTRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH="C:\path\to\MicrosoftEdgeWebView2Setup.exe"`
 to build without network access during CMake configuration.
 
-At startup, Transcribe checks for the Evergreen Runtime. If it is missing, the
+At startup, Transcriber checks for the Evergreen Runtime. If it is missing, the
 app offers to launch the bundled bootstrapper. Runtime installation needs
-internet access; close and restart Transcribe after installation. The runtime
-updates independently of Transcribe. See Microsoft's
+internet access; close and restart Transcriber after installation. The runtime
+updates independently of Transcriber. See Microsoft's
 [WebView2 deployment documentation](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution)
 for deployment details. To keep using the native Win32 form, leave
 `TRANSCRIBE_ENABLE_WEBVIEW2` off.
@@ -244,7 +244,7 @@ the ONNX Runtime headers. DirectML additionally needs
 cmake -S . -B build-onnx-cuda `
   -DTRANSCRIBE_ENABLE_ONNX=ON -DTRANSCRIBE_ONNX_ENABLE_CUDA=ON
 cmake --build build-onnx-cuda --config Release
-.\build-onnx-cuda\Release\transcribe.exe guitar.wav --model model.onnx --provider cuda --device-id 0
+.\build-onnx-cuda\Release\transcriber.exe guitar.wav --model model.onnx --provider cuda --device-id 0
 ```
 
 For DirectML, configure with `-DTRANSCRIBE_ONNX_ENABLE_DIRECTML=ON`,
@@ -274,7 +274,7 @@ FFmpeg command-line executable is not sufficient.
 ### ASIO capture
 
 ASIO is Windows-only and disabled by default. Build and install RtAudio with
-its ASIO backend enabled, then point Transcribe at that installation:
+its ASIO backend enabled, then point Transcriber at that installation:
 
 ```powershell
 cmake -S ..\rtaudio -B rtaudio-build `
@@ -353,7 +353,7 @@ ctest --test-dir build-tests -C Release --output-on-failure
 The suite includes synthetic monophonic/polyphonic analysis, realtime
 input-time latency, generated MusicXML semantic parsing and multi-format CLI
 exports, and UI asset/control-wiring checks. For an external, clean guitar or
-vocal recording, set `TRANSCRIBE_REAL_AUDIO_CLIP` to a local audio path before
+vocal recording, set `TRANSCRIBER_REAL_AUDIO_CLIP` to a local audio path before
 running CTest; that optional smoke test is skipped when no clip is supplied.
 The reproducible GuitarSet guitar evaluation and its dataset/licensing details
 are documented in [python/README.md](python/README.md).

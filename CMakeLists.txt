@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(transcribe VERSION 0.1.4 LANGUAGES CXX)
+project(transcriber VERSION 0.1.4 LANGUAGES CXX)
 
 option(TRANSCRIBE_ENABLE_ASIO "Build real-time capture using RtAudio's ASIO backend" OFF)
 option(TRANSCRIBE_ENABLE_ONNX "Build ONNX Runtime model inference support" OFF)
@@ -27,7 +27,7 @@ if(TRANSCRIBE_ONNX_ENABLE_ROCM AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "The ONNX ROCm provider is supported only on Linux.")
 endif()
 
-add_library(transcribe_core STATIC
+add_library(transcriber_core STATIC
     src/audio_file.cpp
     src/audio_ring_buffer.cpp
     src/asio_capture.cpp
@@ -36,16 +36,16 @@ add_library(transcribe_core STATIC
     src/guitar_tab.cpp
 )
 
-target_include_directories(transcribe_core PUBLIC include)
-target_compile_features(transcribe_core PUBLIC cxx_std_20)
+target_include_directories(transcriber_core PUBLIC include)
+target_compile_features(transcriber_core PUBLIC cxx_std_20)
 
-add_executable(transcribe src/main.cpp)
-target_link_libraries(transcribe PRIVATE transcribe_core)
+add_executable(transcriber src/main.cpp)
+target_link_libraries(transcriber PRIVATE transcriber_core)
 
 if(WIN32)
-    add_library(transcribe_gui_backend STATIC src/gui_transcription.cpp)
-    target_link_libraries(transcribe_gui_backend PUBLIC transcribe_core)
-    target_compile_features(transcribe_gui_backend PUBLIC cxx_std_20)
+    add_library(transcriber_gui_backend STATIC src/gui_transcription.cpp)
+    target_link_libraries(transcriber_gui_backend PUBLIC transcriber_core)
+    target_compile_features(transcriber_gui_backend PUBLIC cxx_std_20)
 
     if(TRANSCRIBE_ENABLE_WEBVIEW2)
         set(TRANSCRIBE_WEBVIEW2_SDK_ROOT "" CACHE PATH
@@ -109,36 +109,36 @@ if(WIN32)
                 "WebView2 SDK not found. Set TRANSCRIBE_WEBVIEW2_SDK_ROOT to an extracted "
                 "Microsoft.Web.WebView2 NuGet package.")
         endif()
-        add_executable(transcribe-gui WIN32 src/gui_webview.cpp)
-        target_include_directories(transcribe-gui SYSTEM PRIVATE "${WEBVIEW2_INCLUDE_DIR}")
-        target_compile_definitions(transcribe-gui PRIVATE TRANSCRIBE_ENABLE_WEBVIEW2=1)
+        add_executable(transcriber-gui WIN32 src/gui_webview.cpp)
+        target_include_directories(transcriber-gui SYSTEM PRIVATE "${WEBVIEW2_INCLUDE_DIR}")
+        target_compile_definitions(transcriber-gui PRIVATE TRANSCRIBE_ENABLE_WEBVIEW2=1)
         set_property(SOURCE src/gui_webview.cpp APPEND PROPERTY OBJECT_DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/styles.css"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/app.js"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/editor.js")
-        target_link_libraries(transcribe-gui PRIVATE transcribe_gui_backend
+        target_link_libraries(transcriber-gui PRIVATE transcriber_gui_backend
             comdlg32 user32 gdi32 shell32 ole32 winmm)
-        add_custom_command(TARGET transcribe-gui POST_BUILD
+        add_custom_command(TARGET transcriber-gui POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${WEBVIEW2_LOADER_DLL}" "$<TARGET_FILE_DIR:transcribe-gui>/WebView2Loader.dll"
+                "${WEBVIEW2_LOADER_DLL}" "$<TARGET_FILE_DIR:transcriber-gui>/WebView2Loader.dll"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${WEBVIEW2_LICENSE_FILE}" "$<TARGET_FILE_DIR:transcribe-gui>/WebView2-LICENSE.txt"
+                "${WEBVIEW2_LICENSE_FILE}" "$<TARGET_FILE_DIR:transcriber-gui>/WebView2-LICENSE.txt"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${WEBVIEW2_NOTICE_FILE}" "$<TARGET_FILE_DIR:transcribe-gui>/WebView2-NOTICE.txt"
+                "${WEBVIEW2_NOTICE_FILE}" "$<TARGET_FILE_DIR:transcriber-gui>/WebView2-NOTICE.txt"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_webview2_bootstrapper}" "$<TARGET_FILE_DIR:transcribe-gui>/MicrosoftEdgeWebView2Setup.exe"
+                "${_webview2_bootstrapper}" "$<TARGET_FILE_DIR:transcriber-gui>/MicrosoftEdgeWebView2Setup.exe"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_CURRENT_SOURCE_DIR}/ui" "$<TARGET_FILE_DIR:transcribe-gui>/ui")
+                "${CMAKE_CURRENT_SOURCE_DIR}/ui" "$<TARGET_FILE_DIR:transcriber-gui>/ui")
     else()
-        add_executable(transcribe-gui WIN32 src/gui.cpp)
-        target_link_libraries(transcribe-gui PRIVATE transcribe_gui_backend
+        add_executable(transcriber-gui WIN32 src/gui.cpp)
+        target_link_libraries(transcriber-gui PRIVATE transcriber_gui_backend
             comdlg32 user32 gdi32 comctl32 shell32)
     endif()
-    target_compile_definitions(transcribe-gui PRIVATE UNICODE _UNICODE)
+    target_compile_definitions(transcriber-gui PRIVATE UNICODE _UNICODE)
 endif()
 
-foreach(target transcribe_core transcribe)
+foreach(target transcriber_core transcriber)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive-)
     else()
@@ -147,11 +147,11 @@ foreach(target transcribe_core transcribe)
 endforeach()
 if(WIN32)
     if(MSVC)
-        target_compile_options(transcribe-gui PRIVATE /W4 /permissive-)
-        target_compile_options(transcribe_gui_backend PRIVATE /W4 /permissive-)
+        target_compile_options(transcriber-gui PRIVATE /W4 /permissive-)
+        target_compile_options(transcriber_gui_backend PRIVATE /W4 /permissive-)
     else()
-        target_compile_options(transcribe-gui PRIVATE -Wall -Wextra -Wpedantic)
-        target_compile_options(transcribe_gui_backend PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(transcriber-gui PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(transcriber_gui_backend PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endif()
 
@@ -161,16 +161,16 @@ if(TRANSCRIBE_ENABLE_ASIO)
     endif()
     find_package(RtAudio CONFIG REQUIRED)
     if(TARGET RtAudio::rtaudio)
-        target_link_libraries(transcribe_core PUBLIC RtAudio::rtaudio)
+        target_link_libraries(transcriber_core PUBLIC RtAudio::rtaudio)
     elseif(TARGET rtaudio)
-        target_link_libraries(transcribe_core PUBLIC rtaudio)
+        target_link_libraries(transcriber_core PUBLIC rtaudio)
     else()
         message(FATAL_ERROR "RtAudio was found, but its CMake package exports no supported target.")
     endif()
     if(MINGW)
-        target_link_libraries(transcribe_core PUBLIC winpthread)
+        target_link_libraries(transcriber_core PUBLIC winpthread)
     endif()
-    target_compile_definitions(transcribe_core PUBLIC TRANSCRIBE_ENABLE_ASIO=1)
+    target_compile_definitions(transcriber_core PUBLIC TRANSCRIBE_ENABLE_ASIO=1)
 endif()
 
 if(TRANSCRIBE_ENABLE_ONNX)
@@ -183,15 +183,15 @@ if(TRANSCRIBE_ENABLE_ONNX)
     if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
         message(FATAL_ERROR "ONNX Runtime was not found. Set ONNXRUNTIME_ROOT to its installation directory.")
     endif()
-    target_include_directories(transcribe_core PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
-    target_link_libraries(transcribe_core PUBLIC "${ONNXRUNTIME_LIBRARY}")
-    target_compile_definitions(transcribe_core PUBLIC TRANSCRIBE_ENABLE_ONNX=1)
+    target_include_directories(transcriber_core PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
+    target_link_libraries(transcriber_core PUBLIC "${ONNXRUNTIME_LIBRARY}")
+    target_compile_definitions(transcriber_core PUBLIC TRANSCRIBE_ENABLE_ONNX=1)
     if(TRANSCRIBE_ONNX_ENABLE_CUDA)
-        target_compile_definitions(transcribe_core PRIVATE
+        target_compile_definitions(transcriber_core PRIVATE
             TRANSCRIBE_ONNX_ENABLE_CUDA=1)
     endif()
     if(TRANSCRIBE_ONNX_ENABLE_ROCM)
-        target_compile_definitions(transcribe_core PRIVATE
+        target_compile_definitions(transcriber_core PRIVATE
             TRANSCRIBE_ONNX_ENABLE_ROCM=1)
     endif()
     if(TRANSCRIBE_ONNX_ENABLE_DIRECTML)
@@ -209,10 +209,10 @@ if(TRANSCRIBE_ENABLE_ONNX)
                 "Runtime SDK and DirectML SDK; set ONNXRUNTIME_DML_INCLUDE_DIR "
                 "and TRANSCRIBE_DIRECTML_SDK_ROOT.")
         endif()
-        target_include_directories(transcribe_core SYSTEM PRIVATE
+        target_include_directories(transcriber_core SYSTEM PRIVATE
             "${ONNXRUNTIME_DML_INCLUDE_DIR}"
             "${TRANSCRIBE_DIRECTML_INCLUDE_DIR}")
-        target_compile_definitions(transcribe_core PRIVATE
+        target_compile_definitions(transcriber_core PRIVATE
             TRANSCRIBE_ONNX_ENABLE_DIRECTML=1)
     endif()
 endif()
@@ -221,9 +221,9 @@ if(TRANSCRIBE_ENABLE_FFMPEG)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
         libavformat libavcodec libavutil libswresample)
-    target_sources(transcribe_core PRIVATE src/ffmpeg_audio.cpp)
-    target_link_libraries(transcribe_core PUBLIC PkgConfig::FFMPEG)
-    target_compile_definitions(transcribe_core PUBLIC TRANSCRIBE_ENABLE_FFMPEG=1)
+    target_sources(transcriber_core PRIVATE src/ffmpeg_audio.cpp)
+    target_link_libraries(transcriber_core PUBLIC PkgConfig::FFMPEG)
+    target_compile_definitions(transcriber_core PUBLIC TRANSCRIBE_ENABLE_FFMPEG=1)
 endif()
 
 if(TRANSCRIBE_BUILD_TESTS)
@@ -234,30 +234,30 @@ if(TRANSCRIBE_BUILD_TESTS)
         GIT_SHALLOW TRUE)
     FetchContent_MakeAvailable(Catch2)
     enable_testing()
-    add_executable(transcribe-tests tests/transcribe_tests.cpp)
-    target_link_libraries(transcribe-tests PRIVATE transcribe_core Catch2::Catch2WithMain)
-    target_compile_features(transcribe-tests PRIVATE cxx_std_20)
+    add_executable(transcriber-tests tests/transcribe_tests.cpp)
+    target_link_libraries(transcriber-tests PRIVATE transcriber_core Catch2::Catch2WithMain)
+    target_compile_features(transcriber-tests PRIVATE cxx_std_20)
     if(TRANSCRIBE_ENABLE_ONNX)
         file(TO_CMAKE_PATH
             "${CMAKE_CURRENT_SOURCE_DIR}/python/models/basic_pitch.onnx"
             BASIC_PITCH_MODEL_PATH)
-        target_compile_definitions(transcribe-tests PRIVATE
+        target_compile_definitions(transcriber-tests PRIVATE
             TRANSCRIBE_BASIC_PITCH_MODEL_PATH="${BASIC_PITCH_MODEL_PATH}")
     endif()
     if(MSVC)
-        target_compile_options(transcribe-tests PRIVATE /W4 /permissive-)
+        target_compile_options(transcriber-tests PRIVATE /W4 /permissive-)
     else()
-        target_compile_options(transcribe-tests PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(transcriber-tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     include(Catch)
-    catch_discover_tests(transcribe-tests)
+    catch_discover_tests(transcriber-tests)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
         add_test(NAME cli_export_validation
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_export_smoke.py"
-                "$<TARGET_FILE:transcribe>"
+                "$<TARGET_FILE:transcriber>"
                 "${CMAKE_CURRENT_SOURCE_DIR}/samples/single_a4.wav")
         add_test(NAME ui_asset_smoke
             COMMAND "${Python3_EXECUTABLE}"
@@ -266,17 +266,17 @@ if(TRANSCRIBE_BUILD_TESTS)
         add_test(NAME real_audio_smoke
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/real_audio_smoke.py"
-                "$<TARGET_FILE:transcribe>")
+                "$<TARGET_FILE:transcriber>")
         set_tests_properties(real_audio_smoke PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endif()
 
-install(TARGETS transcribe RUNTIME DESTINATION bin)
-install(FILES README.md DESTINATION share/doc/transcribe)
-install(DIRECTORY samples/ DESTINATION share/transcribe/samples
+install(TARGETS transcriber RUNTIME DESTINATION bin)
+install(FILES README.md DESTINATION share/doc/transcriber)
+install(DIRECTORY samples/ DESTINATION share/transcriber/samples
     FILES_MATCHING PATTERN "*.wav" PATTERN "*.expected.txt" PATTERN "README.md")
 if(WIN32)
-    install(TARGETS transcribe-gui RUNTIME DESTINATION bin)
+    install(TARGETS transcriber-gui RUNTIME DESTINATION bin)
     if(TRANSCRIBE_ENABLE_WEBVIEW2)
         install(FILES
             "${WEBVIEW2_LOADER_DLL}"
@@ -291,10 +291,10 @@ if(TRANSCRIBE_ENABLE_ONNX)
     install(FILES
         python/models/basic_pitch.onnx
         python/models/LICENSE-basic-pitch.txt
-        DESTINATION share/transcribe/models)
+        DESTINATION share/transcriber/models)
 endif()
 
-set(CPACK_PACKAGE_VENDOR "Transcribe contributors")
+set(CPACK_PACKAGE_VENDOR "Transcriber contributors")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
     "Audio-to-score transcription CLI and optional Windows workstation UI")
 include(CPack)

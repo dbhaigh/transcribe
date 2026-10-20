@@ -104,14 +104,14 @@ It resamples mono audio to 22,050 Hz, processes two-second windows with the
 official 30-frame overlap and edge trimming, and stitches note activations.
 The note head is `StatefulPartitionedCall:1`, shaped `[1, 172, 88]`, with
 independent probabilities for MIDI 21–108 at a 256-sample hop (~86.13 frames
-per second). Transcribe crops to MIDI 28–96; the model's onset and contour
+per second). Transcriber crops to MIDI 28–96; the model's onset and contour
 heads are not currently consumed. Greedy peak picking is applied when
 `--polyphonic` is enabled.
 
 Example from the repository root:
 
 ```powershell
-.\build-onnx\transcribe.exe input.wav --model python\models\basic_pitch.onnx --polyphonic
+.\build-onnx\transcriber.exe input.wav --model python\models\basic_pitch.onnx --polyphonic
 ```
 
 This adapter is specific to the pinned Basic Pitch ONNX export and is separate
@@ -139,12 +139,12 @@ curl.exe --location --fail --output $annotations `
   "https://zenodo.org/records/3371780/files/annotation.zip?download=1"
 ```
 
-With an ONNX-enabled `transcribe.exe` and Python 3.10 or newer, run from the
+With an ONNX-enabled `transcriber.exe` and Python 3.10 or newer, run from the
 repository root:
 
 ```powershell
 python .\python\evaluate_guitarset.py `
-  --transcribe .\build-onnx-asio-mingw\transcribe.exe `
+  --transcriber .\build-onnx-asio-mingw\transcriber.exe `
   --audio-zip $audio `
   --annotations-zip $annotations `
   --output-json .\python\evaluation\guitarset-v1.1.0-results.json

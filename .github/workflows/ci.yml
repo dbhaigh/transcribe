@@ -40,7 +40,7 @@ jobs:
         run: cpack --config build-webview2\CPackConfig.cmake -G ZIP -C Release -B build-webview2\packages
       - uses: actions/upload-artifact@v4
         with:
-          name: transcribe-windows-webview2
+          name: transcriber-windows-webview2
           path: build-webview2/packages/*
           if-no-files-found: error
 
@@ -77,12 +77,12 @@ jobs:
         if: matrix.ffmpeg == 'ON'
         run: |
           ffmpeg -nostdin -hide_banner -loglevel error -y -i samples/single_a4.wav -c:a flac "$RUNNER_TEMP/single_a4.flac"
-          ./build/transcribe "$RUNNER_TEMP/single_a4.flac" --quiet --musicxml "$RUNNER_TEMP/score.musicxml" --tab "$RUNNER_TEMP/tab.txt"
+          ./build/transcriber "$RUNNER_TEMP/single_a4.flac" --quiet --musicxml "$RUNNER_TEMP/score.musicxml" --tab "$RUNNER_TEMP/tab.txt"
       - name: Package CLI
         run: cpack --config build/CPackConfig.cmake -G TGZ -B build/packages
       - uses: actions/upload-artifact@v4
         with:
-          name: transcribe-linux-${{ matrix.compiler }}-ffmpeg-${{ matrix.ffmpeg }}
+          name: transcriber-linux-${{ matrix.compiler }}-ffmpeg-${{ matrix.ffmpeg }}
           path: build/packages/*
           if-no-files-found: error
 

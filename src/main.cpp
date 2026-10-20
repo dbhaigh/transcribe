@@ -55,12 +55,12 @@ struct Options {
 };
 
 void print_usage(std::ostream& output) {
-    output <<     "Transcribe 0.1.4 - turn audio into MusicXML, MIDI, and guitar tablature\n\n"
+    output <<     "Transcriber 0.1.4 - turn audio into MusicXML, MIDI, and guitar tablature\n\n"
               "Usage:\n"
-              "  transcribe <input.wav> [options]\n"
-              "  transcribe --asio <seconds> [options]\n"
-              "  transcribe --live <seconds> [options] (alias for --asio)\n"
-              "  transcribe --batch <directory> [options]\n\n"
+              "  transcriber <input.wav> [options]\n"
+              "  transcriber --asio <seconds> [options]\n"
+              "  transcriber --live <seconds> [options] (alias for --asio)\n"
+              "  transcriber --batch <directory> [options]\n\n"
               "Options:\n"
               "  -h, --help                  Show this help\n"
               "  --musicxml <path>           MusicXML output path\n"
@@ -86,13 +86,13 @@ void print_usage(std::ostream& output) {
               "  --minimum-confidence <0..1> Drop notes below this confidence\n"
               "  --benchmark                 Report analysis time and real-time factor\n"
               "  --config <path>             Load defaults from simple key=value config\n"
-              "  --output-dir <directory>    Batch output directory (default: <input>/transcribe-output)\n"
+              "  --output-dir <directory>    Batch output directory (default: <input>/transcriber-output)\n"
               "  --quiet                     Suppress progress and per-file summaries\n\n"
               "Examples:\n"
-              "  transcribe guitar.wav --musicxml score.musicxml --tab guitar.txt --midi take.mid\n"
-              "  transcribe guitar.wav --model poly.onnx --polyphonic --json notes.json\n"
-              "  transcribe --batch samples --output-dir results --benchmark\n"
-              "  transcribe --asio 8 --musicxml live.musicxml --tab live.txt\n";
+              "  transcriber guitar.wav --musicxml score.musicxml --tab guitar.txt --midi take.mid\n"
+              "  transcriber guitar.wav --model poly.onnx --polyphonic --json notes.json\n"
+              "  transcriber --batch samples --output-dir results --benchmark\n"
+              "  transcriber --asio 8 --musicxml live.musicxml --tab live.txt\n";
 }
 
 std::string trim(std::string value) {
@@ -778,7 +778,7 @@ void process_batch(const Options& options) {
                                     options.batch_directory->string());
     }
     const auto output_directory = options.output_directory.empty()
-                                      ? *options.batch_directory / "transcribe-output"
+                                      ? *options.batch_directory / "transcriber-output"
                                       : options.output_directory;
     std::filesystem::create_directories(output_directory);
     std::vector<std::filesystem::path> files;
@@ -840,7 +840,7 @@ int main(int argc, char* argv[]) {
             process_single(options);
         }
     } catch (const std::exception& error) {
-        std::cerr << "transcribe: " << error.what() << "\n\n";
+        std::cerr << "transcriber: " << error.what() << "\n\n";
         print_usage(std::cerr);
         return 1;
     }

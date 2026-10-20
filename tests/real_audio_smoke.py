@@ -7,9 +7,11 @@ from pathlib import Path
 
 
 def main():
-    clip = os.environ.get("TRANSCRIBE_REAL_AUDIO_CLIP")
+    clip = os.environ.get("TRANSCRIBER_REAL_AUDIO_CLIP") or os.environ.get(
+        "TRANSCRIBE_REAL_AUDIO_CLIP"
+    )
     if not clip:
-        print("Set TRANSCRIBE_REAL_AUDIO_CLIP to run an external guitar/vocal clip smoke test")
+        print("Set TRANSCRIBER_REAL_AUDIO_CLIP to run an external guitar/vocal clip smoke test")
         return 77
 
     executable = Path(sys.argv[1])

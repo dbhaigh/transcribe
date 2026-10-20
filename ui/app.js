@@ -79,7 +79,7 @@
       if (saved.quality) $("quality-mode").value = saved.quality;
       updateAnalysisControlState();
     } catch (error) {
-      console.warn("Could not restore saved Transcribe paths.", error);
+      console.warn("Could not restore saved Transcriber paths.", error);
       $("status-text").textContent = "Saved paths could not be restored";
     }
   }

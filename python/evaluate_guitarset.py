@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate Transcribe against the real recordings and note labels in GuitarSet."""
+"""Evaluate Transcriber against the real recordings and note labels in GuitarSet."""
 
 from __future__ import annotations
 
@@ -218,11 +218,11 @@ def run_transcriber(
         if "No stable pitches were detected" in message and not json_path.exists():
             return []
         raise RuntimeError(
-            f"Transcribe failed for {audio_path.name} ({label}, exit {result.returncode}):\n"
+            f"Transcriber failed for {audio_path.name} ({label}, exit {result.returncode}):\n"
             f"{message.strip()}"
         )
     if not json_path.is_file():
-        raise RuntimeError(f"Transcribe completed without writing {json_path}.")
+        raise RuntimeError(f"Transcriber completed without writing {json_path}.")
     return output_events(json_path)
 
 
@@ -252,7 +252,7 @@ def update_counts(
 
 
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
-    executable = args.transcribe.resolve()
+    executable = args.transcriber.resolve()
     model = args.model.resolve()
     audio_archive = args.audio_zip.resolve()
     annotation_archive = args.annotations_zip.resolve()
@@ -301,7 +301,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         if not args.skip_yin_baseline:
             modes.append(("yin", None))
 
-        with tempfile.TemporaryDirectory(prefix="transcribe-guitarset-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="transcriber-guitarset-") as temporary:
             workspace = Path(temporary)
             for index, jam_name in enumerate(jam_names, start=1):
                 annotation_stem = PurePosixPath(jam_name).stem
@@ -403,7 +403,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "onset_pitch_tolerance_seconds": ONSET_TOLERANCE_SECONDS,
             "note_event_offset_tolerance": "max(50 ms, 20% of reference duration)",
             "frame_step_seconds": FRAME_STEP_SECONDS,
-            "prediction_thresholds": "Transcribe defaults; not tuned on this dataset",
+            "prediction_thresholds": "Transcriber defaults; not tuned on this dataset",
             "seed": args.seed if args.limit is not None else None,
             "python": platform.python_version(),
             "platform": platform.platform(),
@@ -422,7 +422,14 @@ def parse_args() -> argparse.Namespace:
             "mono-microphone recordings."
         )
     )
-    parser.add_argument("--transcribe", type=Path, required=True, help="Built transcribe executable")
+    parser.add_argument(
+        "--transcriber",
+        "--transcribe",
+        dest="transcriber",
+        type=Path,
+        required=True,
+        help="Built transcriber executable",
+    )
     parser.add_argument(
         "--model",
         type=Path,

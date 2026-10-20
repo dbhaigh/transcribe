@@ -275,7 +275,7 @@ void post_json(AppState& state, const std::wstring& json) {
         return;
     }
     if (FAILED(state.webview->PostWebMessageAsJson(json.c_str()))) {
-        OutputDebugStringW(L"Transcribe could not post a message to the WebView2 page.\n");
+        OutputDebugStringW(L"Transcriber could not post a message to the WebView2 page.\n");
     }
 }
 
@@ -438,7 +438,7 @@ RuntimeStartup prepare_webview_runtime(AppState& state) {
     state.loader = LoadLibraryW(L"WebView2Loader.dll");
     if (state.loader == nullptr) {
         MessageBoxW(nullptr, L"WebView2Loader.dll is missing beside the application executable.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         return RuntimeStartup::failed;
     }
 
@@ -449,7 +449,7 @@ RuntimeStartup prepare_webview_runtime(AppState& state) {
             state.loader, "GetAvailableCoreWebView2BrowserVersionString"));
     if (get_available_version == nullptr) {
         MessageBoxW(nullptr, L"The WebView2 loader is missing a required entry point.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         return RuntimeStartup::failed;
     }
 
@@ -468,8 +468,8 @@ RuntimeStartup prepare_webview_runtime(AppState& state) {
     if (!std::filesystem::is_regular_file(bootstrapper, filesystem_error)) {
         MessageBoxW(nullptr,
                     L"The Microsoft Edge WebView2 Runtime is not installed, and its "
-                    L"Evergreen installer is missing beside Transcribe.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Evergreen installer is missing beside Transcriber.",
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         return RuntimeStartup::failed;
     }
 
@@ -477,8 +477,8 @@ RuntimeStartup prepare_webview_runtime(AppState& state) {
         nullptr,
         L"The Microsoft Edge WebView2 Runtime is required but is not installed.\n\n"
         L"Would you like to start the included Evergreen installer? Internet access "
-        L"is required. Restart Transcribe after installation.",
-        L"Transcribe", MB_YESNO | MB_ICONINFORMATION);
+        L"is required. Restart Transcriber after installation.",
+        L"Transcriber", MB_YESNO | MB_ICONINFORMATION);
     if (choice != IDYES) {
         return RuntimeStartup::cancelled;
     }
@@ -493,7 +493,7 @@ RuntimeStartup prepare_webview_runtime(AppState& state) {
         const auto error = std::to_wstring(GetLastError());
         const auto message =
             L"Could not start the WebView2 installer (Windows error " + error + L").";
-        MessageBoxW(nullptr, message.c_str(), L"Transcribe", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, message.c_str(), L"Transcriber", MB_OK | MB_ICONERROR);
         return RuntimeStartup::failed;
     }
     return RuntimeStartup::setup_started;
@@ -1094,7 +1094,7 @@ HRESULT EnvironmentCompleted::Invoke(HRESULT error_code,
     if (FAILED(error_code) || environment == nullptr) {
         MessageBoxW(state_.window,
                     L"WebView2 could not start. Install the Microsoft Edge WebView2 Runtime.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         PostQuitMessage(1);
         return FAILED(error_code) ? error_code : E_FAIL;
     }
@@ -1106,7 +1106,7 @@ HRESULT EnvironmentCompleted::Invoke(HRESULT error_code,
     callback->Release();
     if (FAILED(result)) {
         MessageBoxW(state_.window, L"WebView2 could not create its browser control.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         PostQuitMessage(1);
     }
     return result;
@@ -1119,7 +1119,7 @@ HRESULT ControllerCompleted::Invoke(HRESULT error_code,
     }
     if (FAILED(error_code) || controller == nullptr) {
         MessageBoxW(state_.window, L"WebView2 could not create its browser control.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         PostQuitMessage(1);
         return FAILED(error_code) ? error_code : E_FAIL;
     }
@@ -1128,7 +1128,7 @@ HRESULT ControllerCompleted::Invoke(HRESULT error_code,
     HRESULT result = state_.controller->get_CoreWebView2(&state_.webview);
     if (FAILED(result)) {
         MessageBoxW(state_.window, L"Could not access the WebView2 browser control.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         PostQuitMessage(1);
         return result;
     }
@@ -1152,7 +1152,7 @@ HRESULT ControllerCompleted::Invoke(HRESULT error_code,
     navigation_handler->Release();
     if (FAILED(result)) {
         MessageBoxW(state_.window, L"Could not secure WebView2 navigation.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         PostQuitMessage(1);
         return result;
     }
@@ -1163,7 +1163,7 @@ HRESULT ControllerCompleted::Invoke(HRESULT error_code,
     message_handler->Release();
     if (FAILED(result)) {
         MessageBoxW(state_.window, L"Could not initialize the WebView2 message bridge.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         PostQuitMessage(1);
         return result;
     }
@@ -1174,7 +1174,7 @@ HRESULT ControllerCompleted::Invoke(HRESULT error_code,
         reinterpret_cast<void**>(webview3.GetAddressOf()));
     if (FAILED(result)) {
         MessageBoxW(state_.window, L"The installed WebView2 Runtime is too old.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         PostQuitMessage(1);
         return result;
     }
@@ -1184,14 +1184,14 @@ HRESULT ControllerCompleted::Invoke(HRESULT error_code,
         COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
     if (FAILED(result)) {
         MessageBoxW(state_.window, L"Could not load the local user interface assets.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         PostQuitMessage(1);
         return result;
     }
     result = state_.webview->Navigate(L"https://appassets.transcribe/index.html");
     if (FAILED(result)) {
         MessageBoxW(state_.window, L"Could not open the local user interface.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         PostQuitMessage(1);
     }
     return result;
@@ -1272,7 +1272,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         try {
             initialize_webview(*state);
         } catch (const std::exception& error) {
-            MessageBoxW(window, from_utf8(error.what()).c_str(), L"Transcribe",
+            MessageBoxW(window, from_utf8(error.what()).c_str(), L"Transcriber",
                         MB_OK | MB_ICONERROR);
             return -1;
         }
@@ -1405,7 +1405,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
     const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(com_result)) {
         MessageBoxW(nullptr, L"Could not initialize Windows COM services.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         return 1;
     }
 
@@ -1419,7 +1419,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
         return runtime_startup == RuntimeStartup::failed ? 1 : 0;
     }
 
-    const wchar_t class_name[] = L"TranscribeWebViewWindow";
+    const wchar_t class_name[] = L"TranscriberWebViewWindow";
     WNDCLASSEXW window_class{};
     window_class.cbSize = sizeof(window_class);
     window_class.lpfnWndProc = window_proc;
@@ -1431,21 +1431,21 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
         DeleteObject(window_class.hbrBackground);
         CoUninitialize();
         MessageBoxW(nullptr, L"Could not register the application window.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         return 1;
     }
 
     RECT bounds{0, 0, 1240, 900};
     AdjustWindowRect(&bounds, WS_OVERLAPPEDWINDOW, FALSE);
     HWND window = CreateWindowExW(
-        0, class_name, L"Transcribe", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        0, class_name, L"Transcriber", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, bounds.right - bounds.left,
         bounds.bottom - bounds.top, nullptr, nullptr, instance, &state);
     if (window == nullptr) {
         DeleteObject(window_class.hbrBackground);
         CoUninitialize();
         MessageBoxW(nullptr, L"Could not create the application window.",
-                    L"Transcribe", MB_OK | MB_ICONERROR);
+                    L"Transcriber", MB_OK | MB_ICONERROR);
         return 1;
     }
 
