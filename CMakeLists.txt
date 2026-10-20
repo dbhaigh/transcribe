@@ -1,14 +1,30 @@
 cmake_minimum_required(VERSION 3.20)
-project(transcribe VERSION 0.1.3 LANGUAGES CXX)
+project(transcribe VERSION 0.1.4 LANGUAGES CXX)
 
 option(TRANSCRIBE_ENABLE_ASIO "Build real-time capture using RtAudio's ASIO backend" OFF)
 option(TRANSCRIBE_ENABLE_ONNX "Build ONNX Runtime model inference support" OFF)
+option(TRANSCRIBE_ONNX_ENABLE_CUDA "Enable ONNX Runtime CUDA execution provider selection" OFF)
+option(TRANSCRIBE_ONNX_ENABLE_DIRECTML "Enable ONNX Runtime DirectML execution provider selection" OFF)
+option(TRANSCRIBE_ONNX_ENABLE_ROCM "Enable ONNX Runtime ROCm execution provider selection" OFF)
+set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime installation root")
+set(TRANSCRIBE_DIRECTML_SDK_ROOT "" CACHE PATH
+    "Root of the DirectML SDK containing DirectML.h")
 option(TRANSCRIBE_ENABLE_FFMPEG "Enable FFmpeg decoding for compressed audio formats" OFF)
 option(TRANSCRIBE_ENABLE_WEBVIEW2 "Use the WebView2 GUI instead of the native Win32 form" OFF)
 option(TRANSCRIBE_BUILD_TESTS "Build Catch2-based unit tests" OFF)
 
 if(TRANSCRIBE_ENABLE_WEBVIEW2 AND NOT WIN32)
     message(FATAL_ERROR "The WebView2 GUI is supported only on Windows.")
+endif()
+if((TRANSCRIBE_ONNX_ENABLE_CUDA OR TRANSCRIBE_ONNX_ENABLE_DIRECTML OR
+    TRANSCRIBE_ONNX_ENABLE_ROCM) AND NOT TRANSCRIBE_ENABLE_ONNX)
+    message(FATAL_ERROR "ONNX GPU providers require TRANSCRIBE_ENABLE_ONNX=ON.")
+endif()
+if(TRANSCRIBE_ONNX_ENABLE_DIRECTML AND NOT WIN32)
+    message(FATAL_ERROR "The ONNX DirectML provider is supported only on Windows.")
+endif()
+if(TRANSCRIBE_ONNX_ENABLE_ROCM AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "The ONNX ROCm provider is supported only on Linux.")
 endif()
 
 add_library(transcribe_core STATIC
@@ -99,9 +115,10 @@ if(WIN32)
         set_property(SOURCE src/gui_webview.cpp APPEND PROPERTY OBJECT_DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/styles.css"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/app.js")
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/app.js"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/editor.js")
         target_link_libraries(transcribe-gui PRIVATE transcribe_gui_backend
-            comdlg32 user32 gdi32 shell32 ole32)
+            comdlg32 user32 gdi32 shell32 ole32 winmm)
         add_custom_command(TARGET transcribe-gui POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${WEBVIEW2_LOADER_DLL}" "$<TARGET_FILE_DIR:transcribe-gui>/WebView2Loader.dll"
@@ -158,10 +175,10 @@ endif()
 
 if(TRANSCRIBE_ENABLE_ONNX)
     find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
-        HINTS ENV ONNXRUNTIME_ROOT
+        HINTS "${ONNXRUNTIME_ROOT}" ENV ONNXRUNTIME_ROOT
         PATH_SUFFIXES include include/onnxruntime)
     find_library(ONNXRUNTIME_LIBRARY onnxruntime
-        HINTS ENV ONNXRUNTIME_ROOT
+        HINTS "${ONNXRUNTIME_ROOT}" ENV ONNXRUNTIME_ROOT
         PATH_SUFFIXES lib lib64)
     if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
         message(FATAL_ERROR "ONNX Runtime was not found. Set ONNXRUNTIME_ROOT to its installation directory.")
@@ -169,6 +186,35 @@ if(TRANSCRIBE_ENABLE_ONNX)
     target_include_directories(transcribe_core PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
     target_link_libraries(transcribe_core PUBLIC "${ONNXRUNTIME_LIBRARY}")
     target_compile_definitions(transcribe_core PUBLIC TRANSCRIBE_ENABLE_ONNX=1)
+    if(TRANSCRIBE_ONNX_ENABLE_CUDA)
+        target_compile_definitions(transcribe_core PRIVATE
+            TRANSCRIBE_ONNX_ENABLE_CUDA=1)
+    endif()
+    if(TRANSCRIBE_ONNX_ENABLE_ROCM)
+        target_compile_definitions(transcribe_core PRIVATE
+            TRANSCRIBE_ONNX_ENABLE_ROCM=1)
+    endif()
+    if(TRANSCRIBE_ONNX_ENABLE_DIRECTML)
+        find_path(ONNXRUNTIME_DML_INCLUDE_DIR dml_provider_factory.h
+            HINTS "${ONNXRUNTIME_ROOT}" ENV ONNXRUNTIME_ROOT
+            PATH_SUFFIXES include/onnxruntime/core/providers/dml
+                          include/core/providers/dml)
+        find_path(TRANSCRIBE_DIRECTML_INCLUDE_DIR DirectML.h
+            HINTS "${TRANSCRIBE_DIRECTML_SDK_ROOT}" ENV DIRECTML_ROOT
+            PATH_SUFFIXES include)
+        if(NOT ONNXRUNTIME_DML_INCLUDE_DIR OR
+           NOT TRANSCRIBE_DIRECTML_INCLUDE_DIR)
+            message(FATAL_ERROR
+                "DirectML headers were not found. Use a DirectML-enabled ONNX "
+                "Runtime SDK and DirectML SDK; set ONNXRUNTIME_DML_INCLUDE_DIR "
+                "and TRANSCRIBE_DIRECTML_SDK_ROOT.")
+        endif()
+        target_include_directories(transcribe_core SYSTEM PRIVATE
+            "${ONNXRUNTIME_DML_INCLUDE_DIR}"
+            "${TRANSCRIBE_DIRECTML_INCLUDE_DIR}")
+        target_compile_definitions(transcribe_core PRIVATE
+            TRANSCRIBE_ONNX_ENABLE_DIRECTML=1)
+    endif()
 endif()
 
 if(TRANSCRIBE_ENABLE_FFMPEG)
@@ -205,4 +251,50 @@ if(TRANSCRIBE_BUILD_TESTS)
     endif()
     include(Catch)
     catch_discover_tests(transcribe-tests)
+
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME cli_export_validation
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_export_smoke.py"
+                "$<TARGET_FILE:transcribe>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/samples/single_a4.wav")
+        add_test(NAME ui_asset_smoke
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_smoke.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/ui")
+        add_test(NAME real_audio_smoke
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/real_audio_smoke.py"
+                "$<TARGET_FILE:transcribe>")
+        set_tests_properties(real_audio_smoke PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 endif()
+
+install(TARGETS transcribe RUNTIME DESTINATION bin)
+install(FILES README.md DESTINATION share/doc/transcribe)
+install(DIRECTORY samples/ DESTINATION share/transcribe/samples
+    FILES_MATCHING PATTERN "*.wav" PATTERN "*.expected.txt" PATTERN "README.md")
+if(WIN32)
+    install(TARGETS transcribe-gui RUNTIME DESTINATION bin)
+    if(TRANSCRIBE_ENABLE_WEBVIEW2)
+        install(FILES
+            "${WEBVIEW2_LOADER_DLL}"
+            "${WEBVIEW2_LICENSE_FILE}"
+            "${WEBVIEW2_NOTICE_FILE}"
+            "${_webview2_bootstrapper}"
+            DESTINATION bin)
+        install(DIRECTORY ui/ DESTINATION bin/ui)
+    endif()
+endif()
+if(TRANSCRIBE_ENABLE_ONNX)
+    install(FILES
+        python/models/basic_pitch.onnx
+        python/models/LICENSE-basic-pitch.txt
+        DESTINATION share/transcribe/models)
+endif()
+
+set(CPACK_PACKAGE_VENDOR "Transcribe contributors")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Audio-to-score transcription CLI and optional Windows workstation UI")
+include(CPack)

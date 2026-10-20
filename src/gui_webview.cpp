@@ -1,11 +1,13 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <commdlg.h>
+#include <mmsystem.h>
 #include <shellapi.h>
 #include <wrl.h>
 #include <WebView2.h>
 
 #include "gui_transcription.hpp"
+#include "transcribe/musicxml.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,6 +17,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -32,6 +35,7 @@ constexpr wchar_t app_origin[] = L"https://appassets.transcribe/";
 constexpr UINT message_complete = WM_APP + 1;
 constexpr UINT message_progress = WM_APP + 2;
 constexpr UINT message_live_preview = WM_APP + 3;
+constexpr UINT message_audio_preview = WM_APP + 4;
 
 struct AppState {
     HWND window{};
@@ -46,6 +50,8 @@ struct AppState {
     bool active_asio{};
     bool close_when_done{};
     bool shutting_down{};
+    std::optional<transcribe::gui::Request> last_request;
+    std::optional<transcribe::gui::Result> last_result;
 };
 
 enum class RuntimeStartup {
@@ -63,10 +69,18 @@ struct ProgressMessage {
 struct LiveMessage {
     double offset{};
     std::vector<transcribe::Note> notes;
+    std::vector<transcribe::NoteEvent> events;
+};
+
+struct AudioPreviewMessage {
+    double offset{};
+    bool replace{};
+    transcribe::AudioPreviewData preview;
 };
 
 struct CompletionMessage {
     bool success{};
+    bool export_only{};
     std::string error;
     transcribe::gui::Result result;
     transcribe::gui::Request request;
@@ -296,9 +310,54 @@ std::wstring notes_json(const std::vector<transcribe::Note>& notes, double offse
              << L",\"start\":" << std::fixed << std::setprecision(5)
              << note.start_seconds + offset
              << L",\"duration\":" << note.duration_seconds
-             << L",\"confidence\":" << note.confidence << L'}';
+             << L",\"confidence\":" << note.confidence
+             << L",\"amplitude\":" << note.amplitude << L'}';
     }
     json << L']';
+    return json.str();
+}
+
+std::wstring events_json(const std::vector<transcribe::NoteEvent>& events) {
+    std::wostringstream json;
+    json << L'[';
+    for (std::size_t index = 0; index < events.size(); ++index) {
+        if (index != 0) {
+            json << L',';
+        }
+        const auto& event = events[index];
+        json << L"{\"type\":\""
+             << (event.type == transcribe::NoteEventType::Onset ? L"onset" : L"offset")
+             << L"\",\"midi\":" << event.midi_pitch
+             << L",\"time\":" << std::fixed << std::setprecision(5)
+             << event.time_seconds << L",\"confidence\":" << event.confidence
+             << L",\"latency_ms\":"
+             << std::max(0.0, event.detected_at_seconds - event.time_seconds) *
+                    1000.0
+             << L'}';
+    }
+    json << L']';
+    return json.str();
+}
+
+std::wstring audio_preview_json(double offset, bool replace,
+                                const transcribe::AudioPreviewData& preview) {
+    std::wostringstream json;
+    json << L"{\"type\":\"audio-preview\",\"offset\":" << std::fixed
+         << std::setprecision(4) << offset
+         << L",\"replace\":" << (replace ? L"true" : L"false")
+         << L",\"duration\":" << preview.duration_seconds
+         << L",\"columns\":" << preview.columns
+         << L",\"bands\":" << preview.frequency_bands << L",\"waveform\":[";
+    for (std::size_t index = 0; index < preview.waveform.size(); ++index) {
+        if (index != 0) json << L',';
+        json << std::setprecision(3) << preview.waveform[index];
+    }
+    json << L"],\"spectrogram\":[";
+    for (std::size_t index = 0; index < preview.spectrogram.size(); ++index) {
+        if (index != 0) json << L',';
+        json << std::setprecision(3) << preview.spectrogram[index];
+    }
+    json << L"]}";
     return json.str();
 }
 
@@ -343,6 +402,13 @@ std::wstring result_json(const CompletionMessage& completion) {
          << L",\"key\":\""
          << json_escape(metadata.key_inferred ? key_name(metadata) : L"")
          << L"\",\"key_inferred\":" << (metadata.key_inferred ? L"true" : L"false")
+         << L",\"key_fifths\":" << metadata.key_fifths
+         << L",\"minor_key\":" << (metadata.minor_key ? L"true" : L"false")
+         << L",\"time_numerator\":" << metadata.time_numerator
+         << L",\"time_denominator\":" << metadata.time_denominator
+         << L",\"meter_inferred\":" << (metadata.meter_inferred ? L"true" : L"false")
+         << L",\"swing_ratio\":" << metadata.swing_ratio
+         << L",\"swing_inferred\":" << (metadata.swing_inferred ? L"true" : L"false")
          << L"},\"summary\":\"" << json_escape(summary.str()) << L"\"}";
     return json.str();
 }
@@ -521,6 +587,23 @@ std::string field(const std::unordered_map<std::string, std::string>& fields,
     return found == fields.end() ? std::string{} : found->second;
 }
 
+std::array<int, 6> guitar_tuning(const std::string& name) {
+    if (name == "standard") return {64, 59, 55, 50, 45, 40};
+    if (name == "drop-d") return {64, 59, 55, 50, 45, 38};
+    if (name == "dadgad") return {62, 57, 55, 50, 45, 38};
+    if (name == "open-d") return {62, 57, 54, 50, 45, 38};
+    if (name == "open-g") return {62, 59, 55, 50, 43, 38};
+    throw std::invalid_argument("Choose a supported guitar tuning.");
+}
+
+transcribe::InstrumentPrior instrument_prior(const std::string& name) {
+    if (name == "auto") return transcribe::InstrumentPrior::None;
+    if (name == "guitar") return transcribe::InstrumentPrior::Guitar;
+    if (name == "piano") return transcribe::InstrumentPrior::Piano;
+    if (name == "voice") return transcribe::InstrumentPrior::Voice;
+    throw std::invalid_argument("Choose a supported instrument prior.");
+}
+
 void set_browser_field(AppState& state, const char* name, const std::wstring& value) {
     post_json(state, L"{\"type\":\"field\",\"field\":\"" + from_utf8(name) +
                          L"\",\"value\":\"" + json_escape(value) + L"\"}");
@@ -591,19 +674,52 @@ void start_transcription(AppState& state,
     request.tab_path = from_utf8(field(fields, "tab"));
     request.midi_path = from_utf8(field(fields, "midi"));
     request.polyphonic = field(fields, "polyphonic") == "1";
+    request.fast_preview = field(fields, "quality") == "fast";
+    request.instrument = instrument_prior(field(fields, "instrument"));
+    request.guitar_tab_options.tuning = guitar_tuning(field(fields, "tuning"));
+    request.preserve_expressive_timing = field(fields, "preserve_timing") == "1";
+
+    const auto capo_text = field(fields, "capo");
+    std::size_t parsed_characters = 0;
+    request.guitar_tab_options.capo_fret =
+        std::stoi(capo_text, &parsed_characters);
+    if (parsed_characters != capo_text.size() ||
+        request.guitar_tab_options.capo_fret < 0 ||
+        request.guitar_tab_options.capo_fret > 24) {
+        throw std::invalid_argument("Capo fret must be between 0 and 24.");
+    }
+    const auto alternatives_text = field(fields, "alternatives");
+    const int alternatives = std::stoi(alternatives_text, &parsed_characters);
+    if (parsed_characters != alternatives_text.size() || alternatives < 0 ||
+        alternatives > 5) {
+        throw std::invalid_argument(
+            "Alternative fingerings must be between 0 and 5.");
+    }
+    request.guitar_tab_options.alternative_fingerings =
+        static_cast<std::size_t>(alternatives);
 
     if (request.use_asio) {
 #ifndef TRANSCRIBE_ENABLE_ASIO
         throw std::runtime_error("ASIO support is not enabled in this build.");
 #else
         const auto duration_text = field(fields, "duration");
-        std::size_t parsed_characters = 0;
+        parsed_characters = 0;
         request.capture_seconds = std::stod(duration_text, &parsed_characters);
         if (parsed_characters != duration_text.size() ||
             !std::isfinite(request.capture_seconds) ||
             request.capture_seconds <= 0.0 || request.capture_seconds > 300.0) {
             throw std::invalid_argument(
                 "Enter a capture duration greater than 0 and no more than 300 seconds.");
+        }
+        const auto latency_text = field(fields, "latency_ms");
+        request.realtime_options.latency_ms =
+            std::stod(latency_text, &parsed_characters);
+        if (parsed_characters != latency_text.size() ||
+            !std::isfinite(request.realtime_options.latency_ms) ||
+            request.realtime_options.latency_ms < 20.0 ||
+            request.realtime_options.latency_ms > 50.0) {
+            throw std::invalid_argument(
+                "Realtime analysis latency must be between 20 and 50 milliseconds.");
         }
 #endif
     } else if (request.input_path.empty()) {
@@ -644,17 +760,33 @@ void start_transcription(AppState& state,
                 };
                 const auto live_callback = [&state](
                                                double offset,
-                                               const std::vector<transcribe::Note>& notes) {
+                                               const std::vector<transcribe::Note>& notes,
+                                               const std::vector<transcribe::NoteEvent>& events) {
                     auto message = std::make_unique<LiveMessage>();
                     message->offset = offset;
                     message->notes = notes;
+                    message->events = events;
                     if (PostMessageW(state.window, message_live_preview, 0,
                                      reinterpret_cast<LPARAM>(message.get()))) {
                         message.release();
                     }
                 };
+                const auto audio_preview_callback =
+                    [&state](double offset,
+                             const transcribe::AudioPreviewData& preview,
+                             bool replace) {
+                        auto message = std::make_unique<AudioPreviewMessage>();
+                        message->offset = offset;
+                        message->replace = replace;
+                        message->preview = preview;
+                        if (PostMessageW(state.window, message_audio_preview, 0,
+                                         reinterpret_cast<LPARAM>(message.get()))) {
+                            message.release();
+                        }
+                    };
                 completion->result = transcribe::gui::run_transcription(
-                    request, stop_token, progress_callback, live_callback);
+                    request, stop_token, progress_callback, live_callback,
+                    audio_preview_callback);
                 completion->success = true;
             } catch (const std::exception& error) {
                 completion->error = error.what();
@@ -667,6 +799,212 @@ void start_transcription(AppState& state,
     } catch (...) {
         state.busy = false;
         state.active_asio = false;
+        throw;
+    }
+}
+
+double parse_number(std::string_view text, const char* description) {
+    if (text.empty()) {
+        throw std::invalid_argument(std::string("Missing ") + description + ".");
+    }
+    std::size_t parsed = 0;
+    const double value = std::stod(std::string(text), &parsed);
+    if (parsed != text.size() || !std::isfinite(value)) {
+        throw std::invalid_argument(std::string("Invalid ") + description + ".");
+    }
+    return value;
+}
+
+std::vector<transcribe::Note> parse_edited_notes(std::string_view encoded) {
+    std::vector<transcribe::Note> notes;
+    while (!encoded.empty()) {
+        const auto end = encoded.find(';');
+        const auto record = encoded.substr(0, end);
+        std::array<std::string_view, 5> values{};
+        std::size_t field_start = 0;
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            const auto separator = record.find(',', field_start);
+            if (index + 1 < values.size() && separator == std::string_view::npos) {
+                throw std::invalid_argument("An edited note has missing values.");
+            }
+            if (index + 1 == values.size() && separator != std::string_view::npos) {
+                throw std::invalid_argument("An edited note has too many values.");
+            }
+            values[index] = record.substr(
+                field_start, separator == std::string_view::npos
+                                 ? std::string_view::npos
+                                 : separator - field_start);
+            field_start = separator == std::string_view::npos ? record.size()
+                                                              : separator + 1;
+        }
+        const double midi_value = parse_number(values[0], "edited MIDI pitch");
+        const double start = parse_number(values[1], "edited note start");
+        const double duration = parse_number(values[2], "edited note duration");
+        const double confidence = parse_number(values[3], "edited note confidence");
+        const double amplitude = parse_number(values[4], "edited note amplitude");
+        if (midi_value < 0.0 || midi_value > 127.0 ||
+            std::floor(midi_value) != midi_value || start < 0.0 ||
+            duration <= 0.0 || duration > 600.0 ||
+            confidence < 0.0 || confidence > 1.0 ||
+            amplitude < 0.0 || amplitude > 1.0) {
+            throw std::invalid_argument("Edited note values are outside supported ranges.");
+        }
+        const int midi = static_cast<int>(midi_value);
+        notes.push_back({midi, start, duration, transcribe::midi_note_name(midi),
+                         confidence, amplitude});
+        if (notes.size() > 10000) {
+            throw std::length_error("The score editor supports at most 10,000 notes.");
+        }
+        if (end == std::string_view::npos) {
+            encoded = {};
+        } else {
+            encoded.remove_prefix(end + 1);
+        }
+    }
+    return notes;
+}
+
+std::vector<transcribe::GuitarTabPosition> parse_tab_positions(
+    std::string_view encoded) {
+    std::vector<transcribe::GuitarTabPosition> positions;
+    while (!encoded.empty()) {
+        const auto end = encoded.find(';');
+        const auto record = encoded.substr(0, end);
+        const auto first = record.find(',');
+        const auto second =
+            first == std::string_view::npos ? first : record.find(',', first + 1);
+        if (first == std::string_view::npos || second == std::string_view::npos ||
+            record.find(',', second + 1) != std::string_view::npos) {
+            throw std::invalid_argument("A guitar string/fret edit is malformed.");
+        }
+        const double note_index = parse_number(record.substr(0, first), "tab note index");
+        const double string_number =
+            parse_number(record.substr(first + 1, second - first - 1), "guitar string");
+        const double fret = parse_number(record.substr(second + 1), "guitar fret");
+        if (note_index < 0.0 || std::floor(note_index) != note_index ||
+            string_number < 1.0 || string_number > 6.0 ||
+            std::floor(string_number) != string_number || fret < 0.0 ||
+            fret > 24.0 || std::floor(fret) != fret) {
+            throw std::invalid_argument("A guitar string/fret edit is outside supported ranges.");
+        }
+        positions.push_back({
+            static_cast<std::size_t>(note_index),
+            static_cast<int>(string_number),
+            static_cast<int>(fret)});
+        if (positions.size() > 10000) {
+            throw std::length_error("The score editor supports at most 10,000 tab positions.");
+        }
+        if (end == std::string_view::npos) {
+            encoded = {};
+        } else {
+            encoded.remove_prefix(end + 1);
+        }
+    }
+    return positions;
+}
+
+void export_edited_score(
+    AppState& state,
+    const std::unordered_map<std::string, std::string>& fields) {
+    if (state.busy) {
+        throw std::runtime_error("Wait for the current operation to finish.");
+    }
+    if (!state.last_request || !state.last_result) {
+        throw std::runtime_error("Transcribe audio before exporting score edits.");
+    }
+
+    auto request = *state.last_request;
+    const auto musicxml_path = field(fields, "musicxml");
+    const auto tab_path = field(fields, "tab");
+    const auto midi_path = field(fields, "midi");
+    if (!musicxml_path.empty()) request.musicxml_path = from_utf8(musicxml_path);
+    if (!tab_path.empty()) request.tab_path = from_utf8(tab_path);
+    if (!midi_path.empty()) request.midi_path = from_utf8(midi_path);
+    transcribe::gui::Result result;
+    result.notes = parse_edited_notes(field(fields, "notes"));
+    request.guitar_tab_options.position_overrides =
+        parse_tab_positions(field(fields, "tab_positions"));
+    result.metadata = transcribe::infer_score_metadata(result.notes);
+    if (!result.notes.empty()) {
+        result.metadata.tempo_bpm = parse_number(field(fields, "tempo"), "tempo");
+        if (result.metadata.tempo_bpm < 40.0 || result.metadata.tempo_bpm > 240.0) {
+            throw std::invalid_argument("Tempo must be between 40 and 240 BPM.");
+        }
+        const auto key = field(fields, "key_fifths");
+        if (!key.empty() && key != "auto") {
+            std::size_t key_characters = 0;
+            const int fifths = std::stoi(key, &key_characters);
+            if (key_characters != key.size() || fifths < -7 || fifths > 7) {
+                throw std::invalid_argument("Key signature must be between -7 and 7 fifths.");
+            }
+            result.metadata.key_fifths = fifths;
+            result.metadata.minor_key = field(fields, "minor") == "1";
+            result.metadata.key_inferred = true;
+        }
+        const auto meter = field(fields, "meter");
+        if (meter != "auto") {
+            if (meter == "3/4") {
+                result.metadata.time_numerator = 3;
+                result.metadata.time_denominator = 4;
+            } else if (meter == "4/4") {
+                result.metadata.time_numerator = 4;
+                result.metadata.time_denominator = 4;
+            } else if (meter == "6/8") {
+                result.metadata.time_numerator = 6;
+                result.metadata.time_denominator = 8;
+            } else {
+                throw std::invalid_argument("Choose a supported time signature.");
+            }
+            result.metadata.meter_inferred = true;
+        }
+    }
+
+    state.busy = true;
+    post_json(state, L"{\"type\":\"progress\",\"progress\":0,\"status\":\"Exporting edited score\"}");
+    try {
+        state.worker = std::jthread(
+            [&state, request = std::move(request),
+             result = std::move(result)](std::stop_token) mutable {
+                auto message = std::make_unique<CompletionMessage>();
+                message->export_only = true;
+                message->request = request;
+                message->result = result;
+                const auto report_export_progress = [&state](int percent,
+                                                             const wchar_t* status) {
+                    auto progress = std::make_unique<ProgressMessage>();
+                    progress->percent = percent;
+                    progress->status = status;
+                    if (PostMessageW(state.window, message_progress, 0,
+                                     reinterpret_cast<LPARAM>(progress.get()))) {
+                        progress.release();
+                    }
+                };
+                try {
+                    report_export_progress(20, L"Writing MusicXML");
+                    transcribe::write_musicxml(
+                        request.musicxml_path, result.notes, result.metadata,
+                        request.guitar_tab_options,
+                        request.preserve_expressive_timing);
+                    report_export_progress(55, L"Writing guitar tablature");
+                    transcribe::write_guitar_tab(
+                        request.tab_path, result.notes, request.guitar_tab_options);
+                    if (!request.midi_path.empty()) {
+                        report_export_progress(80, L"Writing MIDI");
+                        transcribe::write_midi(
+                            request.midi_path, result.notes, result.metadata);
+                    }
+                    report_export_progress(100, L"Export complete");
+                    message->success = true;
+                } catch (const std::exception& error) {
+                    message->error = error.what();
+                }
+                if (PostMessageW(state.window, message_complete, 0,
+                                 reinterpret_cast<LPARAM>(message.get()))) {
+                    message.release();
+                }
+            });
+    } catch (...) {
+        state.busy = false;
         throw;
     }
 }
@@ -706,6 +1044,27 @@ void handle_web_message(AppState& state, const std::string& message) {
         browse_for_path(state, field_name, from_utf8(field(fields, "current")));
     } else if (action == "transcribe") {
         start_transcription(state, fields);
+    } else if (action == "export-edits") {
+        export_edited_score(state, fields);
+    } else if (action == "play-original") {
+        if (!state.last_request || state.last_request->use_asio ||
+            state.last_request->input_path.empty()) {
+            throw std::runtime_error("Transcribe a file before playing its original audio.");
+        }
+        auto extension = state.last_request->input_path.extension().wstring();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](wchar_t character) {
+                           return static_cast<wchar_t>(std::towlower(character));
+                       });
+        if (extension != L".wav") {
+            throw std::runtime_error("Original-audio playback currently supports WAV files.");
+        }
+        if (!PlaySoundW(state.last_request->input_path.c_str(), nullptr,
+                        SND_ASYNC | SND_FILENAME | SND_NODEFAULT)) {
+            throw std::runtime_error("Windows could not play the selected WAV file.");
+        }
+    } else if (action == "stop-playback") {
+        PlaySoundW(nullptr, nullptr, 0);
     } else if (action == "cancel") {
         if (state.busy && state.active_asio && state.worker.joinable()) {
             state.worker.request_stop();
@@ -939,7 +1298,15 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case message_live_preview: {
         std::unique_ptr<LiveMessage> live(reinterpret_cast<LiveMessage*>(lparam));
         post_json(*state, L"{\"type\":\"live\",\"notes\":" +
-                             notes_json(live->notes, live->offset) + L"}");
+                             notes_json(live->notes, live->offset) +
+                             L",\"events\":" + events_json(live->events) + L"}");
+        return 0;
+    }
+    case message_audio_preview: {
+        std::unique_ptr<AudioPreviewMessage> preview(
+            reinterpret_cast<AudioPreviewMessage*>(lparam));
+        post_json(*state, audio_preview_json(
+                              preview->offset, preview->replace, preview->preview));
         return 0;
     }
     case message_complete: {
@@ -950,7 +1317,29 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         state->busy = false;
         state->active_asio = false;
-        post_json(*state, result_json(*completion));
+        if (completion->export_only) {
+            if (completion->success) {
+                state->last_result = completion->result;
+                state->last_request = completion->request;
+            }
+            std::wstring export_message =
+                std::wstring(L"{\"type\":\"exported\",\"success\":") +
+                (completion->success ? L"true" : L"false");
+            if (completion->success) {
+                export_message += L"}";
+            } else {
+                export_message += L",\"error\":\"" +
+                                  json_escape(from_utf8_lossy(completion->error)) +
+                                  L"\"}";
+            }
+            post_json(*state, export_message);
+        } else {
+            if (completion->success) {
+                state->last_request = completion->request;
+                state->last_result = completion->result;
+            }
+            post_json(*state, result_json(*completion));
+        }
         if (state->close_when_done) {
             DestroyWindow(window);
         }
@@ -992,6 +1381,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         return 0;
     case WM_DESTROY:
         state->shutting_down = true;
+        PlaySoundW(nullptr, nullptr, 0);
         if (state->worker.joinable()) {
             state->worker.request_stop();
             state->worker.join();

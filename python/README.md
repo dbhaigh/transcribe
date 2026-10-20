@@ -38,6 +38,46 @@ shape; output timing is assumed to begin at zero with 10 ms spacing. Models
 with different rates, pitch ranges, or input layouts need a versioned adapter
 before they can be used.
 
+## Generic polyphonic training recipe
+
+The version 1 interface is suitable for frame-wise multi-pitch models trained
+from aligned audio and note events:
+
+1. Resample mono training audio to 16 kHz and cut examples into waveform
+   windows. Keep the window duration and output frame origin consistent.
+2. Convert each annotation to a 10 ms frame grid with 69 MIDI classes
+   (28–96). Mark every active pitch in each frame; simultaneous notes must be
+   multi-hot labels rather than a single winning class.
+3. Train frame activations with a multi-label objective such as
+   `binary_cross_entropy_with_logits`. Split train/validation/test data by
+   performer or recording session to avoid leakage, and report both frame and
+   note-event precision/recall.
+4. Calibrate sigmoid probabilities on held-out validation data for the
+   inference threshold. The C++ polyphonic path treats outputs as independent
+   probabilities and greedily selects local pitch peaks; it does not consume
+   onset/offset heads from generic models.
+5. Export a `float32` tensor shaped `[1, frames, 69]` at exactly 100 frames per
+   second, with time starting at zero. Keep the input as mono `float32`
+   `[1, samples]`; the runner handles resampling to 16 kHz. Verify the exported
+   model on synthetic one-note and two-note signals, then with held-out real
+   recordings before using it for score exports.
+
+Illustrative training step:
+
+```python
+logits = model(waveform)  # [batch, frames, 69]
+loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, labels)
+loss.backward()
+```
+
+For export, a wrapper can return `torch.sigmoid(logits)` so the ONNX output
+matches the independent-probability contract. Keep activation semantics,
+sample rate, frame rate, pitch range, and tensor layouts in the model's
+documentation; models that do not match this interface require a dedicated
+adapter. Synthetic mixtures are useful for debugging shape and timing, but
+they are not a substitute for appropriately licensed, representative
+instrument recordings.
+
 ## Suggested development workflow
 
 1. Prepare aligned audio and note-event labels, with licenses and provenance

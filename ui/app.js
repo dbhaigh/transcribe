@@ -11,6 +11,7 @@
   let mode = "file";
   let notes = [];
   let duration = 1;
+  let recentEvents = [];
 
   function send(action, values = {}) {
     if (window.chrome && window.chrome.webview) {
@@ -24,6 +25,13 @@
       $("progress-value").textContent = `${percent}%`;
       $("progress-bar").style.width = `${percent}%`;
     }
+  }
+
+  function updateAnalysisControlState() {
+    const builtInAnalysis = !inputs.model.value.trim();
+    const disabled = $("transcribe-button").disabled || !builtInAnalysis;
+    $("instrument-prior").disabled = disabled;
+    $("quality-mode").disabled = disabled;
   }
 
   function setBusy(busy) {
@@ -41,10 +49,17 @@
       input.disabled = busy || (key === "model" && !window.transcribeConfig?.onnx);
     });
     $("capture-seconds").disabled = busy;
+    $("latency-ms").disabled = busy;
+    $("guitar-tuning").disabled = busy;
+    $("capo-fret").disabled = busy;
+    $("tab-alternatives").disabled = busy;
+    $("preserve-timing").disabled = busy;
+    updateAnalysisControlState();
     $("polyphonic").disabled = busy || !window.transcribeConfig?.onnx;
     $("open-folder-button").disabled = busy;
     $("cancel-button").textContent = "Stop capture";
     $("cancel-button").disabled = mode !== "asio";
+    window.dispatchEvent(new CustomEvent("transcribe:busy", { detail: busy }));
   }
 
   function loadSavedPaths() {
@@ -55,6 +70,14 @@
       });
       if (saved.mode) selectMode(saved.mode);
       $("polyphonic").checked = Boolean(saved.polyphonic);
+      if (saved.latencyMs) $("latency-ms").value = saved.latencyMs;
+      if (saved.tuning) $("guitar-tuning").value = saved.tuning;
+      if (saved.capoFret !== undefined) $("capo-fret").value = saved.capoFret;
+      if (saved.alternatives !== undefined) $("tab-alternatives").value = saved.alternatives;
+      $("preserve-timing").checked = Boolean(saved.preserveTiming);
+      if (saved.instrument) $("instrument-prior").value = saved.instrument;
+      if (saved.quality) $("quality-mode").value = saved.quality;
+      updateAnalysisControlState();
     } catch (error) {
       console.warn("Could not restore saved Transcribe paths.", error);
       $("status-text").textContent = "Saved paths could not be restored";
@@ -70,6 +93,13 @@
       midi: inputs.midi.value,
       mode,
       polyphonic: $("polyphonic").checked,
+      latencyMs: $("latency-ms").value,
+      tuning: $("guitar-tuning").value,
+      capoFret: $("capo-fret").value,
+      alternatives: $("tab-alternatives").value,
+      preserveTiming: $("preserve-timing").checked,
+      instrument: $("instrument-prior").value,
+      quality: $("quality-mode").value,
     }));
   }
 
@@ -83,7 +113,7 @@
     savePaths();
   }
 
-  function renderNotes(nextNotes, final = false) {
+  function renderNotes(nextNotes, final = false, notifyEditor = true) {
     notes = Array.isArray(nextNotes) ? nextNotes : [];
     duration = Math.max(1, ...notes.map((note) => note.start + note.duration));
     $("note-count").textContent = notes.length ? String(notes.length) : "—";
@@ -92,10 +122,11 @@
     if (!notes.length) {
       $("note-list").innerHTML = '<div class="empty-notes">No notes detected yet.</div>';
     } else {
-      const shown = notes.slice(-80).reverse();
-      shown.forEach((note, index) => {
+      const shown = notes.map((note, index) => ({ note, index })).slice(-80).reverse();
+      shown.forEach(({ note, index }) => {
         const row = document.createElement("div");
         row.className = "note-row";
+        row.dataset.index = String(index);
         const confidence = Math.round(Math.max(0, Math.min(1, note.confidence)) * 100);
         row.innerHTML = `<div class="note-main"><i class="note-color"></i><span class="note-name"></span><span class="note-time"></span></div><span class="note-time"></span><span class="note-confidence"></span>`;
         row.querySelector(".note-color").style.background = colors[(note.midi % colors.length + colors.length) % colors.length];
@@ -108,6 +139,9 @@
     }
     if (final) $("preview-badge").textContent = "COMPLETE";
     drawRoll();
+    if (notifyEditor) {
+      window.dispatchEvent(new CustomEvent("transcribe:notes", { detail: notes }));
+    }
   }
 
   function drawRoll() {
@@ -184,6 +218,7 @@
       $("polyphonic").disabled = !message.onnx;
       if (message.ffmpeg) $("drop-zone").classList.add("can-drop");
       $("engine-label").textContent = message.asio ? "C++ · YIN · ASIO ready" : "C++ analysis engine";
+      updateAnalysisControlState();
       return;
     }
     if (message.type === "field") {
@@ -200,8 +235,18 @@
       setStatus(message.status || "Analyzing audio", message.progress);
       return;
     }
+    if (message.type === "audio-preview") {
+      window.dispatchEvent(new CustomEvent("transcribe:audio-preview", { detail: message }));
+      return;
+    }
     if (message.type === "live") {
       renderNotes(message.notes);
+      if (Array.isArray(message.events) && message.events.length) {
+        recentEvents = [...recentEvents, ...message.events].slice(-8);
+        $("live-events").textContent = recentEvents.map((item) =>
+          `${item.type === "onset" ? "ON " : "OFF"} MIDI ${item.midi} · ${item.time.toFixed(2)}s · ${(Number(item.latency_ms) || 0).toFixed(0)}ms analysis`
+        ).join("\n");
+      }
       $("preview-badge").textContent = "LISTENING";
       $("preview-badge").className = "preview-badge active";
       return;
@@ -218,10 +263,16 @@
         $("result-message").textContent = message.summary;
         $("result-message").className = "result-message";
         renderNotes(message.notes, true);
+        window.dispatchEvent(new CustomEvent("transcribe:metadata", { detail: message.metadata }));
         setStatus("Transcription complete", 100);
       } else {
         showError(message.error || "Transcription failed.");
       }
+      return;
+    }
+    if (message.type === "exported") {
+      setBusy(false);
+      window.dispatchEvent(new CustomEvent("transcribe:edited-export", { detail: message }));
       return;
     }
     if (message.type === "error") {
@@ -253,6 +304,21 @@
       showError("Enter a capture duration greater than 0 and no more than 300 seconds.");
       return;
     }
+    if (mode === "asio" &&
+        (!(Number($("latency-ms").value) >= 20) || Number($("latency-ms").value) > 50)) {
+      showError("Realtime analysis latency must be between 20 and 50 milliseconds.");
+      return;
+    }
+    if (Number($("capo-fret").value) < 0 || Number($("capo-fret").value) > 24 ||
+        Number($("tab-alternatives").value) < 0 ||
+        Number($("tab-alternatives").value) > 5) {
+      showError("Capo must be 0–24 and alternative fingerings must be 0–5.");
+      return;
+    }
+    recentEvents = [];
+    $("live-events").textContent = "Waiting for realtime note events.";
+    renderNotes([]);
+    window.dispatchEvent(new CustomEvent("transcribe:metadata", { detail: {} }));
     savePaths();
     $("result-message").className = "result-message hidden";
     $("preview-badge").textContent = "STARTING";
@@ -263,6 +329,13 @@
       mode,
       input: inputs.input.value,
       duration: $("capture-seconds").value,
+      latency_ms: $("latency-ms").value,
+      tuning: $("guitar-tuning").value,
+      capo: $("capo-fret").value,
+      alternatives: $("tab-alternatives").value,
+      preserve_timing: $("preserve-timing").checked ? "1" : "0",
+      instrument: $("instrument-prior").value,
+      quality: $("quality-mode").value,
       model: inputs.model.value,
       polyphonic: $("polyphonic").checked ? "1" : "0",
       musicxml: inputs.musicxml.value,
@@ -273,6 +346,18 @@
   $("cancel-button").addEventListener("click", () => send("cancel"));
   $("open-folder-button").addEventListener("click", () => send("open-output", { path: inputs.musicxml.value }));
   Object.values(inputs).forEach((input) => input.addEventListener("change", savePaths));
+  inputs.model.addEventListener("input", updateAnalysisControlState);
+  $("latency-ms").addEventListener("change", savePaths);
+  $("guitar-tuning").addEventListener("change", savePaths);
+  $("capo-fret").addEventListener("change", savePaths);
+  $("tab-alternatives").addEventListener("change", savePaths);
+  $("preserve-timing").addEventListener("change", savePaths);
+  $("instrument-prior").addEventListener("change", savePaths);
+  $("quality-mode").addEventListener("change", savePaths);
+  window.addEventListener("transcribe:edited", (event) => {
+    renderNotes(event.detail.notes, false, false);
+  });
+  window.addEventListener("transcribe:export-started", () => setBusy(true));
   window.addEventListener("resize", drawRoll);
   window.addEventListener("DOMContentLoaded", () => {
     loadSavedPaths();

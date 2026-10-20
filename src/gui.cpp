@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cwctype>
 #include <filesystem>
 #include <iomanip>
@@ -45,6 +46,11 @@ constexpr int id_open_output = 114;
 constexpr int id_progress = 115;
 constexpr int id_preview = 116;
 constexpr int id_polyphonic = 117;
+constexpr int id_latency = 118;
+constexpr int id_guitar_tuning = 119;
+constexpr int id_capo = 120;
+constexpr int id_tab_alternatives = 121;
+constexpr int id_expressive_timing = 122;
 constexpr UINT message_complete = WM_APP + 1;
 constexpr UINT message_progress = WM_APP + 2;
 constexpr UINT message_live_preview = WM_APP + 3;
@@ -66,6 +72,7 @@ struct AppState {
     HWND input_browse{};
     HWND duration_label{};
     HWND duration{};
+    HWND realtime_latency{};
     HWND model{};
     HWND model_browse{};
     HWND musicxml{};
@@ -76,6 +83,10 @@ struct AppState {
     HWND midi_browse{};
     HWND open_output{};
     HWND polyphonic{};
+    HWND guitar_tuning{};
+    HWND capo{};
+    HWND tab_alternatives{};
+    HWND expressive_timing{};
     HWND transcribe{};
     HWND status{};
     HWND progress{};
@@ -148,6 +159,7 @@ void set_mode_controls(AppState& state) {
     EnableWindow(state.input_browse, !asio_selected);
     EnableWindow(state.duration_label, asio_selected);
     EnableWindow(state.duration, asio_selected);
+    EnableWindow(state.realtime_latency, asio_selected);
 #ifndef TRANSCRIBE_ENABLE_ONNX
     EnableWindow(state.model, FALSE);
     EnableWindow(state.model_browse, FALSE);
@@ -258,6 +270,42 @@ void start_transcription(AppState& state) {
     const std::wstring midi_text = get_text(state.midi);
     const bool polyphonic = IsDlgButtonChecked(state.window, id_polyphonic) == BST_CHECKED;
     double capture_seconds = 0.0;
+    double latency_ms = 40.0;
+    int capo_fret = 0;
+    int tab_alternatives = 0;
+    static constexpr std::array<std::array<int, 6>, 5> tunings{{
+        {{64, 59, 55, 50, 45, 40}},
+        {{64, 59, 55, 50, 45, 38}},
+        {{62, 57, 55, 50, 45, 38}},
+        {{62, 57, 54, 50, 45, 38}},
+        {{62, 59, 55, 50, 43, 38}},
+    }};
+    const auto tuning_selection = SendMessageW(state.guitar_tuning, CB_GETCURSEL, 0, 0);
+    if (tuning_selection < 0 ||
+        tuning_selection >= static_cast<LRESULT>(tunings.size())) {
+        MessageBoxW(state.window, L"Select a supported guitar tuning.", L"Transcribe",
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    try {
+        const auto capo_text = get_text(state.capo);
+        std::size_t parsed_characters = 0;
+        capo_fret = std::stoi(capo_text, &parsed_characters);
+        if (parsed_characters != capo_text.size() || capo_fret < 0 || capo_fret > 24) {
+            throw std::invalid_argument("Invalid capo fret.");
+        }
+        const auto alternatives_text = get_text(state.tab_alternatives);
+        tab_alternatives = std::stoi(alternatives_text, &parsed_characters);
+        if (parsed_characters != alternatives_text.size() ||
+            tab_alternatives < 0 || tab_alternatives > 5) {
+            throw std::invalid_argument("Invalid alternative fingering count.");
+        }
+    } catch (const std::exception&) {
+        MessageBoxW(state.window, L"Enter a capo fret from 0 to 24 and 0 to 5 alternative fingerings.",
+                    L"Transcribe", MB_OK | MB_ICONWARNING);
+        return;
+    }
 
     if (!use_asio && input_text.empty()) {
         MessageBoxW(state.window, L"Choose a WAV audio file first.", L"Transcribe",
@@ -287,8 +335,15 @@ void start_transcription(AppState& state) {
                 capture_seconds <= 0.0 || capture_seconds > 300.0) {
                 throw std::invalid_argument("Invalid duration.");
             }
+            const auto latency_text = get_text(state.realtime_latency);
+            latency_ms = std::stod(latency_text, &parsed_characters);
+            if (parsed_characters != latency_text.size() || !std::isfinite(latency_ms) ||
+                latency_ms < 20.0 || latency_ms > 50.0) {
+                throw std::invalid_argument("Invalid realtime latency.");
+            }
         } catch (const std::exception&) {
-            MessageBoxW(state.window, L"Enter a capture duration greater than 0 and at most 300 seconds.",
+            MessageBoxW(state.window,
+                        L"Enter a capture duration up to 300 seconds and a live latency from 20 to 50 ms.",
                         L"Transcribe", MB_OK | MB_ICONWARNING);
             return;
         }
@@ -315,6 +370,14 @@ void start_transcription(AppState& state) {
     request.use_asio = use_asio;
     request.polyphonic = polyphonic;
     request.capture_seconds = capture_seconds;
+    request.realtime_options.latency_ms = latency_ms;
+    request.guitar_tab_options.tuning =
+        tunings[static_cast<std::size_t>(tuning_selection)];
+    request.guitar_tab_options.capo_fret = capo_fret;
+    request.guitar_tab_options.alternative_fingerings =
+        static_cast<std::size_t>(tab_alternatives);
+    request.preserve_expressive_timing =
+        IsDlgButtonChecked(state.window, id_expressive_timing) == BST_CHECKED;
     request.input_path = input_path;
     request.model_path = model_path;
     request.musicxml_path = musicxml_path;
@@ -330,7 +393,8 @@ void start_transcription(AppState& state) {
                     std::clamp(static_cast<int>(progress * 100.0), 0, 100)), 0);
             };
             const auto live_preview_callback =
-                [window](double offset, const std::vector<transcribe::Note>& notes) {
+                [window](double offset, const std::vector<transcribe::Note>& notes,
+                         const std::vector<transcribe::NoteEvent>& events) {
                     std::wostringstream text;
                     text << L"Detected notes:\r\n";
                     const std::size_t first = notes.size() > 35 ? notes.size() - 35 : 0;
@@ -338,6 +402,28 @@ void start_transcription(AppState& state) {
                         text << std::fixed << std::setprecision(2)
                              << offset + notes[i].start_seconds << L"s  "
                              << to_wide(notes[i].name.c_str()) << L"\r\n";
+                    }
+                    if (!events.empty()) {
+                        text << L"\r\nRealtime events:\r\n";
+                        const std::size_t event_start =
+                            events.size() > 5 ? events.size() - 5 : 0;
+                        for (std::size_t i = event_start; i < events.size(); ++i) {
+                            text << (events[i].type == transcribe::NoteEventType::Onset
+                                         ? L"Note on  "
+                                         : L"Note off ")
+                                 << std::fixed << std::setprecision(2)
+                                 << events[i].time_seconds << L"s  "
+                                 << to_wide(transcribe::midi_note_name(
+                                                events[i].midi_pitch)
+                                                .c_str())
+                                 << L"  "
+                                 << std::setprecision(0)
+                                 << std::max(0.0, events[i].detected_at_seconds -
+                                                      events[i].time_seconds) *
+                                        1000.0
+                                 << L" ms analysis"
+                                 << L"\r\n";
+                        }
                     }
                     auto preview = std::make_unique<LivePreview>();
                     preview->text = text.str();
@@ -441,6 +527,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         state->duration = create_control(*state, L"EDIT", L"10",
                                          WS_BORDER | ES_AUTOHSCROLL,
                                          175, 102, 120, 25, id_duration);
+        create_control(*state, L"STATIC", L"Live latency (ms)", SS_LEFT,
+                       330, 106, 120, 24, 0);
+        state->realtime_latency = create_control(
+            *state, L"EDIT", L"40", WS_BORDER | ES_AUTOHSCROLL,
+            455, 102, 80, 25, id_latency);
 
         create_label(*state, L"ONNX model (optional)", 146);
         state->model = create_control(*state, L"EDIT", L"",
@@ -477,19 +568,43 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         state->midi_browse = create_control(*state, L"BUTTON", L"Save as...",
                                             BS_PUSHBUTTON, 640, 285, 90, 27, id_midi_browse);
 
+        create_label(*state, L"Guitar tuning", 335);
+        state->guitar_tuning = create_control(
+            *state, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL,
+            175, 331, 190, 150, id_guitar_tuning);
+        for (const wchar_t* tuning : {L"Standard", L"Drop D", L"DADGAD",
+                                      L"Open D", L"Open G"}) {
+            SendMessageW(state->guitar_tuning, CB_ADDSTRING, 0,
+                         reinterpret_cast<LPARAM>(tuning));
+        }
+        SendMessageW(state->guitar_tuning, CB_SETCURSEL, 0, 0);
+        create_control(*state, L"STATIC", L"Capo fret", SS_LEFT,
+                       390, 335, 70, 24, 0);
+        state->capo = create_control(*state, L"EDIT", L"0",
+                                     WS_BORDER | ES_AUTOHSCROLL,
+                                     465, 331, 65, 25, id_capo);
+        create_control(*state, L"STATIC", L"Tab alternatives (0-5)", SS_LEFT,
+                       20, 374, 145, 24, 0);
+        state->tab_alternatives = create_control(
+            *state, L"EDIT", L"0", WS_BORDER | ES_AUTOHSCROLL,
+            175, 370, 65, 25, id_tab_alternatives);
+        state->expressive_timing = create_control(
+            *state, L"BUTTON", L"Annotate expressive timing in MusicXML",
+            BS_AUTOCHECKBOX, 390, 370, 310, 24, id_expressive_timing);
+
         state->transcribe = create_control(*state, L"BUTTON", L"Transcribe",
-                                           BS_DEFPUSHBUTTON, 175, 328, 140, 34, id_transcribe);
+                                           BS_DEFPUSHBUTTON, 175, 410, 140, 34, id_transcribe);
         state->open_output = create_control(*state, L"BUTTON", L"Open output folder",
-                                            BS_PUSHBUTTON, 325, 328, 170, 34, id_open_output);
+                                            BS_PUSHBUTTON, 325, 410, 170, 34, id_open_output);
         state->progress = create_control(*state, PROGRESS_CLASSW, L"",
-                                         PBS_SMOOTH, 175, 375, 555, 20, id_progress);
+                                         PBS_SMOOTH, 175, 457, 555, 20, id_progress);
         SendMessageW(state->progress, PBM_SETRANGE32, 0, 100);
         state->status = create_control(*state, L"STATIC", L"Ready.",
-                                       SS_LEFT, 175, 402, 555, 24, 0);
+                                       SS_LEFT, 175, 484, 555, 24, 0);
         state->preview = create_control(*state, L"EDIT", L"",
                                         WS_BORDER | ES_MULTILINE | ES_READONLY |
                                             ES_AUTOVSCROLL | WS_VSCROLL,
-                                        175, 432, 555, 92, id_preview);
+                                        175, 514, 555, 124, id_preview);
         load_preferences(*state);
         set_mode_controls(*state);
         return 0;
@@ -664,7 +779,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show_command) {
         return 1;
     }
 
-    RECT bounds{0, 0, 760, 540};
+    RECT bounds{0, 0, 760, 660};
     AdjustWindowRect(&bounds, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     HWND window = CreateWindowExW(
         0, class_name, L"Transcribe", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,

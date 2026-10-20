@@ -9,6 +9,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Configure with tests
         run: cmake -S . -B build -DTRANSCRIBE_BUILD_TESTS=ON
       - name: Build
@@ -27,9 +33,16 @@ jobs:
           cmake -S . -B build-webview2 `
             -DTRANSCRIBE_ENABLE_WEBVIEW2=ON `
             -DTRANSCRIBE_WEBVIEW2_SDK_ROOT="$sdk"
-          cmake --build build-webview2 --config Release --target transcribe-gui --parallel
+          cmake --build build-webview2 --config Release --parallel
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: Package WebView2 workstation
+        run: cpack --config build-webview2\CPackConfig.cmake -G ZIP -C Release -B build-webview2\packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transcribe-windows-webview2
+          path: build-webview2/packages/*
+          if-no-files-found: error
 
   linux:
     runs-on: ubuntu-24.04
@@ -40,6 +53,12 @@ jobs:
         ffmpeg: [OFF, ON]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install FFmpeg development libraries
         run: |
           sudo apt-get update
@@ -59,11 +78,24 @@ jobs:
         run: |
           ffmpeg -nostdin -hide_banner -loglevel error -y -i samples/single_a4.wav -c:a flac "$RUNNER_TEMP/single_a4.flac"
           ./build/transcribe "$RUNNER_TEMP/single_a4.flac" --quiet --musicxml "$RUNNER_TEMP/score.musicxml" --tab "$RUNNER_TEMP/tab.txt"
+      - name: Package CLI
+        run: cpack --config build/CPackConfig.cmake -G TGZ -B build/packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transcribe-linux-${{ matrix.compiler }}-ffmpeg-${{ matrix.ffmpeg }}
+          path: build/packages/*
+          if-no-files-found: error
 
   onnx:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Set ONNX Runtime environment
         run: |
           echo "ONNXRUNTIME_ROOT=$RUNNER_TEMP/onnxruntime-linux-x64-1.20.1" >> "$GITHUB_ENV"

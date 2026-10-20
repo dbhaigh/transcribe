@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <future>
@@ -9,6 +11,7 @@
 #include <mutex>
 #include <numbers>
 #include <numeric>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -16,6 +19,9 @@
 
 #ifdef TRANSCRIBE_ENABLE_ONNX
 #include <onnxruntime_cxx_api.h>
+#ifdef TRANSCRIBE_ONNX_ENABLE_DIRECTML
+#include <dml_provider_factory.h>
+#endif
 #endif
 
 namespace transcribe {
@@ -213,6 +219,288 @@ void fft(std::vector<std::complex<double>>& values) {
     }
 }
 
+template <std::size_t Size>
+const std::array<double, Size>& hann_window() {
+    static const auto values = [] {
+        std::array<double, Size> window{};
+        for (std::size_t i = 0; i < Size; ++i) {
+            window[i] = 0.5 - 0.5 * std::cos(
+                2.0 * std::numbers::pi * i / (Size - 1));
+        }
+        return window;
+    }();
+    return values;
+}
+
+struct Spectrogram {
+    std::size_t frame_count{};
+    std::size_t bin_count{};
+    std::vector<double> magnitudes;
+};
+
+struct SpectrogramKey {
+    std::uint64_t sample_hash{};
+    std::size_t sample_count{};
+    std::uint32_t sample_rate{};
+    std::size_t window_size{};
+    std::size_t hop_size{};
+
+    bool operator==(const SpectrogramKey&) const = default;
+};
+
+std::uint64_t hash_audio(const AudioBuffer& audio) {
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const float sample : audio.samples) {
+        hash ^= std::bit_cast<std::uint32_t>(sample);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+std::shared_ptr<const Spectrogram> get_spectrogram(
+    const AudioBuffer& audio, std::size_t window_size, std::size_t hop_size,
+    bool parallel, bool& cache_hit) {
+    const SpectrogramKey key{hash_audio(audio), audio.samples.size(),
+                             audio.sample_rate, window_size, hop_size};
+    static std::mutex cache_mutex;
+    static SpectrogramKey cached_key;
+    static std::shared_ptr<const Spectrogram> cached_spectrogram;
+    {
+        std::lock_guard lock(cache_mutex);
+        if (cached_spectrogram && cached_key == key) {
+            cache_hit = true;
+            return cached_spectrogram;
+        }
+    }
+
+    const std::size_t frame_count =
+        std::max<std::size_t>(1, (audio.samples.size() + hop_size - 1) / hop_size);
+    const std::size_t bin_count = window_size / 2 + 1;
+    if (frame_count > std::numeric_limits<std::size_t>::max() / bin_count) {
+        throw std::length_error("Spectrogram dimensions exceed addressable memory.");
+    }
+    auto computed = std::make_shared<Spectrogram>();
+    computed->frame_count = frame_count;
+    computed->bin_count = bin_count;
+    computed->magnitudes.resize(frame_count * bin_count);
+    std::vector<double> window(window_size);
+    for (std::size_t i = 0; i < window_size; ++i) {
+        window[i] = 0.5 - 0.5 * std::cos(
+            2.0 * std::numbers::pi * i / (window_size - 1));
+    }
+    const auto analyze_range = [&audio, &window, &computed, window_size,
+                                hop_size, bin_count](std::size_t begin,
+                                                     std::size_t end) {
+        std::vector<std::complex<double>> spectrum(window_size);
+        for (std::size_t frame = begin; frame < end; ++frame) {
+            const std::size_t start = frame * hop_size;
+            for (std::size_t i = 0; i < window_size; ++i) {
+                const std::size_t sample_index = start + i;
+                const double sample = sample_index < audio.samples.size()
+                                          ? audio.samples[sample_index]
+                                          : 0.0;
+                spectrum[i] = {sample * window[i], 0.0};
+            }
+            fft(spectrum);
+            double* const destination =
+                computed->magnitudes.data() + frame * bin_count;
+            for (std::size_t bin = 1; bin < bin_count; ++bin) {
+                destination[bin] = std::abs(spectrum[bin]);
+            }
+        }
+    };
+    constexpr std::size_t parallel_threshold = 256;
+    const std::size_t worker_count =
+        parallel && frame_count >= parallel_threshold
+            ? std::min<std::size_t>(
+                  std::min(std::max(1U, std::thread::hardware_concurrency()),
+                           8U),
+                  (frame_count + parallel_threshold - 1) / parallel_threshold)
+            : 1;
+    if (worker_count == 1) {
+        analyze_range(0, frame_count);
+    } else {
+        std::vector<std::future<void>> workers;
+        workers.reserve(worker_count);
+        for (std::size_t worker = 0; worker < worker_count; ++worker) {
+            const std::size_t begin = frame_count * worker / worker_count;
+            const std::size_t end = frame_count * (worker + 1) / worker_count;
+            workers.push_back(std::async(std::launch::async, analyze_range,
+                                         begin, end));
+        }
+        for (auto& worker : workers) {
+            worker.get();
+        }
+    }
+
+    constexpr std::size_t cache_capacity_bytes = 64 * 1024 * 1024;
+    if (computed->magnitudes.size() <=
+        cache_capacity_bytes / sizeof(double)) {
+        std::lock_guard lock(cache_mutex);
+        cached_key = key;
+        cached_spectrogram = computed;
+    }
+    cache_hit = false;
+    return computed;
+}
+
+std::vector<Note> transcribe_spectral_polyphonic(
+    const AudioBuffer& audio, std::span<const double> onsets,
+    double duration_seconds, const AnalysisOptions& options,
+    bool& spectrogram_cache_hit) {
+    const std::size_t window_size = options.fast_preview ? 2048 : 4096;
+    const std::size_t hop_size = options.fast_preview ? 512 : 256;
+    const std::uint32_t sample_rate = audio.sample_rate;
+    constexpr std::size_t first_pitch = 28;
+    constexpr std::size_t last_pitch = 96;
+    constexpr std::size_t pitch_count = last_pitch - first_pitch + 1;
+    const std::size_t frame_count =
+        std::max<std::size_t>(1, (audio.samples.size() + hop_size - 1) / hop_size);
+
+    int minimum_pitch = static_cast<int>(first_pitch);
+    int maximum_pitch = static_cast<int>(last_pitch);
+    std::size_t maximum_pitches = options.maximum_pitches_per_frame;
+    switch (options.instrument) {
+    case InstrumentPrior::Guitar:
+        minimum_pitch = 40;
+        maximum_pitch = 88;
+        maximum_pitches = std::min<std::size_t>(maximum_pitches, 6);
+        break;
+    case InstrumentPrior::Piano:
+        maximum_pitches = std::min<std::size_t>(maximum_pitches, 10);
+        break;
+    case InstrumentPrior::Voice:
+        minimum_pitch = 45;
+        maximum_pitch = 84;
+        maximum_pitches = std::min<std::size_t>(maximum_pitches, 2);
+        break;
+    case InstrumentPrior::None:
+        break;
+    }
+
+    std::vector<std::vector<PitchFrame>> pitch_frames(pitch_count);
+    for (auto& frames : pitch_frames) {
+        frames.reserve(frame_count);
+    }
+    const auto spectrogram =
+        get_spectrogram(audio, window_size, hop_size, options.parallel,
+                        spectrogram_cache_hit);
+    struct HarmonicTemplate {
+        std::array<double, 8> frequencies{};
+        std::size_t count{};
+    };
+    std::array<HarmonicTemplate, pitch_count> harmonic_templates{};
+    for (std::size_t pitch = 0; pitch < pitch_count; ++pitch) {
+        const int midi = static_cast<int>(pitch + first_pitch);
+        const double frequency = 440.0 * std::pow(2.0, (midi - 69) / 12.0);
+        for (std::size_t harmonic = 1; harmonic <= 8; ++harmonic) {
+            const double harmonic_frequency = frequency * harmonic;
+            if (harmonic_frequency >= sample_rate / 2.0) {
+                break;
+            }
+            harmonic_templates[pitch].frequencies[harmonic_templates[pitch].count++] =
+                harmonic_frequency;
+        }
+    }
+    std::array<double, pitch_count> salience{};
+    std::vector<std::pair<std::size_t, double>> candidates;
+    candidates.reserve(pitch_count);
+    for (std::size_t frame = 0; frame < frame_count; ++frame) {
+        const double* const magnitudes =
+            spectrogram->magnitudes.data() + frame * spectrogram->bin_count;
+        const std::size_t start = frame * hop_size;
+        double maximum_spectrum = 0.0;
+        for (std::size_t bin = 1; bin <= window_size / 2; ++bin) {
+            maximum_spectrum = std::max(maximum_spectrum, magnitudes[bin]);
+        }
+
+        salience.fill(0.0);
+        if (maximum_spectrum > 1e-9) {
+            for (int midi = minimum_pitch; midi <= maximum_pitch; ++midi) {
+                const std::size_t pitch_index =
+                    static_cast<std::size_t>(midi - static_cast<int>(first_pitch));
+                const auto bin_peak = [magnitudes, window_size, sample_rate](
+                                          double target_frequency) {
+                    const double bin =
+                        target_frequency * window_size / sample_rate;
+                    if (bin < 1.0 || bin >= window_size / 2.0) {
+                        return 0.0;
+                    }
+                    const auto lower = static_cast<std::size_t>(bin);
+                    const auto upper = lower + 1;
+                    const double fraction = bin - lower;
+                    return magnitudes[lower] * (1.0 - fraction) +
+                           magnitudes[upper] * fraction;
+                };
+
+                const auto& harmonics = harmonic_templates[pitch_index];
+                const double fundamental =
+                    harmonics.count > 0 ? bin_peak(harmonics.frequencies[0]) : 0.0;
+                double strongest_harmonic = fundamental;
+                double score = fundamental;
+                for (std::size_t harmonic = 1; harmonic < harmonics.count; ++harmonic) {
+                    const double peak = bin_peak(harmonics.frequencies[harmonic]);
+                    strongest_harmonic = std::max(strongest_harmonic, peak);
+                    score += peak / std::sqrt(static_cast<double>(harmonic + 1));
+                }
+                if (fundamental >= strongest_harmonic * 0.12) {
+                    salience[pitch_index] = score;
+                }
+            }
+        }
+
+        const double strongest = *std::max_element(salience.begin(), salience.end());
+        candidates.clear();
+        if (strongest > 0.0) {
+            for (int midi = minimum_pitch; midi <= maximum_pitch; ++midi) {
+                const std::size_t pitch_index =
+                    static_cast<std::size_t>(midi - static_cast<int>(first_pitch));
+                const double value = salience[pitch_index];
+                const double left = pitch_index == 0 ? 0.0 : salience[pitch_index - 1];
+                const double right = pitch_index + 1 == pitch_count
+                                         ? 0.0
+                                         : salience[pitch_index + 1];
+                if (value >= strongest * options.spectral_threshold &&
+                    value >= left && value >= right && value > 0.0) {
+                    candidates.emplace_back(pitch_index, value / strongest);
+                }
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const auto& left, const auto& right) {
+                      return left.second > right.second;
+                  });
+        if (candidates.size() > maximum_pitches) {
+            candidates.resize(maximum_pitches);
+        }
+        const double time = static_cast<double>(start) / analysis_rate;
+        for (std::size_t pitch = 0; pitch < pitch_count; ++pitch) {
+            const auto selected = std::find_if(
+                candidates.begin(), candidates.end(),
+                [pitch](const auto& candidate) { return candidate.first == pitch; });
+            const bool voiced = selected != candidates.end();
+            const double confidence = voiced ? selected->second : 0.0;
+            pitch_frames[pitch].push_back(
+                {voiced ? static_cast<int>(pitch + first_pitch) : -1, time,
+                 confidence, confidence});
+        }
+    }
+
+    std::vector<Note> notes;
+    for (auto& frames : pitch_frames) {
+        auto detected = notes_from_frames(frames, duration_seconds, onsets,
+                                          options.minimum_confidence);
+        notes.insert(notes.end(), detected.begin(), detected.end());
+    }
+    std::sort(notes.begin(), notes.end(), [](const Note& left, const Note& right) {
+        if (left.start_seconds != right.start_seconds) {
+            return left.start_seconds < right.start_seconds;
+        }
+        return left.midi_pitch < right.midi_pitch;
+    });
+    return notes;
+}
+
 std::vector<double> histogram_for_notes(const std::vector<Note>& notes) {
     std::vector<double> histogram(12, 0.0);
     for (const auto& note : notes) {
@@ -240,10 +528,66 @@ Ort::Env& onnx_environment() {
     return environment;
 }
 
-std::shared_ptr<Ort::Session> load_onnx_session(const std::filesystem::path& path) {
+void append_execution_provider(Ort::SessionOptions& options,
+                               OnnxExecutionProvider provider, int device_id) {
+    (void)options;
+    (void)device_id;
+    switch (provider) {
+    case OnnxExecutionProvider::Cpu:
+        return;
+    case OnnxExecutionProvider::Cuda:
+#ifdef TRANSCRIBE_ONNX_ENABLE_CUDA
+    {
+        OrtCUDAProviderOptions provider_options{};
+        provider_options.device_id = device_id;
+        options.AppendExecutionProvider_CUDA(provider_options);
+        return;
+    }
+#else
+        throw std::runtime_error(
+            "CUDA provider selection requires TRANSCRIBE_ONNX_ENABLE_CUDA=ON.");
+#endif
+    case OnnxExecutionProvider::Rocm:
+#ifdef TRANSCRIBE_ONNX_ENABLE_ROCM
+    {
+        OrtROCMProviderOptions provider_options{};
+        provider_options.device_id = device_id;
+        options.AppendExecutionProvider_ROCM(provider_options);
+        return;
+    }
+#else
+        throw std::runtime_error(
+            "ROCm provider selection requires TRANSCRIBE_ONNX_ENABLE_ROCM=ON.");
+#endif
+    case OnnxExecutionProvider::DirectML:
+#ifdef TRANSCRIBE_ONNX_ENABLE_DIRECTML
+    {
+        options.DisableMemPattern();
+        options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+        const void* provider_api = nullptr;
+        Ort::ThrowOnError(Ort::GetApi().GetExecutionProviderApi(
+            "DML", ORT_API_VERSION, &provider_api));
+        const auto* dml_api = static_cast<const OrtDmlApi*>(provider_api);
+        Ort::ThrowOnError(
+            dml_api->SessionOptionsAppendExecutionProvider_DML(options, device_id));
+        return;
+    }
+#else
+        throw std::runtime_error(
+            "DirectML provider selection requires TRANSCRIBE_ONNX_ENABLE_DIRECTML=ON.");
+#endif
+    }
+    throw std::invalid_argument("Unknown ONNX execution provider.");
+}
+
+std::shared_ptr<Ort::Session> load_onnx_session(
+    const std::filesystem::path& path, OnnxExecutionProvider provider,
+    int device_id) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::wstring, std::shared_ptr<Ort::Session>> cache;
-    const auto key = path.lexically_normal().wstring();
+    auto key = path.lexically_normal().wstring();
+    key += L"\n" + std::to_wstring(static_cast<int>(provider)) + L"\n" +
+           std::to_wstring(device_id);
     std::lock_guard lock(cache_mutex);
     const auto existing = cache.find(key);
     if (existing != cache.end()) {
@@ -252,6 +596,7 @@ std::shared_ptr<Ort::Session> load_onnx_session(const std::filesystem::path& pat
     Ort::SessionOptions options;
     options.SetIntraOpNumThreads(1);
     options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    append_execution_provider(options, provider, device_id);
     auto session =
         std::make_shared<Ort::Session>(onnx_environment(), path.c_str(), options);
     cache.emplace(key, session);
@@ -478,6 +823,381 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
 
 } // namespace
 
+AudioPreviewData make_audio_preview(std::span<const float> samples,
+                                    std::uint32_t sample_rate,
+                                    std::size_t maximum_columns,
+                                    std::size_t frequency_bands) {
+    if (samples.empty()) {
+        return {};
+    }
+    if (sample_rate < 2000 || maximum_columns == 0 || maximum_columns > 1024 ||
+        frequency_bands == 0 || frequency_bands > 128) {
+        throw std::invalid_argument("Audio preview dimensions or sample rate are invalid.");
+    }
+
+    std::size_t window_size = 1;
+    while (window_size <= 1024 && window_size * 2 <= samples.size()) {
+        window_size *= 2;
+    }
+    window_size = std::min<std::size_t>(window_size, 2048);
+    if (window_size < 256) {
+        window_size = 256;
+    }
+    const std::size_t quarter_window = std::max<std::size_t>(1, window_size / 4);
+    const std::size_t preview_span =
+        samples.size() > window_size ? samples.size() - window_size : 0;
+    const std::size_t stride_limit = maximum_columns > 1
+                                         ? maximum_columns - 1
+                                         : 1;
+    const std::size_t capped_stride =
+        preview_span / stride_limit +
+        static_cast<std::size_t>(preview_span % stride_limit != 0);
+    const std::size_t maximum_stride =
+        std::max(quarter_window, capped_stride);
+    const std::size_t column_count =
+        samples.size() <= window_size
+            ? 1
+            : std::min(maximum_columns,
+                       1 + (samples.size() - window_size) / maximum_stride);
+
+    AudioPreviewData preview;
+    preview.duration_seconds =
+        static_cast<double>(samples.size()) / sample_rate;
+    preview.columns = column_count;
+    preview.frequency_bands = frequency_bands;
+    preview.waveform.resize(column_count);
+    preview.spectrogram.assign(column_count * frequency_bands, 0.0f);
+
+    for (std::size_t column = 0; column < column_count; ++column) {
+        const std::size_t samples_per_bucket = samples.size() / column_count;
+        const std::size_t remainder = samples.size() % column_count;
+        const std::size_t bucket_start =
+            samples_per_bucket * column + std::min(column, remainder);
+        const std::size_t bucket_end =
+            samples_per_bucket * (column + 1) +
+            std::min(column + 1, remainder);
+        float peak = 0.0f;
+        for (std::size_t sample = bucket_start;
+             sample < std::min(bucket_end, samples.size()); ++sample) {
+            peak = std::max(peak, std::abs(samples[sample]));
+        }
+        preview.waveform[column] = std::clamp(peak, 0.0f, 1.0f);
+    }
+
+    if (window_size < 256 || samples.size() < 64) {
+        return preview;
+    }
+    std::vector<double> window(window_size);
+    for (std::size_t index = 0; index < window_size; ++index) {
+        window[index] = 0.5 - 0.5 * std::cos(
+            2.0 * std::numbers::pi * index / (window_size - 1));
+    }
+    const double lowest_frequency = 55.0;
+    const double nyquist = sample_rate * 0.5;
+    const double log_frequency_range =
+        std::log(nyquist / lowest_frequency);
+    std::vector<double> band_energy(column_count * frequency_bands, 0.0);
+    std::vector<std::complex<double>> spectrum(window_size);
+    double maximum_energy = 0.0;
+    for (std::size_t column = 0; column < column_count; ++column) {
+        const std::size_t start = samples.size() <= window_size
+                                      ? 0
+                                      : column * maximum_stride;
+        for (std::size_t index = 0; index < window_size; ++index) {
+            const std::size_t source_index = start + index;
+            const double sample =
+                source_index < samples.size() ? samples[source_index] : 0.0;
+            spectrum[index] = {sample * window[index], 0.0};
+        }
+        fft(spectrum);
+        for (std::size_t bin = 1; bin < window_size / 2; ++bin) {
+            const double frequency =
+                static_cast<double>(bin) * sample_rate / window_size;
+            if (frequency < lowest_frequency || frequency >= nyquist) {
+                continue;
+            }
+            const auto band = std::min<std::size_t>(
+                frequency_bands - 1,
+                static_cast<std::size_t>(
+                    std::log(frequency / lowest_frequency) /
+                    log_frequency_range * frequency_bands));
+            const double magnitude = std::abs(spectrum[bin]);
+            auto& energy = band_energy[column * frequency_bands + band];
+            energy += magnitude * magnitude;
+            maximum_energy = std::max(maximum_energy, energy);
+        }
+    }
+    if (maximum_energy > 0.0) {
+        const double maximum_db = 10.0 * std::log10(maximum_energy);
+        for (std::size_t index = 0; index < band_energy.size(); ++index) {
+            const double decibels =
+                10.0 * std::log10(std::max(band_energy[index], 1e-12));
+            preview.spectrogram[index] = static_cast<float>(
+                std::clamp((decibels - maximum_db + 60.0) / 60.0, 0.0, 1.0));
+        }
+    }
+    return preview;
+}
+
+struct RealtimeTranscriber::Impl {
+    explicit Impl(const RealtimeOptions& requested) : options(requested) {
+        if (options.input_sample_rate < 2000) {
+            throw std::invalid_argument("Realtime input sample rate must be at least 2000 Hz.");
+        }
+        if (!std::isfinite(options.latency_ms) || options.latency_ms < 20.0 ||
+            options.latency_ms > 50.0) {
+            throw std::invalid_argument("Realtime latency must be between 20 and 50 ms.");
+        }
+        if (!std::isfinite(options.update_rate_hz) || options.update_rate_hz < 50.0 ||
+            options.update_rate_hz > 100.0) {
+            throw std::invalid_argument("Realtime update rate must be between 50 and 100 Hz.");
+        }
+        if (!std::isfinite(options.minimum_confidence) ||
+            options.minimum_confidence < 0.0 || options.minimum_confidence > 1.0 ||
+            options.onset_stability_frames == 0 || options.offset_stability_frames == 0) {
+            throw std::invalid_argument("Realtime confidence and stability settings are invalid.");
+        }
+        window_size = static_cast<std::size_t>(
+            std::llround(analysis_rate * options.latency_ms / 1000.0));
+        hop_size = std::max<std::size_t>(
+            1, static_cast<std::size_t>(
+                   std::llround(analysis_rate / options.update_rate_hz)));
+    }
+
+    void append_analysis_sample(float sample) {
+        analysis_samples.push_back(sample);
+        ++analysis_samples_generated;
+    }
+
+    void process_pitch(int pitch, double confidence, double frame_time,
+                       double detected_at_time) {
+        if (active_note == no_note) {
+            if (pitch < 0) {
+                pending_pitch = -1;
+                pending_frames = 0;
+                return;
+            }
+            if (pending_pitch != pitch) {
+                pending_pitch = pitch;
+                pending_frames = 1;
+                pending_start = frame_time;
+                pending_confidence = confidence;
+            } else {
+                ++pending_frames;
+                pending_confidence = std::max(pending_confidence, confidence);
+            }
+            if (pending_frames >= options.onset_stability_frames) {
+                start_note(pending_pitch, pending_start, pending_confidence,
+                           detected_at_time);
+                pending_pitch = -1;
+                pending_frames = 0;
+            }
+            return;
+        }
+
+        if (pitch == live_notes[active_note].midi_pitch) {
+            pending_pitch = -1;
+            pending_frames = 0;
+            release_frames = 0;
+            live_notes[active_note].confidence =
+                std::max(live_notes[active_note].confidence, confidence);
+            live_notes[active_note].duration_seconds =
+                std::max(0.0, frame_time + static_cast<double>(window_size) / analysis_rate -
+                                  live_notes[active_note].start_seconds);
+            return;
+        }
+
+        if (pitch >= 0) {
+            if (pending_pitch != pitch) {
+                pending_pitch = pitch;
+                pending_frames = 1;
+                pending_start = frame_time;
+                pending_confidence = confidence;
+            } else {
+                ++pending_frames;
+                pending_confidence = std::max(pending_confidence, confidence);
+            }
+            if (pending_frames >= options.onset_stability_frames) {
+                close_note(pending_start, detected_at_time);
+                start_note(pending_pitch, pending_start, pending_confidence,
+                           detected_at_time);
+                pending_pitch = -1;
+                pending_frames = 0;
+                release_frames = 0;
+            }
+            return;
+        }
+
+        pending_pitch = -1;
+        pending_frames = 0;
+        if (release_frames == 0) {
+            release_start = frame_time;
+        }
+        ++release_frames;
+        if (release_frames >= options.offset_stability_frames) {
+            close_note(release_start, detected_at_time);
+            release_frames = 0;
+        }
+    }
+
+    void start_note(int pitch, double start, double confidence,
+                    double detected_at_time) {
+        live_notes.push_back(
+            {pitch, start, 0.0, midi_note_name(pitch), confidence});
+        active_note = live_notes.size() - 1;
+        events.push_back(
+            {NoteEventType::Onset, pitch, start, confidence, detected_at_time});
+    }
+
+    void close_note(double end, double detected_at_time) {
+        if (active_note == no_note) {
+            return;
+        }
+        auto& note = live_notes[active_note];
+        note.duration_seconds = std::max(0.0, end - note.start_seconds);
+        events.push_back(
+            {NoteEventType::Offset, note.midi_pitch, end, note.confidence,
+             detected_at_time});
+        active_note = no_note;
+    }
+
+    void analyze_available_frames() {
+        while (analysis_cursor + window_size <= analysis_samples.size()) {
+            const auto frame = std::span<const float>(analysis_samples)
+                                   .subspan(analysis_cursor, window_size);
+            double energy = 0.0;
+            for (const float sample : frame) {
+                energy += static_cast<double>(sample) * sample;
+            }
+            const double rms = std::sqrt(energy / frame.size());
+            const double threshold = options.adaptive_threshold
+                                         ? std::clamp(0.12 + 0.08 * noise_floor /
+                                                                  (rms + 1e-6),
+                                                      0.12, 0.24)
+                                         : 0.15;
+            const auto estimate = rms >= std::max(0.0015, noise_floor * 1.7)
+                                      ? multi_resolution_yin(frame, analysis_rate,
+                                                            threshold, workspace)
+                                      : PitchEstimate{};
+            const int pitch = estimate.confidence >= options.minimum_confidence
+                                  ? estimate.midi_pitch
+                                  : -1;
+            const double frame_time =
+                static_cast<double>(frame_index * hop_size) / analysis_rate;
+            const double detected_at_time =
+                frame_time + static_cast<double>(window_size) / analysis_rate;
+            process_pitch(pitch, estimate.confidence, frame_time,
+                          detected_at_time);
+            if (pitch < 0 && rms < noise_floor * 2.0) {
+                noise_floor = 0.98 * noise_floor + 0.02 * rms;
+            }
+            ++frame_index;
+            analysis_cursor += hop_size;
+        }
+        if (analysis_cursor >= window_size * 2) {
+            analysis_samples.erase(
+                analysis_samples.begin(),
+                analysis_samples.begin() + static_cast<std::ptrdiff_t>(analysis_cursor));
+            analysis_cursor = 0;
+        }
+    }
+
+    void resample_available() {
+        while (true) {
+            const auto left_frame = static_cast<std::size_t>(next_source_position);
+            const auto right_frame = left_frame + 1;
+            if (right_frame >= source_frames_received ||
+                left_frame < source_buffer_start_frame) {
+                break;
+            }
+            const double fraction = next_source_position - left_frame;
+            const auto left = source_samples[left_frame - source_buffer_start_frame];
+            const auto right = source_samples[right_frame - source_buffer_start_frame];
+            append_analysis_sample(static_cast<float>(left + (right - left) * fraction));
+            next_source_position += static_cast<double>(options.input_sample_rate) /
+                                    analysis_rate;
+        }
+        analyze_available_frames();
+        const auto keep_frame = static_cast<std::size_t>(next_source_position);
+        if (keep_frame > source_buffer_start_frame) {
+            const auto removable = std::min(
+                keep_frame - source_buffer_start_frame,
+                source_samples.size() > 1 ? source_samples.size() - 1 : 0);
+            source_samples.erase(
+                source_samples.begin(),
+                source_samples.begin() + static_cast<std::ptrdiff_t>(removable));
+            source_buffer_start_frame += removable;
+        }
+    }
+
+    static constexpr std::size_t no_note = std::numeric_limits<std::size_t>::max();
+    static constexpr std::uint32_t analysis_rate = 11025;
+    RealtimeOptions options;
+    std::size_t window_size{};
+    std::size_t hop_size{};
+    std::vector<float> source_samples;
+    std::size_t source_buffer_start_frame{};
+    std::size_t source_frames_received{};
+    double next_source_position{};
+    std::vector<float> analysis_samples;
+    std::size_t analysis_samples_generated{};
+    std::size_t analysis_cursor{};
+    std::size_t frame_index{};
+    double noise_floor{0.0015};
+    YinWorkspace workspace;
+    std::vector<Note> live_notes;
+    std::vector<NoteEvent> events;
+    std::size_t active_note{no_note};
+    int pending_pitch{-1};
+    std::size_t pending_frames{};
+    double pending_start{};
+    double pending_confidence{};
+    std::size_t release_frames{};
+    double release_start{};
+    bool finished{};
+    mutable std::mutex mutex;
+};
+
+RealtimeTranscriber::RealtimeTranscriber(const RealtimeOptions& options)
+    : impl_(std::make_unique<Impl>(options)) {}
+
+RealtimeTranscriber::~RealtimeTranscriber() = default;
+
+void RealtimeTranscriber::push_samples(std::span<const float> samples) {
+    std::lock_guard lock(impl_->mutex);
+    if (impl_->finished) {
+        throw std::logic_error("Cannot add samples after realtime transcription is finished.");
+    }
+    impl_->source_samples.insert(impl_->source_samples.end(), samples.begin(), samples.end());
+    impl_->source_frames_received += samples.size();
+    impl_->resample_available();
+}
+
+void RealtimeTranscriber::finish() {
+    std::lock_guard lock(impl_->mutex);
+    if (impl_->finished) {
+        return;
+    }
+    if (impl_->active_note != Impl::no_note) {
+        const double end_time =
+            static_cast<double>(impl_->analysis_samples_generated) / Impl::analysis_rate;
+        impl_->close_note(end_time, end_time);
+    }
+    impl_->finished = true;
+}
+
+std::vector<Note> RealtimeTranscriber::live_notes() const {
+    std::lock_guard lock(impl_->mutex);
+    return impl_->live_notes;
+}
+
+std::vector<NoteEvent> RealtimeTranscriber::take_events() {
+    std::lock_guard lock(impl_->mutex);
+    std::vector<NoteEvent> result;
+    result.swap(impl_->events);
+    return result;
+}
+
 std::string midi_note_name(int midi_pitch) {
     static constexpr std::array<const char*, 12> names{
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
@@ -544,23 +1264,32 @@ std::vector<double> detect_onsets(const AudioBuffer& audio) {
     std::vector<double> energy;
     std::vector<double> previous_magnitudes(onset_window / 2 + 1, 0.0);
     std::vector<std::complex<double>> spectrum(onset_window);
+    const auto& window = hann_window<onset_window>();
     for (std::size_t start = 0; start + onset_window <= audio.samples.size();
          start += onset_hop) {
         double frame_energy = 0.0;
         for (std::size_t i = 0; i < onset_window; ++i) {
-            const double window = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * i /
-                                                       (onset_window - 1));
-            const double sample = audio.samples[start + i] * window;
+            const double sample = audio.samples[start + i] * window[i];
             spectrum[i] = {sample, 0.0};
             frame_energy += sample * sample;
         }
         fft(spectrum);
         double positive_flux = 0.0;
         double magnitude_sum = 0.0;
+        double high_frequency_flux = 0.0;
+        double high_frequency_sum = 0.0;
         for (std::size_t bin = 1; bin < previous_magnitudes.size(); ++bin) {
             const double magnitude = std::abs(spectrum[bin]);
-            positive_flux += std::max(0.0, magnitude - previous_magnitudes[bin]);
+            const double increase =
+                std::max(0.0, magnitude - previous_magnitudes[bin]);
+            positive_flux += increase;
             magnitude_sum += magnitude;
+            if (bin >= previous_magnitudes.size() / 3) {
+                const double weight = static_cast<double>(bin) /
+                                      (previous_magnitudes.size() - 1);
+                high_frequency_flux += increase * weight;
+                high_frequency_sum += magnitude * weight;
+            }
             previous_magnitudes[bin] = magnitude;
         }
         const double rms = std::sqrt(frame_energy / onset_window);
@@ -568,7 +1297,11 @@ std::vector<double> detect_onsets(const AudioBuffer& audio) {
                                        ? rms
                                        : std::max(0.0, rms - energy.back()) /
                                              (energy.back() + 0.002);
-        flux.push_back(positive_flux / (magnitude_sum + 1e-9) + 0.15 * energy_rise);
+        const double spectral_flux = positive_flux / (magnitude_sum + 1e-9);
+        const double high_frequency_content =
+            high_frequency_flux / (high_frequency_sum + 1e-9);
+        flux.push_back(0.75 * spectral_flux + 0.25 * high_frequency_content +
+                       0.15 * energy_rise);
         energy.push_back(rms);
     }
     if (flux.size() < 3) {
@@ -618,6 +1351,7 @@ std::vector<Note> notes_from_frames(std::span<const PitchFrame> frames,
         const int pitch = frames[index].midi_pitch;
         const std::size_t first = index;
         double confidence_sum = 0.0;
+        double amplitude_sum = 0.0;
         std::size_t confidence_count = 0;
         ++index;
         while (index < frames.size() && frames[index].midi_pitch == pitch &&
@@ -630,10 +1364,12 @@ std::vector<Note> notes_from_frames(std::span<const PitchFrame> frames,
                 break;
             }
             confidence_sum += frames[index - 1].confidence;
+            amplitude_sum += frames[index - 1].amplitude;
             ++confidence_count;
             ++index;
         }
         confidence_sum += frames[index - 1].confidence;
+        amplitude_sum += frames[index - 1].amplitude;
         ++confidence_count;
 
         double start_time = frames[first].time_seconds;
@@ -647,7 +1383,7 @@ std::vector<Note> notes_from_frames(std::span<const PitchFrame> frames,
         const double confidence = confidence_sum / confidence_count;
         if (end_time - start_time >= 0.055 && confidence >= minimum_confidence) {
             notes.push_back({pitch, start_time, end_time - start_time, midi_note_name(pitch),
-                             confidence});
+                             confidence, amplitude_sum / confidence_count});
         }
     }
     std::vector<Note> filtered;
@@ -692,12 +1428,30 @@ ScoreMetadata infer_score_metadata(const std::vector<Note>& notes) {
     std::vector<double> intervals;
     for (std::size_t i = 1; i < onsets.size(); ++i) {
         const double interval = onsets[i] - onsets[i - 1];
-        if (interval >= 0.18 && interval <= 2.0) {
+        if (interval >= 0.08 && interval <= 2.0) {
             intervals.push_back(interval);
         }
     }
     if (!intervals.empty()) {
-        const double observed_interval = percentile(intervals, 0.5);
+        double observed_interval = percentile(intervals, 0.5);
+        std::vector<double> swung_beat_candidates;
+        for (std::size_t phase = 0; phase < 2; ++phase) {
+            std::vector<double> phase_candidates;
+            for (std::size_t i = phase; i + 1 < intervals.size(); i += 2) {
+                const double shorter = std::min(intervals[i], intervals[i + 1]);
+                const double longer = std::max(intervals[i], intervals[i + 1]);
+                const double ratio = longer / std::max(shorter, 1e-6);
+                if (ratio >= 1.35 && ratio <= 3.0) {
+                    phase_candidates.push_back(intervals[i] + intervals[i + 1]);
+                }
+            }
+            if (phase_candidates.size() > swung_beat_candidates.size()) {
+                swung_beat_candidates = std::move(phase_candidates);
+            }
+        }
+        if (swung_beat_candidates.size() >= 3) {
+            observed_interval = percentile(swung_beat_candidates, 0.5);
+        }
         std::vector<double> interval_deviations;
         interval_deviations.reserve(intervals.size());
         for (const double interval : intervals) {
@@ -786,6 +1540,48 @@ ScoreMetadata infer_score_metadata(const std::vector<Note>& notes) {
         }
         result.meter_inferred =
             onsets.size() >= 4 && result.meter_confidence >= 0.1;
+
+        double best_swing_confidence = 0.0;
+        for (std::size_t phase = 0; phase < 2; ++phase) {
+            std::vector<double> short_intervals;
+            std::vector<double> long_intervals;
+            std::size_t pair_count = 0;
+            for (std::size_t i = phase; i + 1 < onsets.size(); i += 2) {
+                const double first_interval = onsets[i + 1] - onsets[i];
+                if (i + 2 >= onsets.size()) {
+                    continue;
+                }
+                const double second_interval = onsets[i + 2] - onsets[i + 1];
+                const double pair_duration = first_interval + second_interval;
+                if (pair_duration < beat * 0.75 || pair_duration > beat * 1.25) {
+                    continue;
+                }
+                const double shorter = std::min(first_interval, second_interval);
+                const double longer = std::max(first_interval, second_interval);
+                const double ratio = longer / std::max(shorter, 1e-6);
+                if (ratio < 1.35 || ratio > 3.0) {
+                    continue;
+                }
+                short_intervals.push_back(shorter);
+                long_intervals.push_back(longer);
+                ++pair_count;
+            }
+            if (pair_count < 3) {
+                continue;
+            }
+            const double short_median = percentile(short_intervals, 0.5);
+            const double long_median = percentile(long_intervals, 0.5);
+            const double ratio = long_median / std::max(short_median, 1e-6);
+            const double confidence =
+                std::clamp((ratio - 1.25) / 1.25, 0.0, 1.0) *
+                static_cast<double>(pair_count) / (pair_count + 2.0);
+            if (confidence > best_swing_confidence) {
+                result.swing_ratio = std::clamp(ratio, 1.5, 3.0);
+                best_swing_confidence = confidence;
+            }
+        }
+        result.swing_confidence = best_swing_confidence;
+        result.swing_inferred = best_swing_confidence >= 0.2;
     }
 
     const auto histogram = histogram_for_notes(notes);
@@ -849,17 +1645,63 @@ std::vector<Note> transcribe_monophonic(const AudioBuffer& audio,
     if (audio.sample_rate < 2000) {
         throw std::invalid_argument("Audio sample rate must be at least 2000 Hz.");
     }
+    if (options.maximum_pitches_per_frame == 0) {
+        throw std::invalid_argument("Maximum pitches per frame must be positive.");
+    }
+    if (!std::isfinite(options.spectral_threshold) ||
+        !(options.spectral_threshold > 0.0 && options.spectral_threshold <= 1.0)) {
+        throw std::invalid_argument("Spectral threshold must be greater than 0 and at most 1.");
+    }
     if (audio.samples.empty()) {
         return {};
     }
+    AnalysisTimings timings;
+    const auto report_timings = [&options, &timings] {
+        if (options.timing_callback) {
+            options.timing_callback(timings);
+        }
+    };
+    auto stage_started = std::chrono::steady_clock::now();
     const auto filtered = preprocess_audio(audio);
+    timings.preprocessing_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - stage_started).count();
+    stage_started = std::chrono::steady_clock::now();
     const auto onsets = detect_onsets(filtered);
-    const auto analysis_audio = resample_linear(filtered, analysis_rate);
-    if (analysis_audio.samples.size() < analysis_window) {
+    timings.onset_fft_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - stage_started).count();
+    if (options.polyphonic) {
+        stage_started = std::chrono::steady_clock::now();
+        const auto analysis_audio = resample_linear(filtered, analysis_rate);
+        timings.resampling_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - stage_started).count();
+        stage_started = std::chrono::steady_clock::now();
+        bool spectrogram_cache_hit = false;
+        auto notes = transcribe_spectral_polyphonic(
+            analysis_audio, onsets,
+            static_cast<double>(audio.samples.size()) / audio.sample_rate, options,
+            spectrogram_cache_hit);
+        timings.pitch_analysis_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - stage_started).count();
+        timings.spectrogram_cache_hit = spectrogram_cache_hit;
+        report_timings();
+        return notes;
+    }
+    const std::uint32_t selected_sample_rate =
+        options.fast_preview ? 8000 : analysis_rate;
+    const std::size_t selected_window =
+        options.fast_preview ? 1024 : analysis_window;
+    const std::size_t selected_hop =
+        options.fast_preview ? 512 : analysis_hop;
+    stage_started = std::chrono::steady_clock::now();
+    const auto analysis_audio = resample_linear(filtered, selected_sample_rate);
+    timings.resampling_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - stage_started).count();
+    if (analysis_audio.samples.size() < selected_window) {
+        report_timings();
         return {};
     }
     const std::size_t frame_count =
-        1 + (analysis_audio.samples.size() - analysis_window) / analysis_hop;
+        1 + (analysis_audio.samples.size() - selected_window) / selected_hop;
     std::vector<PitchFrame> frames(frame_count);
     std::vector<double> energy_blocks;
     energy_blocks.reserve((filtered.samples.size() + 511) / 512);
@@ -876,19 +1718,27 @@ std::vector<Note> transcribe_monophonic(const AudioBuffer& audio,
     const double adaptive_yin_threshold =
         std::clamp(0.12 + 0.1 * noise_floor / (signal_level + 1e-6), 0.1, 0.24);
 
-    const auto analyze_range = [&analysis_audio, &frames, adaptive_yin_threshold](
+    stage_started = std::chrono::steady_clock::now();
+    const auto analyze_range = [&analysis_audio, &frames, adaptive_yin_threshold,
+                                selected_window, selected_hop](
                                    std::size_t begin, std::size_t end) {
         YinWorkspace workspace;
         for (std::size_t index = begin; index < end; ++index) {
-            const std::size_t start = index * analysis_hop;
+            const std::size_t start = index * selected_hop;
             const auto sample_span = std::span<const float>(analysis_audio.samples)
-                                         .subspan(start, analysis_window);
+                                         .subspan(start, selected_window);
             const auto pitch =
                 multi_resolution_yin(sample_span, analysis_audio.sample_rate,
                                      adaptive_yin_threshold, workspace);
+            double energy = 0.0;
+            for (const float sample : sample_span) {
+                energy += static_cast<double>(sample) * sample;
+            }
             frames[index] = {pitch.midi_pitch,
-                             static_cast<double>(start) / analysis_audio.sample_rate,
-                             pitch.confidence, pitch.voicing_probability};
+                             static_cast<double>(start) /
+                                 analysis_audio.sample_rate,
+                             pitch.confidence, pitch.voicing_probability,
+                             std::sqrt(energy / sample_span.size())};
         }
     };
 
@@ -927,6 +1777,9 @@ std::vector<Note> transcribe_monophonic(const AudioBuffer& audio,
     if (options.progress_callback) {
         options.progress_callback(1.0);
     }
+    timings.pitch_analysis_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - stage_started).count();
+    report_timings();
     const double duration_seconds =
         static_cast<double>(audio.samples.size()) / audio.sample_rate;
     return notes_from_frames(frames, duration_seconds, onsets,
@@ -1018,6 +1871,9 @@ StreamingResult transcribe_wav_streaming(const std::filesystem::path& path,
                                   core_end * sample_rate / total_frames));
             user_progress(last_progress);
         }
+        if (options.notes_callback) {
+            options.notes_callback(result.notes);
+        }
     };
 
     read_wav_blocks(path, 4096, [&](const AudioBlockView& block) {
@@ -1046,6 +1902,9 @@ StreamingResult transcribe_wav_streaming(const std::filesystem::path& path,
         }
         if (block.first_frame != frames_read) {
             throw std::runtime_error("WAV stream returned a discontinuous sample block.");
+        }
+        if (options.audio_callback) {
+            options.audio_callback(block);
         }
         frames_read += block.samples.size();
         std::size_t offset = 0;
@@ -1113,8 +1972,12 @@ std::vector<Note> transcribe_with_onnx(const AudioBuffer& audio,
     if (options.maximum_pitches_per_frame == 0) {
         throw std::invalid_argument("Maximum polyphonic pitch count must be positive.");
     }
+    if (options.device_id < 0) {
+        throw std::invalid_argument("ONNX execution provider device ID must be non-negative.");
+    }
     const auto model_input_audio = resample_linear(audio, model_sample_rate);
-    auto session = load_onnx_session(model_path);
+    auto session = load_onnx_session(
+        model_path, options.execution_provider, options.device_id);
     const auto input_info = session->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
     const auto model_input_shape = input_info.GetShape();
     if (model_input_shape.size() == 3 && model_input_shape[1] == 43844 &&

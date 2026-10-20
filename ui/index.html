@@ -19,7 +19,8 @@
       </div>
       <div class="topbar-right">
         <span class="engine-indicator"><i></i><span id="engine-label">C++ analysis engine</span></span>
-        <span class="version">v0.1.3</span>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch color theme">Light mode</button>
+        <span class="version">v0.1.4</span>
       </div>
     </header>
 
@@ -63,6 +64,11 @@
               <input id="capture-seconds" type="number" min="0.1" max="300" step="0.5" value="10">
               <span>seconds</span>
             </div>
+            <label class="field-label" for="latency-ms">Realtime analysis latency</label>
+            <div class="duration-row">
+              <input id="latency-ms" type="number" min="20" max="50" step="5" value="40">
+              <span>milliseconds</span>
+            </div>
             <p class="field-hint">Record from the selected Windows ASIO device. Stop early to finalize.</p>
           </div>
         </section>
@@ -86,6 +92,49 @@
             <span class="check-custom"></span>
             <span>Enable polyphonic model inference</span>
             <span class="tip" title="Requires an ONNX model with independent per-pitch probabilities.">i</span>
+          </label>
+          <div class="guitar-options analysis-options">
+            <div>
+              <label class="field-label" for="instrument-prior">Instrument prior</label>
+              <select id="instrument-prior">
+                <option value="auto">Auto</option>
+                <option value="guitar">Guitar</option>
+                <option value="piano">Piano</option>
+                <option value="voice">Voice</option>
+              </select>
+            </div>
+            <div class="quality-option">
+              <label class="field-label" for="quality-mode">Analysis</label>
+              <select id="quality-mode">
+                <option value="quality">High quality</option>
+                <option value="fast">Fast preview</option>
+              </select>
+            </div>
+          </div>
+          <div class="guitar-options">
+            <div>
+              <label class="field-label" for="guitar-tuning">Guitar tuning</label>
+              <select id="guitar-tuning">
+                <option value="standard">Standard E</option>
+                <option value="drop-d">Drop D</option>
+                <option value="dadgad">DADGAD</option>
+                <option value="open-d">Open D</option>
+                <option value="open-g">Open G</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label" for="capo-fret">Capo</label>
+              <input id="capo-fret" type="number" min="0" max="24" value="0">
+            </div>
+            <div>
+              <label class="field-label" for="tab-alternatives">Alt. fingerings</label>
+              <input id="tab-alternatives" type="number" min="0" max="5" value="0">
+            </div>
+          </div>
+          <label class="check-row" for="preserve-timing">
+            <input id="preserve-timing" type="checkbox">
+            <span class="check-custom"></span>
+            <span>Annotate expressive timing in MusicXML</span>
           </label>
 
           <div class="output-list">
@@ -144,8 +193,8 @@
         <section class="card preview-card">
           <div class="preview-heading">
             <div>
-              <div class="section-kicker">LIVE PREVIEW</div>
-              <h2>Your transcription</h2>
+              <div class="section-kicker">SCORE WORKSPACE</div>
+              <h2>Live notation &amp; tablature</h2>
             </div>
             <span id="preview-badge" class="preview-badge">WAITING</span>
           </div>
@@ -153,6 +202,38 @@
             <div class="stat"><span class="stat-label">NOTES</span><strong id="note-count">—</strong></div>
             <div class="stat"><span class="stat-label">TEMPO</span><strong id="tempo-value">—</strong></div>
             <div class="stat"><span class="stat-label">KEY</span><strong id="key-value">—</strong></div>
+          </div>
+          <div class="editor-toolbar">
+            <div class="playback-actions">
+              <button id="play-original" class="button button-small" type="button" disabled>▶ Original</button>
+              <button id="play-midi" class="button button-small" type="button" disabled>♫ Notes</button>
+              <button id="stop-playback" class="button button-small button-quiet" type="button" disabled>Stop</button>
+            </div>
+            <div class="history-actions">
+              <button id="undo-button" class="button button-small button-quiet" type="button" disabled title="Ctrl+Z">↶</button>
+              <button id="redo-button" class="button button-small button-quiet" type="button" disabled title="Ctrl+Y">↷</button>
+              <button id="export-edits" class="button button-small button-primary" type="button" disabled>Apply edits &amp; export</button>
+            </div>
+          </div>
+          <div class="editor-settings">
+            <label>Tempo <span class="input-with-unit"><input id="tempo-control" type="number" min="40" max="240" value="120"><small>BPM</small></span></label>
+            <label>Key
+              <select id="key-control">
+                <option value="auto">Auto</option>
+                <option value="-7">C♭</option><option value="-6">G♭</option><option value="-5">D♭</option>
+                <option value="-4">A♭</option><option value="-3">E♭</option><option value="-2">B♭</option>
+                <option value="-1">F</option><option value="0">C</option><option value="1">G</option>
+                <option value="2">D</option><option value="3">A</option><option value="4">E</option>
+                <option value="5">B</option><option value="6">F♯</option><option value="7">C♯</option>
+              </select>
+            </label>
+            <label class="minor-control"><input id="minor-control" type="checkbox"> Minor</label>
+            <label>Meter
+              <select id="meter-control">
+                <option value="auto">Auto</option><option value="3/4">3/4</option>
+                <option value="4/4">4/4</option><option value="6/8">6/8</option>
+              </select>
+            </label>
           </div>
           <div class="piano-roll-wrap">
             <div class="roll-labels"><span id="pitch-high">—</span><span>Pitch</span><span id="pitch-low">—</span></div>
@@ -164,16 +245,65 @@
               <span>Live ASIO notes and completed file results appear here.</span>
             </div>
           </div>
+          <div class="audio-preview-grid">
+            <div class="visual-panel">
+              <div class="visual-label"><span>WAVEFORM</span><span id="audio-time">Waiting for audio</span></div>
+              <canvas id="waveform" aria-label="Audio waveform preview"></canvas>
+            </div>
+            <div class="visual-panel">
+              <div class="visual-label"><span>SPECTROGRAM</span><span>Low → high frequency</span></div>
+              <canvas id="spectrogram" aria-label="Scrolling audio spectrogram"></canvas>
+            </div>
+          </div>
+          <div class="notation-panel">
+            <div class="notation-heading">
+              <div><span class="section-kicker">STANDARD NOTATION</span><span id="score-hint">Select a note to edit · drag to move</span></div>
+              <span id="selection-label">No selection</span>
+            </div>
+            <canvas id="staff-view" aria-label="Editable treble clef notation"></canvas>
+          </div>
+          <div class="notation-panel tab-panel">
+            <div class="notation-heading">
+              <div><span class="section-kicker">GUITAR TABLATURE</span><span id="tab-hint">Tuning and capo follow export settings</span></div>
+              <span id="tab-tuning-label">Standard E</span>
+            </div>
+            <canvas id="tab-view" aria-label="Editable guitar tablature"></canvas>
+          </div>
+          <div class="inspector-grid">
+            <section class="inspector-card">
+              <div class="inspector-heading"><span>CONFIDENCE HEATMAP</span><span>0–100%</span></div>
+              <canvas id="confidence-heatmap" aria-label="Note confidence heatmap"></canvas>
+            </section>
+            <section class="inspector-card">
+              <div class="inspector-heading"><span>ALTERNATIVE PITCHES</span><span id="alternative-note">Select a note</span></div>
+              <div id="alternatives-list" class="alternatives-list">Pitch suggestions appear for the selected note.</div>
+            </section>
+          </div>
+          <div class="selected-editor">
+            <div class="inspector-heading"><span>SELECTED NOTE</span><span id="edit-instructions">Click a note to inspect it</span></div>
+            <div class="note-edit-fields">
+              <label>Pitch <input id="edit-pitch" type="number" min="0" max="127" disabled></label>
+              <label>Start <input id="edit-start" type="number" min="0" step="0.01" disabled></label>
+              <label>Duration <input id="edit-duration" type="number" min="0.05" step="0.01" disabled></label>
+              <label>String <select id="edit-string" disabled></select></label>
+              <label>Fret <input id="edit-fret" type="number" min="0" max="24" disabled></label>
+              <button id="apply-note-edit" class="button button-small" type="button" disabled>Apply</button>
+              <button id="delete-note" class="button button-small button-quiet" type="button" disabled>Delete</button>
+            </div>
+          </div>
           <div class="notes-heading"><span>NOTE EVENTS</span><span id="confidence-label">CONFIDENCE</span></div>
+          <div id="live-events" class="live-events" aria-live="polite">Waiting for realtime note events.</div>
           <div id="note-list" class="note-list">
             <div class="empty-notes">Start a transcription to see detected notes.</div>
           </div>
           <div id="result-message" class="result-message hidden"></div>
         </section>
         <div class="footer-note"><span class="footer-mark">T</span><span>Analysis runs locally. Your recordings stay on this device.</span></div>
+        <div class="shortcut-note">Shortcuts: Space play/stop · Delete remove · Ctrl+Z undo · Ctrl+Y redo · double-click to insert</div>
       </aside>
     </main>
   </div>
   <script src="app.js"></script>
+  <script src="editor.js"></script>
 </body>
 </html>

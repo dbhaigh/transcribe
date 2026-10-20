@@ -85,6 +85,74 @@ TEST_CASE("YIN estimates a synthetic concert A with confidence") {
     REQUIRE(estimate.voicing_probability > 0.8);
 }
 
+TEST_CASE("realtime transcription stabilizes note events across input chunks") {
+    constexpr std::uint32_t sample_rate = 44100;
+    std::vector<float> samples(static_cast<std::size_t>(sample_rate * 0.7), 0.0f);
+    for (std::size_t i = sample_rate / 10; i < sample_rate * 45 / 100; ++i) {
+        samples[i] = static_cast<float>(
+            0.45 * std::sin(2.0 * std::numbers::pi * 440.0 * i / sample_rate));
+    }
+
+    transcribe::RealtimeOptions options;
+    options.latency_ms = 40.0;
+    transcribe::RealtimeTranscriber analyzer(options);
+    std::size_t offset = 0;
+    constexpr std::array<std::size_t, 5> chunk_sizes{127, 512, 89, 1024, 301};
+    std::size_t chunk_index = 0;
+    while (offset < samples.size()) {
+        const auto count =
+            std::min(chunk_sizes[chunk_index++ % chunk_sizes.size()], samples.size() - offset);
+        analyzer.push_samples(std::span<const float>(samples).subspan(offset, count));
+        offset += count;
+    }
+    analyzer.finish();
+
+    const auto notes = analyzer.live_notes();
+    const auto events = analyzer.take_events();
+    REQUIRE(notes.size() == 1);
+    REQUIRE(notes.front().midi_pitch == 69);
+    REQUIRE(notes.front().start_seconds > 0.05);
+    REQUIRE(notes.front().start_seconds < 0.15);
+    REQUIRE(notes.front().duration_seconds > 0.25);
+    REQUIRE(events.size() == 2);
+    REQUIRE(events[0].type == transcribe::NoteEventType::Onset);
+    REQUIRE(events[1].type == transcribe::NoteEventType::Offset);
+    REQUIRE(events[0].midi_pitch == 69);
+    REQUIRE(events[1].midi_pitch == 69);
+    REQUIRE_THROWS(analyzer.push_samples(std::span<const float>(samples).first(1)));
+}
+
+TEST_CASE("realtime onset analysis stays within a 50 ms input-time latency budget") {
+    constexpr std::uint32_t sample_rate = 44100;
+    constexpr std::size_t onset_frame = sample_rate / 10;
+    std::vector<float> samples(sample_rate / 2, 0.0f);
+    for (std::size_t i = onset_frame; i < samples.size(); ++i) {
+        samples[i] = static_cast<float>(
+            0.45 * std::sin(2.0 * std::numbers::pi * 440.0 * i / sample_rate));
+    }
+
+    transcribe::RealtimeOptions options;
+    options.latency_ms = 20.0;
+    transcribe::RealtimeTranscriber analyzer(options);
+    constexpr std::size_t chunk_size = sample_rate / 100;
+    double onset_latency_ms = -1.0;
+    for (std::size_t offset = 0; offset < samples.size(); offset += chunk_size) {
+        const auto count = std::min(chunk_size, samples.size() - offset);
+        analyzer.push_samples(std::span<const float>(samples).subspan(offset, count));
+        for (const auto& event : analyzer.take_events()) {
+            if (event.type == transcribe::NoteEventType::Onset) {
+                onset_latency_ms =
+                    (event.detected_at_seconds - event.time_seconds) * 1000.0;
+            }
+        }
+    }
+    analyzer.finish();
+
+    INFO("Measured input-time onset analysis latency: " << onset_latency_ms << " ms");
+    REQUIRE(onset_latency_ms >= 0.0);
+    REQUIRE(onset_latency_ms <= 50.0);
+}
+
 TEST_CASE("preprocessing gates quiet blocks without mutating the source") {
     transcribe::AudioBuffer audio{44100, std::vector<float>(44100, 0.0001f)};
     for (std::size_t i = 22050; i < audio.samples.size(); ++i) {
@@ -131,6 +199,140 @@ TEST_CASE("monophonic analysis detects a WAV tone") {
     REQUIRE_FALSE(notes.empty());
     REQUIRE(notes.front().midi_pitch == 69);
     REQUIRE(notes.front().confidence > 0.25);
+}
+
+TEST_CASE("fast preview keeps monophonic pitch detection usable") {
+    constexpr std::uint32_t sample_rate = 22050;
+    transcribe::AudioBuffer audio{sample_rate,
+                                  std::vector<float>(sample_rate, 0.0f)};
+    for (std::size_t i = 0; i < audio.samples.size(); ++i) {
+        audio.samples[i] = static_cast<float>(
+            0.4 * std::sin(2.0 * std::numbers::pi * 440.0 * i / sample_rate));
+    }
+
+    transcribe::AnalysisOptions options;
+    options.fast_preview = true;
+    const auto notes = transcribe::transcribe_monophonic(audio, options);
+
+    REQUIRE_FALSE(notes.empty());
+    REQUIRE(notes.front().midi_pitch == 69);
+}
+
+TEST_CASE("spectral polyphonic analysis detects two simultaneous notes") {
+    constexpr std::uint32_t sample_rate = 22050;
+    transcribe::AudioBuffer audio{sample_rate,
+                                  std::vector<float>(sample_rate, 0.0f)};
+    constexpr std::array<int, 2> pitches{60, 67};
+    for (std::size_t i = 0; i < audio.samples.size(); ++i) {
+        const double time = static_cast<double>(i) / sample_rate;
+        if (time >= 0.1 && time < 0.9) {
+            for (const int pitch : pitches) {
+                const double frequency =
+                    440.0 * std::pow(2.0, (pitch - 69) / 12.0);
+                audio.samples[i] += static_cast<float>(
+                    0.3 * std::sin(2.0 * std::numbers::pi * frequency * time));
+            }
+        }
+    }
+
+    transcribe::AnalysisOptions options;
+    options.polyphonic = true;
+    options.minimum_confidence = 0.2;
+    const auto notes = transcribe::transcribe_monophonic(audio, options);
+    for (const int pitch : pitches) {
+        REQUIRE(std::any_of(notes.begin(), notes.end(), [pitch](const auto& note) {
+            return note.midi_pitch == pitch;
+        }));
+    }
+}
+
+TEST_CASE("polyphonic analysis reuses a cached spectrogram for repeated audio") {
+    constexpr std::uint32_t sample_rate = 22050;
+    constexpr std::size_t duration_seconds = 7;
+    transcribe::AudioBuffer audio{
+        sample_rate, std::vector<float>(sample_rate * duration_seconds, 0.0f)};
+    constexpr double frequency = 523.2511306;
+    for (std::size_t i = 0; i < audio.samples.size(); ++i) {
+        audio.samples[i] = static_cast<float>(
+            0.35 * std::sin(2.0 * std::numbers::pi * frequency * i / sample_rate));
+    }
+
+    transcribe::AnalysisOptions options;
+    options.polyphonic = true;
+    bool first_hit = true;
+    options.timing_callback = [&first_hit](const auto& timings) {
+        first_hit = timings.spectrogram_cache_hit;
+    };
+    const auto first_notes = transcribe::transcribe_monophonic(audio, options);
+    bool second_hit = false;
+    options.timing_callback = [&second_hit](const auto& timings) {
+        second_hit = timings.spectrogram_cache_hit;
+    };
+    const auto second_notes = transcribe::transcribe_monophonic(audio, options);
+
+    REQUIRE_FALSE(first_hit);
+    REQUIRE(second_hit);
+    REQUIRE(first_notes.size() == second_notes.size());
+    for (std::size_t i = 0; i < first_notes.size(); ++i) {
+        REQUIRE(first_notes[i].midi_pitch == second_notes[i].midi_pitch);
+        REQUIRE(first_notes[i].start_seconds == second_notes[i].start_seconds);
+        REQUIRE(first_notes[i].duration_seconds == second_notes[i].duration_seconds);
+    }
+    options.fast_preview = true;
+    bool different_fft_hit = true;
+    options.timing_callback = [&different_fft_hit](const auto& timings) {
+        different_fft_hit = timings.spectrogram_cache_hit;
+    };
+    (void)transcribe::transcribe_monophonic(audio, options);
+    REQUIRE_FALSE(different_fft_hit);
+}
+
+TEST_CASE("harmonic salience retains a weak fundamental in an octave-heavy tone") {
+    constexpr std::uint32_t sample_rate = 22050;
+    transcribe::AudioBuffer audio{sample_rate,
+                                  std::vector<float>(sample_rate, 0.0f)};
+    constexpr double fundamental = 110.0;
+    for (std::size_t i = 0; i < audio.samples.size(); ++i) {
+        const double time = static_cast<double>(i) / sample_rate;
+        audio.samples[i] = static_cast<float>(
+            0.2 * std::sin(2.0 * std::numbers::pi * fundamental * time) +
+            0.8 * std::sin(2.0 * std::numbers::pi * fundamental * 2.0 * time) +
+            0.3 * std::sin(2.0 * std::numbers::pi * fundamental * 3.0 * time));
+    }
+
+    transcribe::AnalysisOptions options;
+    options.polyphonic = true;
+    options.minimum_confidence = 0.2;
+    const auto notes = transcribe::transcribe_monophonic(audio, options);
+
+    REQUIRE(std::any_of(notes.begin(), notes.end(), [](const auto& note) {
+        return note.midi_pitch == 45;
+    }));
+}
+
+TEST_CASE("instrument priors constrain spectral pitch range") {
+    constexpr std::uint32_t sample_rate = 22050;
+    transcribe::AudioBuffer audio{sample_rate,
+                                  std::vector<float>(sample_rate, 0.0f)};
+    constexpr double frequency = 65.406391325;
+    for (std::size_t i = 0; i < audio.samples.size(); ++i) {
+        audio.samples[i] = static_cast<float>(
+            0.35 * std::sin(2.0 * std::numbers::pi * frequency * i / sample_rate));
+    }
+
+    transcribe::AnalysisOptions options;
+    options.polyphonic = true;
+    options.instrument = transcribe::InstrumentPrior::Piano;
+    const auto piano_notes = transcribe::transcribe_monophonic(audio, options);
+    options.instrument = transcribe::InstrumentPrior::Guitar;
+    const auto guitar_notes = transcribe::transcribe_monophonic(audio, options);
+
+    REQUIRE(std::any_of(piano_notes.begin(), piano_notes.end(), [](const auto& note) {
+        return note.midi_pitch == 36;
+    }));
+    REQUIRE(std::none_of(guitar_notes.begin(), guitar_notes.end(), [](const auto& note) {
+        return note.midi_pitch == 36;
+    }));
 }
 
 TEST_CASE("WAV reader decodes PCM in bounded chunks and rejects truncated data") {
@@ -186,6 +388,18 @@ TEST_CASE("WAV transcription uses bounded overlapping chunks") {
     options.analysis.progress_callback = [&progress](double value) {
         progress.push_back(value);
     };
+    std::size_t preview_samples = 0;
+    options.audio_callback = [&preview_samples](
+                                 const transcribe::AudioBlockView& block) {
+        REQUIRE(block.sample_rate == 44100);
+        REQUIRE(block.first_frame == preview_samples);
+        preview_samples += block.samples.size();
+    };
+    std::vector<std::size_t> progressive_note_counts;
+    options.notes_callback = [&progressive_note_counts](
+                                 const std::vector<transcribe::Note>& notes) {
+        progressive_note_counts.push_back(notes.size());
+    };
 
     const auto result = transcribe::transcribe_wav_streaming(path, options);
     REQUIRE(std::abs(result.duration_seconds - 2.4) < 0.001);
@@ -195,6 +409,30 @@ TEST_CASE("WAV transcription uses bounded overlapping chunks") {
     REQUIRE_FALSE(progress.empty());
     REQUIRE(progress.back() == 1.0);
     REQUIRE(std::is_sorted(progress.begin(), progress.end()));
+    REQUIRE(progressive_note_counts.size() >= 2);
+    REQUIRE(progressive_note_counts.back() == result.notes.size());
+    REQUIRE(preview_samples == static_cast<std::size_t>(44100 * 2.4));
+}
+
+TEST_CASE("audio preview builds bounded waveform and log-frequency spectrogram data") {
+    constexpr std::uint32_t sample_rate = 44100;
+    std::vector<float> samples(sample_rate / 2);
+    for (std::size_t index = 0; index < samples.size(); ++index) {
+        samples[index] = static_cast<float>(
+            0.6 * std::sin(2.0 * std::numbers::pi * 440.0 * index / sample_rate));
+    }
+
+    const auto preview = transcribe::make_audio_preview(samples, sample_rate, 32, 24);
+    REQUIRE(preview.duration_seconds == 0.5);
+    REQUIRE(preview.columns > 0);
+    REQUIRE(preview.columns <= 32);
+    REQUIRE(preview.frequency_bands == 24);
+    REQUIRE(preview.waveform.size() == preview.columns);
+    REQUIRE(preview.spectrogram.size() == preview.columns * 24);
+    REQUIRE(*std::max_element(preview.waveform.begin(), preview.waveform.end()) > 0.5f);
+    REQUIRE(*std::max_element(preview.spectrogram.begin(),
+                              preview.spectrogram.end()) > 0.5f);
+    REQUIRE_THROWS(transcribe::make_audio_preview(samples, sample_rate, 0, 24));
 }
 
 TEST_CASE("MusicXML preserves overlapping voices, rests, ties, and metadata") {
@@ -221,6 +459,32 @@ TEST_CASE("MusicXML preserves overlapping voices, rests, ties, and metadata") {
     REQUIRE(xml.find("<rest/>") != std::string::npos);
     REQUIRE(xml.find("<tie type=\"start\"/>") != std::string::npos);
     REQUIRE(xml.find("<voice>2</voice>") != std::string::npos);
+    REQUIRE(xml.find("<part id=\"P2\">") != std::string::npos);
+    REQUIRE(xml.find("<clef><sign>TAB</sign><line>5</line></clef>") !=
+            std::string::npos);
+    REQUIRE(xml.find("<technical><string>") != std::string::npos);
+}
+
+TEST_CASE("MusicXML represents triplets, expressive timing, dynamics, and articulations") {
+    TemporaryDirectory temporary;
+    const auto path = temporary.path / "tuplets.musicxml";
+    const std::vector<transcribe::Note> notes{
+        {60, 0.07, 0.333, "C4", 0.9, 0.42},
+        {62, 0.403, 0.333, "D4", 0.9, 0.1},
+        {64, 0.736, 0.333, "E4", 0.9, 0.1}};
+    transcribe::ScoreMetadata metadata;
+    metadata.tempo_bpm = 120.0;
+    transcribe::write_musicxml(path, notes, metadata, transcribe::GuitarTabOptions{}, true);
+
+    std::ifstream input(path, std::ios::binary);
+    const std::string xml{std::istreambuf_iterator<char>(input),
+                          std::istreambuf_iterator<char>()};
+    REQUIRE(xml.find("<divisions>48</divisions>") != std::string::npos);
+    REQUIRE(xml.find("<time-modification><actual-notes>3</actual-notes>") !=
+            std::string::npos);
+    REQUIRE(xml.find("Expressive onset") != std::string::npos);
+    REQUIRE(xml.find("<dynamics><ff/></dynamics>") != std::string::npos);
+    REQUIRE(xml.find("<accent/>") != std::string::npos);
 }
 
 TEST_CASE("MIDI writer emits a valid single-track header") {
@@ -256,6 +520,79 @@ TEST_CASE("guitar tablature assigns simultaneous notes to different strings") {
     REQUIRE(tab.find("A3") != std::string::npos);
     REQUIRE(tab.find("E4") != std::string::npos);
     REQUIRE(tab.find("confidence") != std::string::npos);
+}
+
+TEST_CASE("overlapping guitar notes do not reuse a held string") {
+    const std::vector<transcribe::Note> notes{
+        {69, 0.0, 0.8, "A4", 0.9}, {67, 0.2, 0.4, "G4", 0.9}};
+    const auto positions = transcribe::assign_guitar_tab_positions(notes);
+
+    REQUIRE(positions.size() == notes.size());
+    REQUIRE(positions[0].string_number > 0);
+    REQUIRE(positions[1].string_number > 0);
+    REQUIRE(positions[0].string_number != positions[1].string_number);
+}
+
+TEST_CASE("guitar tablature supports alternate tuning capo and alternatives") {
+    TemporaryDirectory temporary;
+    const auto path = temporary.path / "drop-d-capo-tab.txt";
+    const std::vector<transcribe::Note> notes{{62, 0.0, 0.5, "D4", 0.9}};
+    transcribe::GuitarTabOptions options;
+    options.tuning = {64, 59, 55, 50, 45, 38};
+    options.capo_fret = 2;
+    options.alternative_fingerings = 2;
+
+    const auto positions = transcribe::assign_guitar_tab_positions(notes, options);
+    REQUIRE(positions.size() == 1);
+    REQUIRE(positions.front().string_number > 0);
+    REQUIRE(positions.front().fret >= 0);
+    transcribe::write_guitar_tab(path, notes, options);
+
+    std::ifstream input(path, std::ios::binary);
+    const std::string tab{std::istreambuf_iterator<char>(input),
+                          std::istreambuf_iterator<char>()};
+    REQUIRE(tab.find("Capo: fret 2") != std::string::npos);
+    REQUIRE(tab.find("Alternative fingerings:") != std::string::npos);
+}
+
+TEST_CASE("overlapping overridden notes cannot occupy the same guitar string") {
+    const std::vector<transcribe::Note> notes{
+        {64, 0.0, 0.5, "E4", 0.9}, {64, 0.2, 0.5, "E4", 0.9}};
+    transcribe::GuitarTabOptions options;
+    options.position_overrides = {{0, 2, 5}, {1, 2, 5}};
+
+    REQUIRE_THROWS(transcribe::assign_guitar_tab_positions(notes, options));
+}
+
+TEST_CASE("guitar tab overrides preserve user-selected string and fret in exports") {
+    TemporaryDirectory temporary;
+    const auto path = temporary.path / "edited-tab.musicxml";
+    const auto tab_path = temporary.path / "edited-tab.txt";
+    const std::vector<transcribe::Note> notes{{64, 0.0, 0.5, "E4", 0.9}};
+    transcribe::GuitarTabOptions options;
+    options.position_overrides = {{0, 2, 5}};
+    const auto positions = transcribe::assign_guitar_tab_positions(notes, options);
+    REQUIRE(positions.size() == 1);
+    REQUIRE(positions.front().string_number == 2);
+    REQUIRE(positions.front().fret == 5);
+    transcribe::write_musicxml(
+        path, notes, transcribe::ScoreMetadata{}, options, false);
+
+    std::ifstream input(path, std::ios::binary);
+    const std::string xml{std::istreambuf_iterator<char>(input),
+                          std::istreambuf_iterator<char>()};
+    REQUIRE(xml.find("<technical><string>2</string><fret>5</fret></technical>") !=
+            std::string::npos);
+
+    transcribe::write_guitar_tab(tab_path, notes, options);
+    std::ifstream tab_input(tab_path, std::ios::binary);
+    const std::string tab{std::istreambuf_iterator<char>(tab_input),
+                          std::istreambuf_iterator<char>()};
+    const auto b_string = tab.find("B3|");
+    REQUIRE(b_string != std::string::npos);
+    const auto line_end = tab.find('\n', b_string);
+    REQUIRE(tab.substr(b_string, line_end - b_string).find('5') !=
+            std::string::npos);
 }
 
 TEST_CASE("audio ring buffer safely wraps and reports available samples") {
@@ -305,6 +642,23 @@ TEST_CASE("score metadata recognizes repeated compound eighth-note grouping") {
     REQUIRE(metadata.time_denominator == 8);
     REQUIRE(metadata.meter_inferred);
     REQUIRE(metadata.meter_confidence > 0.5);
+}
+
+TEST_CASE("score metadata detects swung eighth-note timing") {
+    const std::array<double, 7> onsets{0.0, 0.333, 0.5, 0.833, 1.0, 1.333, 1.5};
+    std::vector<transcribe::Note> notes;
+    for (std::size_t i = 0; i < onsets.size(); ++i) {
+        const int pitch = 60 + static_cast<int>(i % 5) * 2;
+        notes.push_back({pitch, onsets[i], 0.12,
+                         transcribe::midi_note_name(pitch), 0.9});
+    }
+
+    const auto metadata = transcribe::infer_score_metadata(notes);
+    REQUIRE(metadata.tempo_inferred);
+    REQUIRE(std::abs(metadata.tempo_bpm - 120.0) < 5.0);
+    REQUIRE(metadata.swing_inferred);
+    REQUIRE(metadata.swing_ratio > 1.7);
+    REQUIRE(metadata.swing_ratio < 2.3);
 }
 
 TEST_CASE("score metadata distinguishes regular 3/4 and 4/4 phrases") {

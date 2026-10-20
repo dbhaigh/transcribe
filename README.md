@@ -1,32 +1,32 @@
 # Transcribe
 
 Transcribe is a C++20 CLI and Windows GUI for turning audio into a first-pass
-musical score and standard-tuning guitar tablature. Version 0.1.3 adds
-automatic Evergreen WebView2 Runtime setup to the optional WebView2 interface,
-while retaining the dependency-light WAV/YIN default, optional ONNX inference,
-optional FFmpeg decoding, and optional Windows ASIO capture.
+musical score and configurable guitar tablature. Version 0.1.4 adds interactive
+score editing, configurable guitar tablature, and more expressive MusicXML
+exports, while retaining the dependency-light WAV/YIN default, optional ONNX
+inference, optional FFmpeg decoding, and optional Windows ASIO capture.
 
 This release is an early transcription aid, not a commercial-grade
-polyphonic automatic music transcription (AMT) system. The built-in tracker is
-monophonic and works best on a single clear guitar or vocal line.
+polyphonic automatic music transcription (AMT) system. The fast built-in YIN
+tracker is monophonic; the optional spectral path can identify simple
+polyphony, and both work best on clear recordings.
 
 ## Architecture
 
 ```text
-WAV / optional FFmpeg       Windows ASIO
-          \                   /
-           AudioBuffer / ring buffer
-                    |
-        high-pass + adaptive noise gate
-                    |
-     multiresolution YIN + onset detection
-              or ONNX model
-                    |
- confidence-filtered Notes / pitch overlaps
-          /            |             \
-     MusicXML       guitar tab       MIDI
-          \            |             /
-             CLI / Win32 or WebView2 GUI
+WAV / optional FFmpeg       Windows ASIO callback
+          |                   /             \
+ progressive file chunks   recording ring   analysis ring
+          |                   |             |
+          |              full AudioBuffer   realtime YIN worker
+          |                   |             |
+          +---- offline refinement     stable note-on/off events
+                    |                    live Note list
+                    +----------+-------------+
+                               |
+                 MusicXML / guitar tab / MIDI
+                               |
+                    CLI / Win32 or WebView2 GUI
 ```
 
 The default executable and core library use only the C++ standard library.
@@ -62,40 +62,128 @@ Examples:
 
 ```powershell
 .\build\Release\transcribe.exe guitar.wav --musicxml score.musicxml --tab guitar.txt
+.\build\Release\transcribe.exe guitar.wav --polyphonic --instrument guitar --json notes.json
 .\build\Release\transcribe.exe take.wav --midi take.mid --json take.json --benchmark
+.\build\Release\transcribe.exe take.wav --fast-preview --benchmark
+.\build\Release\transcribe.exe take.wav --quality fast --tempo 96 --key-fifths 2 --mode minor --meter 6/8
 .\build\Release\transcribe.exe --batch .\recordings --output-dir .\scores --quiet
 .\build\Release\transcribe.exe --asio 8 --musicxml live.musicxml --tab live.txt
+.\build\Release\transcribe.exe --live 8 --benchmark
 ```
 
 Run `transcribe --help` for all options. Batch mode writes outputs into the
 selected output directory (or a `transcribe-output` subdirectory) and supports
 WAV by default; its input filter expands when FFmpeg is enabled. The simple
 `key=value` config file uses the same long-option names without `--`, such as
-`minimum-confidence=0.3`.
+`minimum-confidence=0.3`, `latency-ms=35`, `quality=fast`, `tempo=96`,
+`key-fifths=2`, `mode=minor`, `meter=6/8`, `batch=recordings`, `output-dir=scores`,
+`asio=8`, `benchmark=true`, or `quiet=true`. Unknown config keys are reported
+instead of silently ignored. `--live <seconds>` is an alias
+for ASIO capture. The CLI can select the built-in analysis quality, model and
+ONNX execution provider, instrument prior, capture latency, guitar tuning and
+capo, score tempo/key/meter, and MusicXML, tablature, MIDI, and JSON outputs.
+Tempo, key, and meter options override inference in the score and JSON metadata;
+otherwise these values remain automatically estimated.
+
+## MusicXML and guitar tablature
+
+MusicXML export writes synchronized standard-notation and guitar-tablature
+parts, with overlapping notes separated into voices. It estimates tempo, key,
+and meter from the note sequence, quantizes to a sixteenth-note or triplet
+grid, and can annotate expressive onset offsets with
+`--preserve-expressive-timing`. Basic amplitude-based dynamics and
+pitch-transition articulations are included when there is sufficient note
+data. These are heuristics intended as an editable starting point, not
+engraving-ready analysis.
+
+The ASCII tablature and MusicXML fingering use the same playable-position
+assignment. Select `--tuning standard|drop-d|dadgad|open-d|open-g`, set
+`--capo 0..24`, and request up to five additional chord fingerings with
+`--tab-alternatives 1..5`. The same tuning, capo, and expressive-timing
+controls are available in both Windows GUI variants.
+
+## Performance and fast preview
+
+The default YIN path already analyzes independent overlapping frames in parallel
+for sufficiently long inputs. WAV transcription also reads and analyzes
+overlapping 15-second chunks, so decoded memory stays bounded on long files.
+The internal radix-2 FFT remains dependency-free; Hann windows and polyphonic
+harmonic templates are reused across frames, and spectral magnitudes are
+calculated once per frame. A one-entry, 64 MiB-bounded spectrogram cache also
+reuses the most recently analyzed polyphonic input when its audio content,
+sample rate, and FFT dimensions match, such as when changing pitch thresholds
+or instrument priors.
+
+Use `--fast-preview` for a rough built-in result: monophonic analysis uses an
+8 kHz sample rate with a 1024-sample window and 512-sample hop instead of the
+normal 11.025 kHz / 2048 / 256 configuration. Polyphonic preview uses a
+2048-sample FFT and 512-sample hop instead of 4096 / 256. This trades temporal
+and pitch detail for speed; run without the flag for the normal-quality pass.
+`--benchmark` reports total analysis time, real-time factor, and built-in
+preprocessing, onset/FFT, resampling, and pitch/FFT stage timings.
+For `--asio`, it also reports the maximum event-detection latency in the
+analysis stream's time domain. This measures the configured window and
+stabilization delay, not device, operating-system, or end-to-end playback
+latency.
+
+On the bundled `samples/guitar_scale.wav`, a single run in the default
+unoptimized Windows CMake build took about 0.50 s in normal mode and 0.21 s in
+fast-preview mode (about 2.4x faster). The preview produced 8 events versus 6
+in normal mode, illustrating the expected accuracy trade-off. This is one
+machine/build/input measurement, not a throughput guarantee; use
+`--benchmark` on target hardware for representative results.
 
 The WAV reader supports PCM 8/16/24/32-bit and IEEE float 32-bit RIFF/WAVE,
 downmixes channels to mono, and decodes audio data in bounded blocks. For the
-built-in YIN path, CLI and GUI analyze WAV files in overlapping 15-second
-chunks, keeping decoded audio memory bounded independently of file duration.
-The existing `AudioBuffer` API remains available. ONNX and compressed FFmpeg
-inputs still use full-buffer inference/decoding.
+built-in YIN path, the CLI uses overlapping 15-second chunks and the GUI uses
+two-second chunks for progressive previews, keeping decoded audio memory
+bounded independently of file duration. The existing `AudioBuffer` API remains
+available. ONNX and compressed FFmpeg inputs still use full-buffer
+inference/decoding.
 
 ## Windows GUI
 
 On Windows, the default build creates `transcribe-gui` with native Win32
 controls. It provides file pickers, drag-and-drop, progress, a rolling note
 preview during ASIO capture, remembered paths, and an open-output-folder
-action.
+action. This dependency-light native form remains available as a fallback.
 
-An optional WebView2 front end provides a responsive dark interface, a
-pitch-versus-time note preview, live progress, and the same file, ASIO, model,
-and export controls. The UI is local HTML/CSS/JavaScript; all audio decoding,
-analysis, and export remain in the shared C++ backend. The option is off by
-default so the normal build stays dependency-light.
+For the modern workstation UI, build with the optional WebView2 front end. It
+uses local HTML/CSS/JavaScript and custom canvas score rendering, while keeping
+audio decoding, analysis, and export in the shared C++ backend. This avoids
+adding a separate UI framework or remote score-rendering dependency. The
+workspace displays scrolling waveform and spectrogram previews, standard
+notation and synchronized guitar tablature, confidence and pitch-suggestion
+panels, and supports selecting, dragging, inserting, deleting, and editing
+notes and tab positions. Undo/redo, themes, keyboard shortcuts, instrument and
+quality controls, playback, and edited-score export are included.
+
+Original-audio playback currently supports WAV files; synthesized note playback
+uses Web Audio. Playback cursor alignment is approximate, and the custom
+notation renderer is an interactive editing view rather than a full engraving
+system. Pitch alternatives are adjacent-semitone suggestions with heuristic,
+uncalibrated confidence, not additional model predictions. The WebView2 option
+is off by default so the normal build stays dependency-light.
 
 ```powershell
 .\build\Release\transcribe-gui.exe
 ```
+
+ASIO capture analyzes a second, callback-fed ring buffer on a dedicated worker;
+the audio callback itself only copies samples into the recording and analysis
+rings. The worker emits stabilized note-on and note-off events and maintains a
+queryable live note list. Capture still returns the complete recording for the
+existing offline transcription/export pass, which refines the live preview.
+Use `--latency-ms 20..50` on the CLI or the GUI's live-latency field to tune the
+analysis window (default 40 ms); updates run at 100 Hz and are delivered to the
+GUI as notes stabilize. Lower window settings trade low-pitch sensitivity for
+faster response, and actual end-to-end latency depends on the audio device and
+system load.
+
+For WAV files, the GUI publishes an updated score preview as each two-second
+chunk is analyzed. CLI streaming keeps its 15-second default chunks. This
+progressive file mode and ASIO preview both preserve the final offline analysis
+and export behavior.
 
 ## Optional integrations
 
@@ -125,17 +213,48 @@ updates independently of Transcribe. See Microsoft's
 for deployment details. To keep using the native Win32 form, leave
 `TRANSCRIBE_ENABLE_WEBVIEW2` off.
 
+### Polyphonic analysis and instrument priors
+
+The default built-in analysis remains multi-resolution YIN for fast
+monophonic transcription. Add `--polyphonic` to select the built-in
+STFT/harmonic-salience tracker without requiring ONNX Runtime. It uses greedy
+per-frame pitch selection; `--instrument` accepts `guitar`, `piano`, or
+`voice` to apply pitch-range and polyphony limits. This lightweight baseline
+is less robust than a trained model for dense chords and overlapping sources.
+
 ### ONNX Runtime
 
 Install ONNX Runtime and set `ONNXRUNTIME_ROOT` to its installation directory,
 then configure with `-DTRANSCRIBE_ENABLE_ONNX=ON`. Pass `--model model.onnx` to
-use the model. `--polyphonic` requests independent per-pitch probabilities and
-greedy multi-pitch peak picking. The built-in monophonic YIN path remains
-selectable by omitting `--model`. The model input/output contract is
+use the model. With ONNX, `--polyphonic` requests independent per-pitch
+probabilities and greedy multi-pitch peak picking. Without `--model`, it
+selects the built-in STFT polyphonic path; omitting both options keeps the
+built-in monophonic YIN path. The model input/output contract is
 versioned in [python/README.md](python/README.md). A compatible Spotify Basic
 Pitch ONNX model is bundled at `python/models/basic_pitch.onnx`; with ONNX
 enabled, use `--model python/models/basic_pitch.onnx --polyphonic` for
 polyphonic inference.
+
+CUDA, DirectML, and ROCm provider selection can be enabled with the matching
+ONNX Runtime GPU distribution. CUDA and ROCm provider option types come from
+the ONNX Runtime headers. DirectML additionally needs
+`dml_provider_factory.h` from a DirectML-enabled ONNX Runtime SDK:
+
+```powershell
+cmake -S . -B build-onnx-cuda `
+  -DTRANSCRIBE_ENABLE_ONNX=ON -DTRANSCRIBE_ONNX_ENABLE_CUDA=ON
+cmake --build build-onnx-cuda --config Release
+.\build-onnx-cuda\Release\transcribe.exe guitar.wav --model model.onnx --provider cuda --device-id 0
+```
+
+For DirectML, configure with `-DTRANSCRIBE_ONNX_ENABLE_DIRECTML=ON`,
+`-DONNXRUNTIME_DML_INCLUDE_DIR` pointing to the directory containing
+`dml_provider_factory.h`, and `-DTRANSCRIBE_DIRECTML_SDK_ROOT` pointing to the
+DirectML SDK containing `DirectML.h`. For ROCm use
+`-DTRANSCRIBE_ONNX_ENABLE_ROCM=ON` with a ROCm-enabled ONNX Runtime build on
+Linux. Provider selection is explicit: missing provider binaries, runtime
+dependencies, or compatible hardware produce an error rather than silently
+falling back to CPU.
 
 ### FFmpeg
 
@@ -173,29 +292,37 @@ driver, sample-rate support, and buffer configuration.
 
 ## Accuracy and known limitations
 
-- The built-in tracker is monophonic; chords require a trained ONNX model.
+- The default built-in YIN tracker is monophonic. The optional built-in STFT
+  tracker can identify simple harmonic mixtures but is less robust than a
+  trained ONNX model, especially for dense chords and overlapping instruments.
 - On the GuitarSet v1.1.0 diagnostic evaluation, the bundled Basic Pitch
   model scored 14.58% strict note-event F1 and 72.97% 10 ms frame F1 at default
   thresholds. This shows useful pitch activity but weak note boundaries and
   substantial false positives; review exported notes. The evaluation and
   possible training-data overlap are documented in [python/README.md](python/README.md).
-- YIN confidence, adaptive gating, and spectral-flux/energy onsets are
+- YIN confidence, adaptive gating, and spectral-flux/high-frequency-content
+  onsets are
   heuristics. Distortion, vibrato, reverberation, noisy rooms, and overlapping
   instruments can still create missed or spurious notes.
 - The ONNX path consumes a full decoded input per request; it is not a
   persistent streaming neural inference engine. The bundled Basic Pitch model
   uses overlapping fixed windows and supports piano-range MIDI 28–96, while
   other ONNX models must follow the generic contract or have an adapter.
+- GPU providers require a matching provider-enabled ONNX Runtime package and
+  its runtime dependencies; they are not bundled with the default build.
 - Tempo, meter, and key are approximate estimates from note events. They are
   not guaranteed musical analysis and should be reviewed before engraving.
   The CLI, GUI summary, and JSON output expose inference flags and heuristic
   confidence scores; these scores are not calibrated probabilities. A default
   120 BPM, 4/4, or C major value is not reported as inferred when evidence is
   insufficient.
-- MusicXML rhythmic quantization, ties, rests, and voice separation are
-  intentionally basic; unusual tuplets and complex polyphony are not modeled.
-- Guitar fingering is cost-based and uses standard tuning; legato markings are
-  inferred from pitch transitions and are not performance annotations.
+- MusicXML quantization is heuristic and limited to simple sixteenth-note and
+  triplet grids; complex tuplets, engraving, and dense multi-instrument
+  polyphony are not modeled. Meter, swing, dynamics, and articulations are
+  estimates and should be reviewed.
+- Guitar fingering uses a cost-based playable-position search. Alternative
+  fingerings are suggestions, not verified performance fingerings; alternate
+  tuning and capo support is limited to the listed tunings and a 24-fret range.
 - ASIO, ONNX Runtime, and FFmpeg paths require the optional dependencies and
   hardware/runtime combinations above.
 - Performance varies with compiler and input; `--benchmark` reports real-time
@@ -222,6 +349,19 @@ cmake -S . -B build-tests -DTRANSCRIBE_BUILD_TESTS=ON
 cmake --build build-tests --config Release
 ctest --test-dir build-tests -C Release --output-on-failure
 ```
+
+The suite includes synthetic monophonic/polyphonic analysis, realtime
+input-time latency, generated MusicXML semantic parsing and multi-format CLI
+exports, and UI asset/control-wiring checks. For an external, clean guitar or
+vocal recording, set `TRANSCRIBE_REAL_AUDIO_CLIP` to a local audio path before
+running CTest; that optional smoke test is skipped when no clip is supplied.
+The reproducible GuitarSet guitar evaluation and its dataset/licensing details
+are documented in [python/README.md](python/README.md).
+
+CI builds and tests on Windows and Linux and creates ZIP/TGZ packages. A local
+package can be made after configuring and building with CPack, for example
+`cpack --config build/CPackConfig.cmake -G TGZ`; Windows WebView2 packages
+include the local UI assets, loader, and runtime bootstrapper.
 
 Do not commit model weights, unlicensed recordings, or generated build output.
 Model contributors should document provenance, license, sample rate, labels,
