@@ -1255,6 +1255,16 @@ AudioBuffer LiveTranscriptionSession::recording() const {
     return {impl_->rate, impl_->recorded};
 }
 
+AudioBuffer LiveTranscriptionSession::recording_tail(std::size_t maximum_frames) const {
+    std::lock_guard lock(impl_->data_mutex);
+    const auto count = std::min(maximum_frames, impl_->recorded.size());
+    const auto first = impl_->recorded.size() - count;
+    return {impl_->rate, std::vector<float>(
+                             impl_->recorded.begin() +
+                                 static_cast<std::ptrdiff_t>(first),
+                             impl_->recorded.end())};
+}
+
 const LiveOptions& LiveTranscriptionSession::options() const noexcept { return impl_->options; }
 
 } // namespace transcribe::live

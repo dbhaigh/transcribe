@@ -1,0 +1,13 @@
+Verovio 6.3.0
+
+The optional WebView2 engraving feature bundles the Verovio JavaScript and
+WebAssembly distribution from the verovio@6.3.0 npm package. Verovio is
+licensed under GNU LGPL version 3 or, at your option, any later version.
+The corresponding license texts are in COPYING and COPYING.LESSER.
+
+Package provenance:
+  https://registry.npmjs.org/verovio/-/verovio-6.3.0.tgz
+  SHA-1: a11cce5a4126a5ed1e11418f1a28614b36705c94
+  Git revision: 425dd7b6ba26edcecbe345c10b15586d095743d9
+
+The default CLI and native Win32 GUI do not include or load Verovio.

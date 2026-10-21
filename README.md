@@ -66,6 +66,20 @@ The opt-in [incremental live pipeline](docs/live.md) (`--live-pipeline`) emits
 provisional, stabilized, corrected and retracted note events with stable IDs,
 bounded queues and separate latency metrics, plus a refinement proposal that
 never overwrites manual edits.
+The separate [musical interpretation layer](docs/interpretation.md) preserves
+measured event times while producing ranked tempo, meter, key, rhythm and
+notation hypotheses for MusicXML and GUI score export.
+The separate [guitar fingering solver](docs/guitar-fingering.md) ranks
+playability-aware sequence assignments and preserves manual corrections
+without changing sounding pitch.
+The [canonical score model](docs/score-model.md) is the versioned source of
+truth for accepted notation, tablature, MIDI exports, and transactional edits.
+The optional [Verovio engraving view](docs/notation-rendering.md) renders that
+accepted score as interactive, zoomable notation in the WebView2 GUI while
+preserving the editable canvas and dependency-light native GUI.
+The optional [WebView2 workstation](docs/workstation-ui.md) connects file and
+ASIO capture, score editing, playback, interpretation settings, and explicit
+score-proposal acceptance to the existing application backend.
 
 ## CLI
 
@@ -105,19 +119,25 @@ otherwise these values remain automatically estimated.
 ## MusicXML and guitar tablature
 
 MusicXML export writes synchronized standard-notation and guitar-tablature
-parts, with overlapping notes separated into voices. It estimates tempo, key,
-and meter from the note sequence, quantizes to a sixteenth-note or triplet
-grid, and can annotate expressive onset offsets with
-`--preserve-expressive-timing`. Basic amplitude-based dynamics and
-pitch-transition articulations are included when there is sufficient note
-data. These are heuristics intended as an editable starting point, not
-engraving-ready analysis.
+parts, with overlapping notes separated into voices. The interpretation layer
+retains score hypotheses, distinguishes measured audio times from musical
+positions, and writes pickup measures, rests, chord groupings, barline ties,
+tempo changes and supported rhythmic spellings. Use `--tempo`, `--meter`,
+`--key-fifths`, `--mode`, `--pickup`, and `--written-transposition` to constrain
+interpretation; `--preserve-expressive-timing` annotates onset residuals.
+Uncertain key or meter signatures are not silently asserted in MusicXML.
+See [Musical interpretation](docs/interpretation.md) for the current limits and
+API.
 
-The ASCII tablature and MusicXML fingering use the same playable-position
-assignment. Select `--tuning standard|drop-d|dadgad|open-d|open-g`, set
-`--capo 0..24`, and request up to five additional chord fingerings with
-`--tab-alternatives 1..5`. The same tuning, capo, and expressive-timing
-controls are available in both Windows GUI variants.
+The ASCII tablature and MusicXML fingering use the same sequence-level
+playable-position solver. Select `--tuning standard|drop-d|dadgad|open-d|open-g`,
+set `--capo 0..24`, and request up to five ranked sequence alternatives with
+`--tab-alternatives 1..5`. The GUI shows per-note alternatives and preserves
+manual string/fret corrections across later analysis. Fingering edits preserve
+the sounding pitch; changing pitch remains a separate explicit edit. These
+positions are playability suggestions, not identification of the original
+performance's exact string/fret choices. See [Guitar fingering](docs/guitar-fingering.md)
+for cost definitions, ambiguity, unknown assignments, and correction matching.
 
 ## Performance and fast preview
 
@@ -333,10 +353,10 @@ driver, sample-rate support, and buffer configuration.
   confidence scores; these scores are not calibrated probabilities. A default
   120 BPM, 4/4, or C major value is not reported as inferred when evidence is
   insufficient.
-- MusicXML quantization is heuristic and limited to simple sixteenth-note and
-  triplet grids; complex tuplets, engraving, and dense multi-instrument
-  polyphony are not modeled. Meter, swing, dynamics, and articulations are
-  estimates and should be reviewed.
+- Musical interpretation and MusicXML spelling are heuristic. Tuplet ratios,
+  swing, meter, tempo changes and local keys require review; the exporter does
+  not yet serialize complete alternative hypotheses, full tuplet bracket
+  grouping or engraving-quality multi-instrument notation.
 - Guitar fingering uses a cost-based playable-position search. Alternative
   fingerings are suggestions, not verified performance fingerings; alternate
   tuning and capo support is limited to the listed tunings and a 24-fret range.

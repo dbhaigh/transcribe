@@ -1,6 +1,9 @@
 #pragma once
 
 #include "transcribe/guitar_tab.hpp"
+#include "transcribe/interpretation.hpp"
+#include "transcribe/asio_capture.hpp"
+#include "transcribe/score.hpp"
 #include "transcribe/transcriber.hpp"
 
 #include <filesystem>
@@ -15,10 +18,14 @@ struct Request {
     bool use_asio{};
     bool polyphonic{};
     bool fast_preview{};
+    bool proposal_only{};
     InstrumentPrior instrument{InstrumentPrior::None};
     double capture_seconds{10.0};
     RealtimeOptions realtime_options;
+    AsioCaptureOptions asio_capture_options;
+    std::string live_backend{"yin"};
     GuitarTabOptions guitar_tab_options;
+    InterpretationOptions interpretation_options;
     bool preserve_expressive_timing{};
     std::filesystem::path input_path;
     std::filesystem::path model_path;
@@ -29,7 +36,12 @@ struct Request {
 
 struct Result {
     std::vector<Note> notes;
+    FingeringResult fingering;
     ScoreMetadata metadata;
+    ScoreDocument score;
+#ifdef TRANSCRIBE_ENABLE_VEROVIO
+    std::string musicxml_source;
+#endif
 };
 
 using ProgressCallback = std::function<void(double, const std::string&)>;

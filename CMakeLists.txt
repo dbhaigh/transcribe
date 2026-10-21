@@ -11,10 +11,46 @@ set(TRANSCRIBE_DIRECTML_SDK_ROOT "" CACHE PATH
     "Root of the DirectML SDK containing DirectML.h")
 option(TRANSCRIBE_ENABLE_FFMPEG "Enable FFmpeg decoding for compressed audio formats" OFF)
 option(TRANSCRIBE_ENABLE_WEBVIEW2 "Use the WebView2 GUI instead of the native Win32 form" OFF)
+option(TRANSCRIBE_ENABLE_VEROVIO "Enable offline Verovio engraving in the WebView2 GUI" OFF)
+set(TRANSCRIBE_VEROVIO_DIST_DIR "" CACHE PATH
+    "Path to the dist directory of the pinned Verovio npm package")
 option(TRANSCRIBE_BUILD_TESTS "Build Catch2-based unit tests" OFF)
 
 if(TRANSCRIBE_ENABLE_WEBVIEW2 AND NOT WIN32)
     message(FATAL_ERROR "The WebView2 GUI is supported only on Windows.")
+endif()
+if(TRANSCRIBE_ENABLE_VEROVIO)
+    if(NOT WIN32 OR NOT TRANSCRIBE_ENABLE_WEBVIEW2)
+        message(FATAL_ERROR
+            "Verovio rendering requires the optional Windows WebView2 GUI.")
+    endif()
+    get_filename_component(_verovio_package_dir
+        "${TRANSCRIBE_VEROVIO_DIST_DIR}" DIRECTORY)
+    if(NOT EXISTS "${_verovio_package_dir}/package.json")
+        message(FATAL_ERROR
+            "Verovio package metadata is missing beside "
+            "${TRANSCRIBE_VEROVIO_DIST_DIR}. Use the dist directory from verovio@6.3.0.")
+    endif()
+    file(READ "${_verovio_package_dir}/package.json" _verovio_package_json)
+    string(JSON _verovio_version ERROR_VARIABLE _verovio_version_error
+        GET "${_verovio_package_json}" version)
+    string(JSON _verovio_license ERROR_VARIABLE _verovio_license_error
+        GET "${_verovio_package_json}" license)
+    if(_verovio_version_error OR NOT _verovio_version STREQUAL "6.3.0" OR
+       _verovio_license_error OR
+       NOT _verovio_license STREQUAL "LGPL-3.0-or-later")
+        message(FATAL_ERROR
+            "Expected the LGPL-3.0-or-later verovio@6.3.0 package, found "
+            "version '${_verovio_version}' with license '${_verovio_license}'.")
+    endif()
+    foreach(_verovio_file verovio-module.mjs verovio.mjs)
+        if(NOT EXISTS "${TRANSCRIBE_VEROVIO_DIST_DIR}/${_verovio_file}")
+            message(FATAL_ERROR
+                "Verovio asset is missing: "
+                "${TRANSCRIBE_VEROVIO_DIST_DIR}/${_verovio_file}. "
+                "Set TRANSCRIBE_VEROVIO_DIST_DIR to the dist directory from verovio@6.3.0.")
+        endif()
+    endforeach()
 endif()
 if((TRANSCRIBE_ONNX_ENABLE_CUDA OR TRANSCRIBE_ONNX_ENABLE_DIRECTML OR
     TRANSCRIBE_ONNX_ENABLE_ROCM) AND NOT TRANSCRIBE_ENABLE_ONNX)
@@ -34,6 +70,9 @@ add_library(transcriber_core STATIC
     src/transcriber.cpp
     src/decoding.cpp
     src/inference.cpp
+    src/interpretation.cpp
+    src/score.cpp
+    src/fingering.cpp
     src/live.cpp
     src/live_document.cpp
     src/musicxml.cpp
@@ -119,8 +158,12 @@ if(WIN32)
         set_property(SOURCE src/gui_webview.cpp APPEND PROPERTY OBJECT_DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/styles.css"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/workspace.js"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/app.js"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/editor.js")
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/editor.js"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation.js"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation-worker.js"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation-fixtures.html")
         target_link_libraries(transcriber-gui PRIVATE transcriber_gui_backend
             comdlg32 user32 gdi32 shell32 ole32 winmm)
         add_custom_command(TARGET transcriber-gui POST_BUILD
@@ -134,6 +177,43 @@ if(WIN32)
                 "${_webview2_bootstrapper}" "$<TARGET_FILE_DIR:transcriber-gui>/MicrosoftEdgeWebView2Setup.exe"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_CURRENT_SOURCE_DIR}/ui" "$<TARGET_FILE_DIR:transcriber-gui>/ui")
+        if(TRANSCRIBE_ENABLE_VEROVIO)
+            target_compile_definitions(transcriber_gui_backend PRIVATE
+                TRANSCRIBE_ENABLE_VEROVIO=1)
+            target_compile_definitions(transcriber-gui PRIVATE
+                TRANSCRIBE_ENABLE_VEROVIO=1)
+            set_property(SOURCE src/gui_webview.cpp APPEND PROPERTY OBJECT_DEPENDS
+                "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio-module.mjs"
+                "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio.mjs"
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING"
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING.LESSER"
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/NOTICE.txt"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/notation/common.musicxml"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/notation/complex.musicxml")
+            add_custom_command(TARGET transcriber-gui POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio-module.mjs"
+                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/verovio-module.mjs"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio.mjs"
+                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/verovio.mjs"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING"
+                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/COPYING"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING.LESSER"
+                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/COPYING.LESSER"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/NOTICE.txt"
+                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/NOTICE.txt"
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/fixtures/notation"
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/notation"
+                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/fixtures/notation")
+        endif()
     else()
         add_executable(transcriber-gui WIN32 src/gui.cpp)
         target_link_libraries(transcriber-gui PRIVATE transcriber_gui_backend
@@ -263,7 +343,13 @@ if(TRANSCRIBE_BUILD_TESTS)
         GIT_SHALLOW TRUE)
     FetchContent_MakeAvailable(Catch2)
     enable_testing()
-    add_executable(transcriber-tests tests/transcribe_tests.cpp tests/decoding_tests.cpp tests/inference_tests.cpp tests/live_tests.cpp)
+    add_executable(transcriber-tests
+        tests/transcribe_tests.cpp
+        tests/decoding_tests.cpp
+        tests/inference_tests.cpp
+        tests/live_tests.cpp
+        tests/interpretation_tests.cpp)
+    target_sources(transcriber-tests PRIVATE tests/fingering_tests.cpp tests/score_tests.cpp)
     target_link_libraries(transcriber-tests PRIVATE transcriber_core Catch2::Catch2WithMain)
     target_compile_features(transcriber-tests PRIVATE cxx_std_20)
     if(TRANSCRIBE_ENABLE_ONNX)
@@ -391,6 +477,12 @@ if(TRANSCRIBE_BUILD_TESTS)
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_smoke.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/ui")
+        add_test(NAME notation_fixture_smoke
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/notation_fixtures_smoke.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/notation"
+                "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation-fixtures.html"
+                "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation-worker.js")
         add_test(NAME real_audio_smoke
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/real_audio_smoke.py"
@@ -415,6 +507,17 @@ if(WIN32)
             "${_webview2_bootstrapper}"
             DESTINATION bin)
         install(DIRECTORY ui/ DESTINATION bin/ui)
+        if(TRANSCRIBE_ENABLE_VEROVIO)
+            install(FILES
+                "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio-module.mjs"
+                "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio.mjs"
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING"
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING.LESSER"
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/NOTICE.txt"
+                DESTINATION bin/ui/vendor/verovio)
+            install(DIRECTORY tests/fixtures/notation/
+                DESTINATION bin/ui/fixtures/notation)
+        endif()
     endif()
 endif()
 if(TRANSCRIBE_ENABLE_ONNX)

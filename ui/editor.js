@@ -30,13 +30,29 @@
   let exportReady = false;
   let edited = false;
   let transcriptionBusy = false;
+  let liveCaptureActive = false;
+  let editBaselineNotes = new Map();
+  let editBaselineFingerings = new Map();
+  let pendingLiveDeletes = new Set();
   let playbackMode = "";
+  let pausedMode = "";
+  let pausedAt = 0;
   let playbackStarted = 0;
   let playbackEnd = 0;
   let playbackFrame = 0;
   let audioContext = null;
   let activeOscillators = [];
   let currentMetadata = {};
+  let scoreId = "";
+  let scoreRevision = 0;
+  let nextUserNoteId = 1;
+  let rejectedFingeringCorrectionCount = 0;
+  let fingeringSearchTruncated = false;
+  const contextControlIds = [
+    "tempo-control", "key-control", "minor-control", "meter-control",
+    "pickup-control", "written-transposition-control", "guitar-tuning", "capo-fret",
+  ];
+  let contextBeforeLastChange = null;
 
   function send(action, values = {}) {
     if (window.chrome && window.chrome.webview) {
@@ -131,7 +147,10 @@
   }
 
   function playbackTime() {
-    return playbackMode ? Math.max(0, (performance.now() - playbackStarted) / 1000) : 0;
+    if (playbackMode) {
+      return Math.max(0, (performance.now() - playbackStarted) / 1000);
+    }
+    return pausedMode ? pausedAt : 0;
   }
 
   function drawStaff() {
@@ -176,6 +195,11 @@
       const { y, accidental } = staffPosition(note.midi, baseY, step);
       const radius = index === selectedIndex ? 6 : 5;
       const selected = index === selectedIndex;
+      const stateColor = note.user_authored || note.state === "manually_corrected"
+        ? "#e9c578" : note.uncertain ? "#ff9b8e"
+          : note.state === "provisional" ? "#96b5ff"
+            : note.state === "stabilized" ? "#74e4bd"
+              : colors[index % colors.length];
       context.save();
       context.strokeStyle = "rgba(207, 223, 225, .4)";
       const diatonic = 30 + Math.round((baseY - y) / step);
@@ -189,12 +213,14 @@
           context.stroke();
         }
       }
-      context.fillStyle = selected ? "#fff2bd" : colors[index % colors.length];
-      context.globalAlpha = .58 + Math.max(0, Math.min(1, note.confidence)) * .42;
+      context.fillStyle = selected ? "#fff2bd" : stateColor;
+      context.globalAlpha = note.state === "provisional" ? .68
+        : .58 + Math.max(0, Math.min(1, note.confidence || 0)) * .42;
+      if (note.state === "provisional") context.setLineDash([2, 2]);
       context.beginPath();
       context.ellipse(x, y, radius, radius * .72, -.28, 0, Math.PI * 2);
       context.globalAlpha = 1;
-      context.strokeStyle = selected ? "#fff2bd" : colors[index % colors.length];
+      context.strokeStyle = selected ? "#fff2bd" : stateColor;
       const beats = note.duration * (Number($("tempo-control").value) || 120) / 60;
       if (beats < 1.8) context.fill();
       else context.stroke();
@@ -223,6 +249,7 @@
         context.font = '8px "DM Mono", Consolas, monospace';
         context.fillText(noteName(note.midi), x - 12, y - 10);
       }
+      context.setLineDash([]);
       context.restore();
     });
     context.fillStyle = muted;
@@ -236,6 +263,7 @@
     const tuning = currentTuning();
     const capo = currentCapo();
     const active = [];
+    const previous = tabPositions;
     tabPositions = new Array(notes.length);
     const ordered = notes.map((note, noteIndex) => ({ note, noteIndex }))
       .sort((left, right) => left.note.start - right.note.start);
@@ -249,12 +277,22 @@
       })).filter((position) => position.fret >= 0 && position.fret <= 24 &&
         !active.some((item) => item.string === position.string));
       candidates.sort((left, right) => left.fret - right.fret);
-      const position = candidates[0] || { string: 0, fret: -1 };
+      const prior = previous[noteIndex];
+      const priorIsValid = prior && prior.manual &&
+        prior.string > 0 && prior.fret >= 0 && prior.fret <= 24 &&
+        tuning[prior.string - 1] + capo + prior.fret === note.midi &&
+        !active.some((item) => item.string === prior.string);
+      const position = priorIsValid
+        ? { string: prior.string, fret: prior.fret, manual: true }
+        : candidates[0] || { string: 0, fret: -1, manual: false };
       if (position.string) {
         active.push({ string: position.string, end: note.start + note.duration });
       }
       tabPositions[noteIndex] = {
         noteIndex, string: position.string, fret: position.fret,
+        manual: Boolean(position.manual),
+        correctionRejected: Boolean(prior && prior.manual && !priorIsValid),
+        candidates: priorIsValid ? prior.candidates || [] : [],
       };
     });
   }
@@ -365,6 +403,11 @@
     notes.forEach((note) => {
       const x = 4 + note.start * scale;
       const w = Math.max(2, note.duration * scale);
+      if (!Number.isFinite(note.confidence)) {
+        context.fillStyle = "rgba(120, 137, 145, .38)";
+        context.fillRect(x, height * .25, w, height * .5);
+        return;
+      }
       const value = Math.max(0, Math.min(1, note.confidence));
       const hue = 4 + value * 150;
       context.fillStyle = `hsla(${hue}, 68%, 58%, ${.35 + value * .65})`;
@@ -390,13 +433,23 @@
       const score = fret + Math.abs(index - 2) * .1;
       if (!best || score < best.score) best = { noteIndex, string: index + 1, fret, score };
     });
-    return best || { noteIndex, string: 0, fret: -1 };
+    return best
+      ? { ...best, manual: false, candidates: [] }
+      : { noteIndex, string: 0, fret: -1, manual: false, candidates: [] };
   }
 
-  function saveSnapshot(target = history, source = notes) {
+  function readScoreContext() {
+    return Object.fromEntries(contextControlIds.map((id) => [
+      id,
+      $(id).type === "checkbox" ? $(id).checked : $(id).value,
+    ]));
+  }
+
+  function saveSnapshot(target = history, source = notes, settings = readScoreContext()) {
     target.push({
       notes: source.map((note) => ({ ...note })),
       positions: tabPositions.map((position) => ({ ...position })),
+      settings: { ...settings },
     });
     if (target.length > 100) target.shift();
   }
@@ -410,7 +463,100 @@
     edited = true;
     $("export-edits").textContent = "Apply edits & export";
     $("export-edits").disabled = !exportReady;
-    window.dispatchEvent(new CustomEvent("transcribe:edited", { detail: { notes } }));
+    const current = new Map(notes.filter((note) => note.id)
+      .map((note) => [note.id, note]));
+    const changes = [];
+    editBaselineNotes.forEach((previous, id) => {
+      if (!current.has(id)) changes.push({ kind: "delete", note_id: id });
+    });
+    current.forEach((note, id) => {
+      const previous = editBaselineNotes.get(id);
+      if (!previous || previous.midi !== note.midi ||
+          Math.abs(previous.start - note.start) > .0001 ||
+          Math.abs(previous.duration - note.duration) > .0001) {
+        changes.push({
+          kind: previous || !id.startsWith("user-") ? "update" : "add",
+          note_id: id,
+          midi: note.midi,
+          start: note.start,
+          duration: note.duration,
+        });
+      }
+    });
+    const currentFingerings = new Map();
+    notes.forEach((note, index) => {
+      const position = tabPositions[index];
+      if (note.id && position?.manual && position.string > 0 && position.fret >= 0) {
+        currentFingerings.set(note.id, `${position.string}:${position.fret}`);
+      }
+    });
+    currentFingerings.forEach((value, id) => {
+      if (editBaselineFingerings.get(id) === value) return;
+      const [string, fret] = value.split(":").map(Number);
+      changes.push({ kind: "fingering", note_id: id, string, fret });
+    });
+    editBaselineNotes = new Map([...current].map(([id, note]) =>
+      [id, { midi: note.midi, start: note.start, duration: note.duration }]));
+    editBaselineFingerings = currentFingerings;
+    window.dispatchEvent(new CustomEvent("transcribe:edited", {
+      detail: { notes, changes },
+    }));
+  }
+
+  function updateMeasureDisplay(time = selectedIndex >= 0
+    ? notes[selectedIndex].start : playbackTime()) {
+    const tempo = Math.max(1, Number($("tempo-control").value) || 120);
+    const [numerator, denominator] = ($("meter-control").value === "auto"
+      ? `${currentMetadata.time_numerator || 4}/${currentMetadata.time_denominator || 4}`
+      : $("meter-control").value).split("/").map(Number);
+    const barQuarters = Math.max(.25, numerator * 4 / denominator);
+    const pickup = Math.max(0, Number($("pickup-control").value) || 0);
+    const quarters = Math.max(0, time * tempo / 60);
+    const measure = pickup > 0 && quarters < pickup
+      ? 1
+      : Math.floor(Math.max(0, quarters - pickup) / barQuarters) +
+        (pickup > 0 ? 2 : 1);
+    $("measure-display").textContent = `Measure ${measure}`;
+    return measure;
+  }
+
+  function updateContextSummary() {
+    const tempo = Number($("tempo-control").value);
+    $("tempo-value").textContent = $("tempo-auto").checked
+      ? (currentMetadata.tempo_inferred
+        ? `${Math.round(currentMetadata.tempo)} bpm` : "—")
+      : Number.isFinite(tempo) ? `${tempo} bpm` : "—";
+    const key = $("key-control");
+    $("key-value").textContent = key.value === "auto"
+      ? (currentMetadata.key || "—")
+      : `${key.selectedOptions[0].textContent}${$("minor-control").checked ? " minor" : " major"}`;
+    updateMeasureDisplay();
+  }
+
+  function navigateMeasure(direction) {
+    if (!notes.length) return;
+    const currentMeasure = updateMeasureDisplay();
+    const nextMeasure = Math.max(1, currentMeasure + direction);
+    const tempo = Math.max(1, Number($("tempo-control").value) || 120);
+    const [numerator, denominator] = ($("meter-control").value === "auto"
+      ? `${currentMetadata.time_numerator || 4}/${currentMetadata.time_denominator || 4}`
+      : $("meter-control").value).split("/").map(Number);
+    const barQuarters = Math.max(.25, numerator * 4 / denominator);
+    const pickup = Math.max(0, Number($("pickup-control").value) || 0);
+    const startQuarters = nextMeasure === 1 ? 0
+      : pickup + (nextMeasure - (pickup > 0 ? 2 : 1)) * barQuarters;
+    const endQuarters = nextMeasure === 1 && pickup > 0
+      ? pickup : startQuarters + barQuarters;
+    const noteIndex = notes.findIndex((note) => {
+      const quarters = note.start * tempo / 60;
+      return quarters >= startQuarters && quarters < endQuarters;
+    });
+    const fallback = notes.reduce((best, note, index) =>
+      Math.abs(note.start * tempo / 60 - startQuarters) <
+        Math.abs(notes[best].start * tempo / 60 - startQuarters)
+        ? index : best, 0);
+    chooseNote(noteIndex >= 0 ? noteIndex : fallback);
+    $("measure-display").textContent = `Measure ${nextMeasure}`;
   }
 
   function renderSelected() {
@@ -419,19 +565,75 @@
       row.classList.toggle("selected", Number(row.dataset.index) === selectedIndex);
     });
     const fields = ["edit-pitch", "edit-start", "edit-duration", "edit-string", "edit-fret"];
-    fields.forEach((id) => { $(id).disabled = !note || transcriptionBusy; });
-    $("apply-note-edit").disabled = !note || transcriptionBusy;
-    $("delete-note").disabled = !note || transcriptionBusy;
+    const editDisabled = transcriptionBusy && !liveCaptureActive;
+    fields.forEach((id) => { $(id).disabled = !note || editDisabled; });
+    $("apply-note-edit").disabled = !note || editDisabled;
+    $("delete-note").disabled = !note || editDisabled;
     if (!note) {
       $("selection-label").textContent = "No selection";
       $("edit-instructions").textContent = "Click a note to inspect it";
-      $("alternatives-list").textContent = "Pitch suggestions appear for the selected note.";
+      $("detected-pitch").textContent = "No note selected";
+      $("detected-source").textContent =
+        "Select a note in notation, tablature, or the timeline.";
+      $("detected-onset").textContent = "—";
+      $("detected-offset").textContent = "—";
+      $("detected-confidence").textContent = "—";
+      $("detected-evidence").textContent = "—";
+      $("alternatives-list").textContent =
+        "No alternate pitch hypotheses were supplied by the active backend.";
       $("alternative-note").textContent = "Select a note";
+      $("fingering-note").textContent = "Select a note";
+      $("fingering-alternatives").textContent =
+        [
+          fingeringSearchTruncated
+            ? "Fingering search bound reached; review suggestions."
+            : "",
+          rejectedFingeringCorrectionCount
+            ? `${rejectedFingeringCorrectionCount} saved fingering correction(s) could not be matched.`
+            : "",
+        ].filter(Boolean).join(" ") ||
+        "Ranked, pitch-preserving fingering suggestions appear for the selected note.";
       return;
     }
     const position = tabPositions[selectedIndex] || computeTabPosition(note, selectedIndex);
     $("selection-label").textContent = `${noteName(note.midi)} · ${note.start.toFixed(2)}s`;
-    $("edit-instructions").textContent = `Confidence ${Math.round(note.confidence * 100)}%`;
+    $("detected-pitch").textContent = `${noteName(note.midi)} · MIDI ${note.midi}`;
+    const detectedPitch = Number.isFinite(note.detected_midi)
+      ? `Detected ${noteName(Math.round(note.detected_midi))} · MIDI ${note.detected_midi.toFixed(2)}`
+      : note.user_authored ? "User-authored · no detector evidence" : "Detected pitch unavailable";
+    const detectorSource = [note.source_model, note.detection_method, note.evidence_kind]
+      .filter(Boolean).join(" · ");
+    $("detected-source").textContent = detectorSource
+      ? `${detectedPitch} · ${detectorSource}` : detectedPitch;
+    if (note.state) {
+      const lifecycle = String(note.state).replaceAll("_", " ");
+      $("detected-source").textContent += note.uncertain
+        ? ` · UNCERTAIN (${lifecycle}; onset crosses an audio gap)`
+        : ` · ${lifecycle}`;
+    }
+    $("detected-onset").textContent = Number.isFinite(note.measured_start)
+      ? `${note.measured_start.toFixed(3)} s` : "Not measured";
+    $("detected-offset").textContent = Number.isFinite(note.measured_end)
+      ? `${note.measured_end.toFixed(3)} s` : "Not measured";
+    $("detected-confidence").textContent = Number.isFinite(note.confidence)
+      ? `${Math.round(Math.max(0, Math.min(1, note.confidence)) * 100)}%`
+      : "Not provided";
+    const evidence = Array.isArray(note.raw_evidence) ? note.raw_evidence : [];
+    const evidenceCount = Number.isInteger(note.raw_evidence_count)
+      ? note.raw_evidence_count : evidence.length;
+    const strengths = evidence.map((item) => item.raw_strength)
+      .filter(Number.isFinite);
+    const meanStrength = strengths.length
+      ? strengths.reduce((sum, value) => sum + value, 0) / strengths.length
+      : null;
+    $("detected-evidence").textContent = evidenceCount
+      ? `${evidenceCount} samples${evidenceCount > evidence.length ? ` · ${evidence.length} shown` : ""}${meanStrength === null ? "" : ` · mean shown strength ${meanStrength.toFixed(3)}`}`
+      : Number.isFinite(note.raw_strength)
+        ? `Raw backend strength ${note.raw_strength.toFixed(3)} · not a probability`
+        : "No raw evidence";
+    $("edit-instructions").textContent = Number.isFinite(note.confidence)
+      ? `Calibrated confidence ${Math.round(note.confidence * 100)}%`
+      : "Confidence not supplied by the backend";
     $("edit-pitch").value = note.midi;
     $("edit-start").value = note.start.toFixed(2);
     $("edit-duration").value = note.duration.toFixed(2);
@@ -440,17 +642,24 @@
     $("alternative-note").textContent = noteName(note.midi);
     const container = $("alternatives-list");
     container.replaceChildren();
-    [-2, -1, 1, 2].forEach((offset) => {
-      const pitch = Math.max(0, Math.min(127, note.midi + offset));
+    const alternatives = Array.isArray(note.pitch_alternatives)
+      ? note.pitch_alternatives : [];
+    if (!alternatives.length) {
+      container.textContent = note.user_authored
+        ? "User-authored pitch; no detector alternatives are available."
+        : "No alternate pitch hypotheses were supplied by the active backend.";
+    }
+    alternatives.forEach((candidate) => {
+      if (!Number.isInteger(candidate.midi)) return;
       const suggestion = document.createElement("button");
       suggestion.type = "button";
       suggestion.className = "alternative-pitch";
-      suggestion.textContent = `${noteName(pitch)} · ${Math.max(10, Math.round(note.confidence * (1 - Math.abs(offset) * .2) * 100))}%`;
-      suggestion.title = "Nearby pitch suggestion; confidence is an uncalibrated estimate.";
+      suggestion.textContent = `${noteName(candidate.midi)} · MIDI ${candidate.midi}`;
+      suggestion.title = "Pitch candidate returned by the active inference backend.";
       suggestion.addEventListener("click", () => {
         saveSnapshot();
-        notes[selectedIndex].midi = pitch;
-        notes[selectedIndex].name = noteName(pitch);
+        notes[selectedIndex].midi = candidate.midi;
+        notes[selectedIndex].name = noteName(candidate.midi);
         tabPositions[selectedIndex] = computeTabPosition(notes[selectedIndex], selectedIndex);
         renderSelected();
         drawAll();
@@ -459,12 +668,75 @@
       });
       container.appendChild(suggestion);
     });
+    const fingeringContainer = $("fingering-alternatives");
+    fingeringContainer.replaceChildren();
+    $("fingering-note").textContent = noteName(note.midi);
+    if (fingeringSearchTruncated) {
+      const warning = document.createElement("span");
+      warning.textContent = "Fingering search bound reached; review these suggestions.";
+      fingeringContainer.appendChild(warning);
+    }
+    if (rejectedFingeringCorrectionCount > 0) {
+      const warning = document.createElement("span");
+      warning.textContent =
+        `${rejectedFingeringCorrectionCount} saved fingering correction(s) could not be matched.`;
+      fingeringContainer.appendChild(warning);
+    }
+    if (position.correctionRejected) {
+      const warning = document.createElement("span");
+      warning.textContent = "Saved fingering no longer matches this note or tuning; choose a replacement.";
+      fingeringContainer.appendChild(warning);
+    } else if (position.ambiguous) {
+      const warning = document.createElement("span");
+      warning.textContent = "Several positions have similar playability costs.";
+      fingeringContainer.appendChild(warning);
+    }
+    if (!position.string) {
+      const warning = document.createElement("span");
+      warning.textContent =
+        "No playable string/fret assignment is available under the current tuning and capo.";
+      fingeringContainer.appendChild(warning);
+    }
+    (position.candidates || []).forEach((candidate) => {
+      const suggestion = document.createElement("button");
+      suggestion.type = "button";
+      suggestion.className = "alternative-pitch";
+      suggestion.textContent =
+        `S${candidate.string} · F${candidate.fret} · ${candidate.sequenceCost.toFixed(1)}`;
+      const costs = candidate.costComponents;
+      suggestion.title = costs && Number.isFinite(costs.total)
+        ? `Sequence cost: fret ${costs.fret_height.toFixed(2)}, preferred ${costs.preferred_position.toFixed(2)}, hand movement ${costs.hand_movement.toFixed(2)}, string preference ${costs.string_preference.toFixed(2)}, chord stretch ${costs.chord_stretch.toFixed(2)}, unassigned ${costs.unassigned_notes.toFixed(2)}. Choose without changing pitch.`
+        : "Choose this fingering without changing the sounding pitch.";
+      suggestion.addEventListener("click", () => {
+        const open = currentTuning()[candidate.string - 1] + currentCapo();
+        if (open + candidate.fret !== notes[selectedIndex].midi) return;
+        saveSnapshot();
+        redoHistory = [];
+        tabPositions[selectedIndex] = {
+          ...position,
+          noteIndex: selectedIndex,
+          string: candidate.string,
+          fret: candidate.fret,
+          manual: true,
+          correctionRejected: false,
+        };
+        renderSelected();
+        drawAll();
+        markEdited();
+        updateHistoryButtons();
+      });
+      fingeringContainer.appendChild(suggestion);
+    });
   }
 
   function chooseNote(index) {
     selectedIndex = Number.isInteger(index) && index >= 0 && index < notes.length
       ? index : -1;
+    window.dispatchEvent(new CustomEvent("transcribe:score-selection", {
+      detail: { id: selectedIndex >= 0 ? notes[selectedIndex].id : "" },
+    }));
     renderSelected();
+    if (selectedIndex >= 0) updateMeasureDisplay(notes[selectedIndex].start);
     drawAll();
   }
 
@@ -563,10 +835,15 @@
       const gap = Math.min(15, (rect.height - 38) / 5);
       const string = Math.max(1, Math.min(6, Math.round((y - 20) / gap) + 1));
       const open = currentTuning()[string - 1] + currentCapo();
-      const fret = Math.max(0, Math.min(24, note.midi - open));
-      note.midi = open + fret;
-      note.name = noteName(note.midi);
-      tabPositions[dragState.index] = { noteIndex: dragState.index, string, fret };
+      const fret = note.midi - open;
+      if (fret < 0 || fret > 24) {
+        $("edit-instructions").textContent =
+          "That string cannot play the selected pitch; choose another string.";
+      } else {
+        tabPositions[dragState.index] = {
+          noteIndex: dragState.index, string, fret, manual: true,
+        };
+      }
     }
     renderSelected();
     drawAll();
@@ -591,12 +868,14 @@
     redoHistory = [];
     const pitch = Math.max(36, Math.min(96, staffMidiAtY(y, rect.height)));
     const note = {
+      id: `user-${scoreId || "score"}-${nextUserNoteId++}`,
       midi: pitch,
       name: noteName(pitch),
       start: scoreX(event, canvas) * Math.max(1, totalDuration()),
       duration: .5,
-      confidence: .65,
-      amplitude: .5,
+      confidence: null,
+      amplitude: null,
+      user_authored: true,
     };
     notes.push(note);
     tabPositions.push(computeTabPosition(note, notes.length - 1));
@@ -609,6 +888,9 @@
     if (selectedIndex < 0 || selectedIndex >= notes.length) return;
     saveSnapshot();
     redoHistory = [];
+    if (liveCaptureActive && notes[selectedIndex].id) {
+      pendingLiveDeletes.add(notes[selectedIndex].id);
+    }
     notes.splice(selectedIndex, 1);
     tabPositions.splice(selectedIndex, 1);
     selectedIndex = -1;
@@ -639,24 +921,27 @@
     const previousPosition = tabPositions[selectedIndex] || computeTabPosition(note, selectedIndex);
     const positionChanged =
       previousPosition.string !== string || previousPosition.fret !== fret;
-    const nextPitch = pitchChanged
-      ? midi
-      : positionChanged
-        ? currentTuning()[string - 1] + currentCapo() + fret
-        : note.midi;
-    if (nextPitch < 0 || nextPitch > 127) {
-      $("edit-instructions").textContent = "Selected string and fret exceed the MIDI pitch range";
+    const selectedPositionPitch =
+      currentTuning()[string - 1] + currentCapo() + fret;
+    if (!pitchChanged && selectedPositionPitch !== note.midi) {
+      $("edit-instructions").textContent =
+        "String and fret must preserve the selected pitch. Change Pitch explicitly to retune.";
       return;
     }
     saveSnapshot();
     redoHistory = [];
-    note.midi = nextPitch;
-    note.name = noteName(nextPitch);
+    note.midi = pitchChanged ? midi : note.midi;
+    note.name = noteName(note.midi);
     note.start = start;
     note.duration = noteDuration;
-    const expectedFret = nextPitch - currentTuning()[string - 1] - currentCapo();
+    note.user_authored = true;
+    note.state = "manually_corrected";
+    const expectedFret = note.midi - currentTuning()[string - 1] - currentCapo();
     if (expectedFret === fret && expectedFret >= 0) {
-      tabPositions[selectedIndex] = { noteIndex: selectedIndex, string, fret };
+      tabPositions[selectedIndex] = {
+        noteIndex: selectedIndex, string, fret,
+        manual: positionChanged || (!pitchChanged && previousPosition.manual),
+      };
     } else {
       tabPositions[selectedIndex] = computeTabPosition(note, selectedIndex);
     }
@@ -669,6 +954,15 @@
   function restoreSnapshot(snapshot) {
     notes = snapshot.notes.map((note) => ({ ...note }));
     tabPositions = snapshot.positions.map((position) => ({ ...position }));
+    if (snapshot.settings) {
+      contextControlIds.forEach((id) => {
+        const control = $(id);
+        if (control.type === "checkbox") control.checked = Boolean(snapshot.settings[id]);
+        else control.value = snapshot.settings[id];
+      });
+      contextBeforeLastChange = readScoreContext();
+      updateContextSummary();
+    }
     selectedIndex = Math.min(selectedIndex, notes.length - 1);
     renderSelected();
     drawAll();
@@ -692,28 +986,109 @@
   function acceptNotes(nextNotes) {
     if (!Array.isArray(nextNotes)) return;
     const oldCount = notes.length;
-    notes = nextNotes.map((note) => ({
-      ...note,
-      amplitude: Number.isFinite(note.amplitude) ? note.amplitude : 0,
-    }));
-    if (notes.length !== oldCount || tabPositions.length !== notes.length) {
-      assignTabPositions();
-      selectedIndex = -1;
-      if (!edited) {
-        history = [];
-        redoHistory = [];
-      }
+    const selectedId = selectedIndex >= 0 ? notes[selectedIndex]?.id : null;
+    const previousNotes = new Map(notes.filter((note) => note.id)
+      .map((note) => [note.id, note]));
+    const previousPositions = new Map(notes.map((note, index) =>
+      [note.id, tabPositions[index]]));
+    const incomingIds = new Set(nextNotes.map((note) => note.id).filter(Boolean));
+    for (const id of pendingLiveDeletes) {
+      if (!incomingIds.has(id)) pendingLiveDeletes.delete(id);
     }
+    notes = nextNotes.filter((note) => !pendingLiveDeletes.has(note.id)).map((incoming) => {
+      const prior = previousNotes.get(incoming.id);
+      const note = {
+        ...incoming,
+        amplitude: Number.isFinite(incoming.amplitude) ? incoming.amplitude : null,
+      };
+      if (prior?.user_authored && !incoming.user_authored) {
+        note.midi = prior.midi;
+        note.name = prior.name;
+        note.start = prior.start;
+        note.duration = prior.duration;
+        note.user_authored = true;
+        note.state = "manually_corrected";
+      }
+      return note;
+    });
+    tabPositions = notes.map((note) => {
+      const prior = previousPositions.get(note.id);
+      if (Number.isInteger(note.string) && Number.isInteger(note.fret)) {
+        return {
+          string: note.string,
+          fret: note.fret,
+          manual: Boolean(note.manual_fingering),
+        };
+      }
+      return prior ? { ...prior } : {};
+    });
+    assignTabPositions();
+    selectedIndex = selectedId
+      ? notes.findIndex((note) =>
+        note.id === selectedId ||
+        note.source_event_ids?.includes(selectedId)) : -1;
+    if (selectedIndex < 0 && !selectedId) selectedIndex = -1;
+    if (notes.length !== oldCount && !edited) {
+      history = [];
+      redoHistory = [];
+    }
+    editBaselineNotes = new Map(notes.filter((note) => note.id).map((note) =>
+      [note.id, { midi: note.midi, start: note.start, duration: note.duration }]));
+    editBaselineFingerings = new Map(notes.flatMap((note, index) => {
+      const position = tabPositions[index];
+      return note.id && position?.manual && position.string > 0 &&
+        position.fret >= 0
+        ? [[note.id, `${position.string}:${position.fret}`]] : [];
+    }));
     duration = totalDuration();
     renderSelected();
     drawAll();
-    $("export-edits").disabled = !exportReady;
+    $("export-edits").disabled = transcriptionBusy || !exportReady;
+  }
+
+  function acceptFingering(fingering) {
+    if (!fingering || !Array.isArray(fingering.notes) ||
+        fingering.notes.length !== notes.length) return;
+    rejectedFingeringCorrectionCount =
+      Array.isArray(fingering.rejected_corrections)
+        ? fingering.rejected_corrections.length : 0;
+    fingeringSearchTruncated = Boolean(fingering.search_truncated);
+    tabPositions = fingering.notes.map((item, index) => ({
+      noteIndex: index,
+      string: item.string,
+      fret: item.fret,
+      manual: Boolean(item.manual),
+      ambiguous: Boolean(item.ambiguous),
+      correctionRejected: Boolean(item.correction_rejected),
+      candidates: Array.isArray(item.candidates)
+        ? item.candidates.map((candidate) => ({
+          string: candidate.string,
+          fret: candidate.fret,
+          sequenceCost: Number(candidate.sequence_cost) || 0,
+          costComponents: candidate.cost_components || {},
+        }))
+        : [],
+    }));
+    renderSelected();
+    drawAll();
   }
 
   function acceptMetadata(metadata) {
     currentMetadata = metadata || {};
+    if (currentMetadata.score_id) scoreId = currentMetadata.score_id;
+    if (Number.isInteger(currentMetadata.score_revision)) {
+      scoreRevision = currentMetadata.score_revision;
+    }
     if (currentMetadata.tempo_inferred) {
       $("tempo-control").value = Math.round(currentMetadata.tempo);
+    }
+    if (currentMetadata.meter_inferred) {
+      $("meter-control").value =
+        `${currentMetadata.time_numerator}/${currentMetadata.time_denominator}`;
+    }
+    if (currentMetadata.key_inferred) {
+      $("key-control").value = String(currentMetadata.key_fifths);
+      $("minor-control").checked = Boolean(currentMetadata.minor_key);
     }
     $("tempo-value").textContent = currentMetadata.tempo_inferred
       ? `${Math.round(currentMetadata.tempo)} bpm` : "—";
@@ -730,8 +1105,11 @@
     redoHistory = [];
     $("export-edits").disabled = !exportReady;
     $("export-edits").textContent = "Apply edits & export";
+    contextBeforeLastChange = readScoreContext();
+    updateContextSummary();
     refreshStringOptions();
     updateHistoryButtons();
+    updateMeasureDisplay();
     drawAll();
   }
 
@@ -771,7 +1149,23 @@
 
   function drawPlaybackFrame() {
     if (!playbackMode) return;
-    if (playbackTime() >= playbackEnd) {
+    const time = playbackTime();
+    window.dispatchEvent(new CustomEvent("transcribe:playback-time", {
+      detail: time,
+    }));
+    updateMeasureDisplay(time);
+    if (time >= playbackEnd) {
+      if ($("loop-toggle").getAttribute("aria-pressed") === "true") {
+        if (playbackMode === "midi") {
+          playMidi().catch((error) => {
+            $("status-text").textContent = `Note playback failed: ${error.message}`;
+            stopPlayback();
+          });
+        } else {
+          playOriginal();
+        }
+        return;
+      }
       stopPlayback();
       return;
     }
@@ -780,7 +1174,7 @@
     playbackFrame = requestAnimationFrame(drawPlaybackFrame);
   }
 
-  async function playMidi() {
+  async function playMidi(fromTime = 0) {
     stopPlayback();
     const AudioContextType = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextType) {
@@ -792,29 +1186,69 @@
     const startAt = audioContext.currentTime + .08;
     playbackEnd = totalDuration();
     playbackMode = "midi";
-    playbackStarted = performance.now();
+    pausedMode = "";
+    pausedAt = 0;
+    playbackStarted = performance.now() - fromTime * 1000;
     activeOscillators = [];
     notes.forEach((note) => {
+      const noteEnd = note.start + note.duration;
+      if (noteEnd <= fromTime) return;
+      const scheduledStart = startAt + Math.max(0, note.start - fromTime);
+      const remaining = Math.max(.05, noteEnd - Math.max(fromTime, note.start));
       const oscillator = audioContext.createOscillator();
       const gain = audioContext.createGain();
       oscillator.type = "triangle";
       oscillator.frequency.value = 440 * Math.pow(2, (note.midi - 69) / 12);
-      const start = startAt + note.start;
-      const end = start + Math.max(.05, note.duration);
+      const end = scheduledStart + remaining;
       const amplitude = note.amplitude > 0
         ? Math.max(.025, Math.min(.2, note.amplitude * .2))
         : .11;
-      gain.gain.setValueAtTime(.0001, start);
-      gain.gain.linearRampToValueAtTime(amplitude, start + .012);
+      gain.gain.setValueAtTime(.0001, scheduledStart);
+      gain.gain.linearRampToValueAtTime(amplitude,
+        Math.min(end, scheduledStart + .012));
       gain.gain.setTargetAtTime(.0001, end, .04);
       oscillator.connect(gain);
       gain.connect(audioContext.destination);
-      oscillator.start(start);
+      oscillator.start(scheduledStart);
       oscillator.stop(end + .18);
       activeOscillators.push(oscillator);
     });
     $("stop-playback").disabled = false;
+    $("play-midi").textContent = "Ⅱ";
+    $("play-midi").title = "Pause score playback (Space)";
     drawPlaybackFrame();
+  }
+
+  function pauseMidi() {
+    if (playbackMode !== "midi") return;
+    pausedAt = playbackTime();
+    pausedMode = "midi";
+    activeOscillators.forEach((oscillator) => {
+      try { oscillator.stop(); } catch { }
+    });
+    activeOscillators = [];
+    playbackMode = "";
+    cancelAnimationFrame(playbackFrame);
+    window.dispatchEvent(new CustomEvent("transcribe:playback-time", {
+      detail: pausedAt,
+    }));
+    $("play-midi").textContent = "▶";
+    $("play-midi").title = "Resume score playback (Space)";
+    $("stop-playback").disabled = false;
+  }
+
+  function toggleMidiPlayback() {
+    if (playbackMode === "midi") {
+      pauseMidi();
+      return;
+    }
+    if (playbackMode) stopPlayback();
+    const resumeAt = pausedMode === "midi" ? pausedAt : 0;
+    pausedMode = "";
+    playMidi(resumeAt).catch((error) => {
+      $("status-text").textContent = `Note playback failed: ${error.message}`;
+      stopPlayback();
+    });
   }
 
   function playOriginal() {
@@ -823,6 +1257,8 @@
     playbackStarted = performance.now();
     playbackEnd = Math.max(totalDuration(), audioEnd);
     $("stop-playback").disabled = false;
+    $("play-midi").textContent = "▶";
+    $("play-midi").title = "Play or pause the score (Space)";
     send("play-original");
     drawPlaybackFrame();
   }
@@ -834,6 +1270,11 @@
     });
     activeOscillators = [];
     playbackMode = "";
+    pausedMode = "";
+    pausedAt = 0;
+    $("play-midi").textContent = "▶";
+    $("play-midi").title = "Play or pause the score (Space)";
+    window.dispatchEvent(new CustomEvent("transcribe:playback-stop"));
     cancelAnimationFrame(playbackFrame);
     $("stop-playback").disabled = true;
     drawAll();
@@ -842,12 +1283,13 @@
   function exportEdits() {
     if (!exportReady) return;
     const notesPayload = notes.map((note) => [
-      note.midi, note.start, note.duration,
+      note.id, note.midi, note.start, note.duration,
       Math.max(0, Math.min(1, note.confidence || 0)),
       Math.max(0, Math.min(1, note.amplitude || 0)),
     ].join(",")).join(";");
     const positionsPayload = tabPositions.map((position, index) =>
-      position.string > 0 ? `${index},${position.string},${position.fret}` : ""
+      position.manual && position.string > 0
+        ? `${index},${position.string},${position.fret}` : ""
     ).filter(Boolean).join(";");
     $("export-edits").disabled = true;
     window.dispatchEvent(new CustomEvent("transcribe:export-started"));
@@ -858,6 +1300,11 @@
       key_fifths: $("key-control").value,
       minor: $("minor-control").checked ? "1" : "0",
       meter: $("meter-control").value,
+      pickup: $("pickup-control").value,
+      written_transposition: $("written-transposition-control").value,
+      base_revision: String(scoreRevision),
+      tuning: $("guitar-tuning").value,
+      capo: String(currentCapo()),
       musicxml: $("musicxml-path").value,
       tab: $("tab-path").value,
       midi: $("midi-path").value,
@@ -882,18 +1329,37 @@
   $("undo-button").addEventListener("click", undo);
   $("redo-button").addEventListener("click", redo);
   $("export-edits").addEventListener("click", exportEdits);
-  $("play-midi").addEventListener("click", () => { playMidi().catch((error) => {
-    $("status-text").textContent = `Note playback failed: ${error.message}`;
-  }); });
+  $("play-midi").addEventListener("click", toggleMidiPlayback);
   $("play-original").addEventListener("click", playOriginal);
   $("stop-playback").addEventListener("click", stopPlayback);
-  ["guitar-tuning", "capo-fret"].forEach((id) => $(id).addEventListener("change", () => {
-    assignTabPositions();
-    refreshStringOptions();
-    renderSelected();
-    drawAll();
+  $("loop-toggle").addEventListener("click", () => {
+    const enabled = $("loop-toggle").getAttribute("aria-pressed") !== "true";
+    $("loop-toggle").setAttribute("aria-pressed", String(enabled));
+    $("loop-toggle").classList.toggle("active", enabled);
+    $("loop-toggle").title = enabled ? "Disable loop playback" : "Loop score playback";
+  });
+  $("measure-prev").addEventListener("click", () => navigateMeasure(-1));
+  $("measure-next").addEventListener("click", () => navigateMeasure(1));
+  contextControlIds.forEach((id) => $(id).addEventListener("change", () => {
+    if (!exportReady) {
+      contextBeforeLastChange = readScoreContext();
+      updateContextSummary();
+      return;
+    }
+    saveSnapshot(history, notes, contextBeforeLastChange || readScoreContext());
+    redoHistory = [];
+    contextBeforeLastChange = readScoreContext();
+    if (id === "guitar-tuning" || id === "capo-fret") {
+      assignTabPositions();
+      refreshStringOptions();
+      renderSelected();
+      drawAll();
+    }
+    updateContextSummary();
+    markEdited();
+    updateHistoryButtons();
   }));
-
+  $("tempo-auto").addEventListener("change", updateContextSummary);
   function refreshStringOptions() {
     const selected = $("edit-string").value;
     $("edit-string").innerHTML = currentTuning().map((pitch, index) =>
@@ -902,11 +1368,7 @@
     if (selected) $("edit-string").value = selected;
   }
 
-  $("theme-toggle").addEventListener("click", () => {
-    const next = document.body.dataset.theme === "light" ? "dark" : "light";
-    document.body.dataset.theme = next;
-    $("theme-toggle").textContent = next === "light" ? "Dark mode" : "Light mode";
-    localStorage.setItem("transcribe.theme", next);
+  window.addEventListener("transcribe:theme", () => {
     drawAll();
   });
 
@@ -916,17 +1378,32 @@
       target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement;
     if (event.code === "Space" && !typing) {
       event.preventDefault();
-      if (playbackMode) stopPlayback();
-      else playMidi().catch(() => {});
+      toggleMidiPlayback();
     } else if (event.key === "Delete" && !typing) {
       removeSelected();
-    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+    } else if (!typing && (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "z") {
       event.preventDefault();
       if (event.shiftKey) redo();
       else undo();
-    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+    } else if (!typing && (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "y") {
       event.preventDefault();
       redo();
+    } else if (!typing && (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      exportEdits();
+    } else if (!typing && !event.ctrlKey && !event.metaKey &&
+        event.key.toLowerCase() === "o") {
+      event.preventDefault();
+      send("browse", { field: "input", current: $("input-path").value });
+    } else if (!typing && selectedIndex < 0 && event.key === "ArrowLeft") {
+      event.preventDefault();
+      navigateMeasure(-1);
+    } else if (!typing && selectedIndex < 0 && event.key === "ArrowRight") {
+      event.preventDefault();
+      navigateMeasure(1);
     } else if (!typing && selectedIndex >= 0 && event.key === "ArrowUp") {
       event.preventDefault();
       saveSnapshot();
@@ -950,12 +1427,22 @@
   });
 
   window.addEventListener("transcribe:notes", (event) => acceptNotes(event.detail));
+  window.addEventListener("transcribe:engraving-select", (event) => {
+    const index = notes.findIndex((note) => note.id === event.detail?.id);
+    chooseNote(index);
+  });
+  window.addEventListener("transcribe:fingering", (event) => acceptFingering(event.detail));
   window.addEventListener("transcribe:metadata", (event) => acceptMetadata(event.detail));
   window.addEventListener("transcribe:audio-preview", (event) => acceptAudioPreview(event.detail));
   window.addEventListener("transcribe:busy", (event) => {
-    const disabled = Boolean(event.detail);
+    const state = event.detail;
+    const disabled = typeof state === "object"
+      ? Boolean(state.busy) : Boolean(state);
+    const preserveScore = typeof state === "object" && Boolean(state.preserveScore);
+    liveCaptureActive = typeof state === "object" &&
+      Boolean(state.liveCapture);
     transcriptionBusy = disabled;
-    if (disabled) {
+    if (disabled && !preserveScore) {
       exportReady = false;
       edited = false;
       waveform = [];
@@ -969,13 +1456,19 @@
     const fileMode = document.querySelector(".segment.selected")?.dataset.mode === "file";
     $("play-original").disabled =
       disabled || !exportReady || !fileMode || !/\.wav$/i.test($("input-path").value);
-    $("apply-note-edit").disabled = disabled || selectedIndex < 0;
-    $("delete-note").disabled = disabled || selectedIndex < 0;
+    $("apply-note-edit").disabled = (disabled && !liveCaptureActive) ||
+      selectedIndex < 0;
+    $("delete-note").disabled = (disabled && !liveCaptureActive) ||
+      selectedIndex < 0;
     $("export-edits").disabled = disabled || !exportReady;
     renderSelected();
   });
   window.addEventListener("transcribe:edited-export", (event) => {
     const message = event.detail;
+    if (message.success && Number.isInteger(message.score_revision)) {
+      scoreRevision = message.score_revision;
+    }
+    contextBeforeLastChange = readScoreContext();
     $("export-edits").disabled = !exportReady;
     $("export-edits").textContent = message.success
       ? "Exported ✓" : "Retry export";
@@ -984,11 +1477,18 @@
       : `Export failed: ${message.error || "Unknown error"}`;
   });
   window.addEventListener("resize", drawAll);
+  window.addEventListener("pagehide", () => {
+    stopPlayback();
+    if (audioContext && audioContext.state !== "closed") {
+      audioContext.close().catch((error) => {
+        console.warn("Could not close note playback audio context.", error);
+      });
+    }
+  });
   window.addEventListener("DOMContentLoaded", () => {
-    const savedTheme = localStorage.getItem("transcribe.theme") || "dark";
-    document.body.dataset.theme = savedTheme;
-    $("theme-toggle").textContent = savedTheme === "light" ? "Dark mode" : "Light mode";
     refreshStringOptions();
+    contextBeforeLastChange = readScoreContext();
     drawAll();
+    updateMeasureDisplay(0);
   });
 })();

@@ -247,6 +247,10 @@ TEST_CASE("live ingestion downmixes channels and sanitizes nonfinite samples", "
     const auto recording = session.recording();
     REQUIRE(recording.sample_rate == 44100);
     REQUIRE(recording.samples == std::vector<float>{0.0F, 0.375F, 0.25F});
+    const auto tail = session.recording_tail(2);
+    REQUIRE(tail.sample_rate == 44100);
+    REQUIRE(tail.samples == std::vector<float>{0.375F, 0.25F});
+    REQUIRE(session.recording_tail(0).samples.empty());
     REQUIRE(session.metrics().nonfinite_samples == 1);
 }
 
@@ -597,6 +601,31 @@ TEST_CASE("documents preserve history and never let live or refined updates over
                         [](const NoteRevision& r) { return r.origin == RevisionOrigin::Manual; }));
     REQUIRE(document.original_events().size() == original_events + 1);
     REQUIRE(document.to_notes(7.0).size() == document.notes().size());
+}
+
+TEST_CASE("live documents preserve manual IDs and detect refinement pitch conflicts", "[live]") {
+    TranscriptionDocument document(fake_rate);
+    auto manual = make_note("user-note-17", 60, frame(1.0), frame(1.5),
+                            EventLifecycle::ManuallyCorrected);
+    REQUIRE(document.add_manual_note(manual, "inserted in the live editor",
+                                     manual.id) == "user-note-17");
+
+    ScoreProposal proposal;
+    proposal.id = "pitch-change";
+    proposal.notes.push_back(make_note("refined-note", 61, frame(1.0),
+                                       frame(1.5), EventLifecycle::Refined));
+    const auto review = document.review(proposal);
+    REQUIRE(review.conflicts == 1);
+    REQUIRE(review.changes.size() == 1);
+    REQUIRE(review.changes.front().kind == ProposedChangeKind::Modify);
+    REQUIRE(review.changes.front().note_id == "user-note-17");
+
+    document.delete_manual_note("user-note-17");
+    manual.state = EventLifecycle::ManuallyCorrected;
+    REQUIRE(document.add_manual_note(manual, "restored by undo",
+                                     manual.id) == "user-note-17");
+    REQUIRE(document.note("user-note-17")->state ==
+            EventLifecycle::ManuallyCorrected);
 }
 
 TEST_CASE("incremental YIN emits stabilized notes and retracts short blips", "[live]") {

@@ -94,35 +94,71 @@ int live_capture_callback(void*, void* input, unsigned int frames, double,
 
 } // namespace
 
+std::vector<AsioInputDevice> enumerate_asio_input_devices() {
+    RtAudio audio(RtAudio::Api::WINDOWS_ASIO);
+    if (audio.getCurrentApi() != RtAudio::Api::WINDOWS_ASIO) {
+        throw std::runtime_error("RtAudio did not select its ASIO backend.");
+    }
+    std::vector<AsioInputDevice> result;
+    for (const auto device_id : audio.getDeviceIds()) {
+        const auto info = audio.getDeviceInfo(device_id);
+        if (info.inputChannels == 0) continue;
+        result.push_back({device_id, info.name, info.inputChannels,
+                          info.preferredSampleRate, info.isDefaultInput,
+                          info.sampleRates});
+    }
+    return result;
+}
+
 LiveCaptureReport capture_asio_live(double seconds, live::LiveTranscriptionSession& session,
                                     std::stop_token stop_token,
-                                    const std::function<void(double)>& progress_callback) {
+                                    const std::function<void(double)>& progress_callback,
+                                    const AsioCaptureOptions& capture_options,
+                                    const std::function<void()>& update_callback) {
     if (!(seconds > 0.0 && seconds <= 3600.0)) {
         throw std::invalid_argument("Live ASIO capture duration must be greater than 0 and at most 3600 seconds.");
     }
-    constexpr std::uint32_t sample_rate = 44100;
     const auto format = session.options().format;
-    if (format.sample_rate != sample_rate || format.channels != 1) {
-        throw std::invalid_argument("Live ASIO capture requires a 44100 Hz mono session format.");
+    if (format.sample_rate != capture_options.sample_rate ||
+        format.channels != capture_options.channels ||
+        format.sample_rate == 0 || format.channels == 0) {
+        throw std::invalid_argument(
+            "The live session format must match the selected ASIO sample rate and channel count.");
     }
     LiveCaptureState state;
     state.session = &session;
     state.format = format;
-    state.capacity = static_cast<std::uint64_t>(seconds * sample_rate);
+    state.capacity = static_cast<std::uint64_t>(seconds * format.sample_rate);
     LiveCaptureReport report;
 
     RtAudio audio(RtAudio::Api::WINDOWS_ASIO);
     if (audio.getCurrentApi() != RtAudio::Api::WINDOWS_ASIO) {
         throw std::runtime_error("RtAudio did not select its ASIO backend.");
     }
+    const auto device_ids = audio.getDeviceIds();
+    const auto selected_device = capture_options.device_id
+        ? *capture_options.device_id : audio.getDefaultInputDevice();
+    if (std::find(device_ids.begin(), device_ids.end(), selected_device) ==
+        device_ids.end()) {
+        throw std::runtime_error("The selected ASIO input device is no longer available.");
+    }
+    const auto device_info = audio.getDeviceInfo(selected_device);
+    if (device_info.inputChannels < format.channels) {
+        throw std::runtime_error(
+            "The selected ASIO device does not provide the requested input channels.");
+    }
+    if (std::find(device_info.sampleRates.begin(), device_info.sampleRates.end(),
+                  format.sample_rate) == device_info.sampleRates.end()) {
+        throw std::runtime_error(
+            "The selected ASIO device does not support the requested sample rate.");
+    }
     const auto open = [&]() {
-        const auto device = audio.getDefaultInputDevice();
-        if (device == 0) return false;
         RtAudio::StreamParameters parameters{};
-        parameters.deviceId = device;
+        parameters.deviceId = selected_device;
         parameters.nChannels = format.channels;
         unsigned int buffer_frames = 512;
-        if (audio.openStream(nullptr, &parameters, RTAUDIO_FLOAT32, sample_rate, &buffer_frames,
+        if (audio.openStream(nullptr, &parameters, RTAUDIO_FLOAT32,
+                             format.sample_rate, &buffer_frames,
                              &live_capture_callback, &state) != RTAUDIO_NO_ERROR) {
             return false;
         }
@@ -132,7 +168,11 @@ LiveCaptureReport capture_asio_live(double seconds, live::LiveTranscriptionSessi
         }
         return true;
     };
-    if (!open()) throw std::runtime_error("No default ASIO input device could be opened.");
+    if (!open()) {
+        throw std::runtime_error("Could not open ASIO input device '" +
+                                 device_info.name + "' at " +
+                                 std::to_string(format.sample_rate) + " Hz.");
+    }
     const auto started = std::chrono::steady_clock::now();
     constexpr std::size_t maximum_reconnects = 5;
     std::uint64_t last_reported = 0;
@@ -146,17 +186,24 @@ LiveCaptureReport capture_asio_live(double seconds, live::LiveTranscriptionSessi
             if (report.reconnects >= maximum_reconnects) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             ++report.reconnects;
-            const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-            const auto wall_frame = static_cast<std::uint64_t>(elapsed * sample_rate);
+            const auto elapsed = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - started).count();
+            const auto wall_frame =
+                static_cast<std::uint64_t>(elapsed * format.sample_rate);
             state.next_frame.store(std::max(delivered, std::min(wall_frame, state.capacity)),
                                    std::memory_order_release);
             if (state.next_frame.load(std::memory_order_acquire) >= state.capacity) break;
             if (open()) report.input_lost = false;
             continue;
         }
-        if (progress_callback && delivered - last_reported >= sample_rate / 5) {
+        if (progress_callback &&
+            delivered - last_reported >= format.sample_rate / 5) {
             last_reported = delivered;
             progress_callback(static_cast<double>(delivered) / static_cast<double>(state.capacity));
+        }
+        if (update_callback) update_callback();
+        if (session.state() == live::LiveState::AnalysisFailed) {
+            throw std::runtime_error("Live analysis failed: " + session.last_error());
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -305,8 +352,12 @@ AudioBuffer capture_asio(double seconds, std::stop_token stop_token,
     return captured_audio;
 }
 #else
-LiveCaptureReport capture_asio_live(double, live::LiveTranscriptionSession&, std::stop_token,
-                                    const std::function<void(double)>&) {
+std::vector<AsioInputDevice> enumerate_asio_input_devices() { return {}; }
+
+LiveCaptureReport capture_asio_live(
+    double, live::LiveTranscriptionSession&, std::stop_token,
+    const std::function<void(double)>&, const AsioCaptureOptions&,
+    const std::function<void()>&) {
     throw std::runtime_error("ASIO support is disabled. Configure with -DTRANSCRIBE_ENABLE_ASIO=ON.");
 }
 

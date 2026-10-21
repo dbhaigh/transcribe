@@ -258,11 +258,18 @@ The skip-with-gap path is exercised deterministically by the `[live]` lag and
 * No bundled model is truly incremental. Basic Pitch and the spectral tracker
   use overlapping windows, and their latency is bounded below by hop size plus
   right-guard plus inference time.
-* `capture_asio_live` reconnection and device-loss handling are implemented
-  but have not been exercised on ASIO hardware disconnects. Device buffering
-  latency is not included in the metrics.
+* `capture_asio_live` can enumerate and open the selected ASIO device, sample
+  rate, and input-channel count, and reconnects the selected device after
+  interruption. Device-loss handling has not been exercised on ASIO hardware.
+  Device buffering latency is not included in the metrics.
 * The synthetic corpus is small and does not establish real-recording accuracy.
   Measured differences between modes on it are a few notes. Evaluate on
   licensed real audio (see [Evaluation](evaluation.md)) before generalising.
 * Windowed refinement does not carry canonical raw evidence events.
-* The GUIs do not yet consume the live API.
+* The optional WebView2 workstation consumes the live API for ASIO capture,
+  live event display, canonical score updates, and in-capture edits. It offers
+  offline refinement as a separate reviewed proposal; non-conflicting changes
+  may be applied directly, while changes against manual edits require an
+  individual approval. The native Win32 fallback retains its existing workflow.
+  End-to-end capture and refinement have not been verified on physical ASIO
+  hardware in this environment.

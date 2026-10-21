@@ -5,6 +5,7 @@
 #include "transcribe/transcriber.hpp"
 #include "transcribe/inference.hpp"
 #include "transcribe/live.hpp"
+#include "transcribe/score.hpp"
 
 #include <algorithm>
 #include <array>
@@ -36,6 +37,7 @@ struct Options {
     std::filesystem::path tab{"transcription.txt"};
     std::optional<std::filesystem::path> midi;
     std::optional<std::filesystem::path> json;
+    std::optional<std::filesystem::path> score_project;
     std::filesystem::path model;
     std::string backend;
     std::filesystem::path output_directory;
@@ -44,6 +46,8 @@ struct Options {
     std::optional<int> key_fifths;
     std::optional<bool> minor_key;
     std::optional<std::array<int, 2>> meter;
+    std::optional<double> pickup_quarters;
+    int written_transposition_semitones{};
     double capture_seconds{};
     double realtime_latency_ms{40.0};
     double minimum_confidence{0.25};
@@ -79,6 +83,7 @@ void print_usage(std::ostream& output) {
               "  --tab <path>                Guitar tablature output path\n"
               "  --midi <path>               Optional Standard MIDI output path\n"
               "  --json <path>               Write notes and analysis metadata as JSON\n"
+              "  --score-project <path>      Write a versioned editable score project\n"
               "  --model <path.onnx>         Use an ONNX model instead of built-in YIN\n"
               "  --backend <registry-id>     Opt-in offline model adapter (e.g. builtin:yin)\n"
               "  --provider <name>           ONNX provider: cpu, cuda, directml, or rocm\n"
@@ -94,7 +99,9 @@ void print_usage(std::ostream& output) {
               "  --tempo <40..240>           Override the score tempo in BPM\n"
               "  --key-fifths <-7..7>        Override the key signature (circle of fifths)\n"
               "  --mode <major|minor>        Set the key mode\n"
-              "  --meter <3/4|4/4|6/8>        Override the score time signature\n"
+              "  --meter <meter>              Override meter (e.g. 3/4, 4/4, 5/4, 6/8, 9/8)\n"
+              "  --pickup <quarters>          Set an implicit pickup measure length\n"
+              "  --written-transposition <n>  Written pitch offset in semitones (-48..48)\n"
               "  --latency-ms <20..50>       ASIO live-analysis latency target (default: 40)\n"
               "  --minimum-confidence <0..1> Drop notes below this confidence\n"
               "  --benchmark                 Report analysis time and real-time factor\n"
@@ -164,10 +171,18 @@ std::array<int, 6> parse_guitar_tuning(const std::string& value) {
 }
 
 std::array<int, 2> parse_meter(const std::string& value) {
-    if (value == "3/4") return {3, 4};
-    if (value == "4/4") return {4, 4};
-    if (value == "6/8") return {6, 8};
-    throw std::invalid_argument("Meter must be one of: 3/4, 4/4, 6/8.");
+    static constexpr std::array<std::array<int, 2>, 10> supported{{
+        {2, 4}, {3, 4}, {4, 4}, {5, 4}, {2, 8}, {3, 8}, {5, 8},
+        {6, 8}, {7, 8}, {9, 8}}};
+    for (const auto& meter : supported) {
+        if (value == std::to_string(meter[0]) + "/" + std::to_string(meter[1])) {
+            return meter;
+        }
+    }
+    if (value == "12/8") return {12, 8};
+    throw std::invalid_argument(
+        "Unsupported meter. Choose 2/4, 3/4, 4/4, 5/4, 2/8, 3/8, 5/8, "
+        "6/8, 7/8, 9/8, or 12/8.");
 }
 
 std::map<std::string, std::string> read_config(const std::filesystem::path& path) {
@@ -199,12 +214,13 @@ std::map<std::string, std::string> read_config(const std::filesystem::path& path
 }
 
 void apply_config(Options& options, const std::map<std::string, std::string>& values) {
-    static constexpr std::array<std::string_view, 28> supported_keys{
+    static constexpr std::array<std::string_view, 30> supported_keys{
         "input", "musicxml", "tab", "midi", "json", "model", "provider",
         "device-id", "latency-ms", "tempo", "key-fifths", "mode", "meter",
         "quality", "batch", "output-dir", "asio", "tuning", "capo",
         "tab-alternatives", "preserve-expressive-timing", "fast-preview",
-        "minimum-confidence", "polyphonic", "instrument", "benchmark", "quiet", "backend"};
+        "minimum-confidence", "polyphonic", "instrument", "benchmark", "quiet", "backend",
+        "pickup", "written-transposition"};
     for (const auto& [key, value] : values) {
         (void)value;
         if (std::find(supported_keys.begin(), supported_keys.end(), key) ==
@@ -265,6 +281,14 @@ void apply_config(Options& options, const std::map<std::string, std::string>& va
     const auto meter = values.find("meter");
     if (meter != values.end() && meter->second != "auto") {
         options.meter = parse_meter(meter->second);
+    }
+    const auto pickup = values.find("pickup");
+    if (pickup != values.end()) {
+        options.pickup_quarters = std::stod(pickup->second);
+    }
+    const auto written_transposition = values.find("written-transposition");
+    if (written_transposition != values.end()) {
+        options.written_transposition_semitones = std::stoi(written_transposition->second);
     }
     const auto quality = values.find("quality");
     if (quality != values.end()) {
@@ -365,6 +389,8 @@ Options parse_options(int argc, char* argv[]) {
             options.midi = next_value(i, argc, argv, argument);
         } else if (argument == "--json") {
             options.json = next_value(i, argc, argv, argument);
+        } else if (argument == "--score-project") {
+            options.score_project = next_value(i, argc, argv, argument);
         } else if (argument == "--model") {
             options.model = next_value(i, argc, argv, argument);
         } else if (argument == "--backend") {
@@ -396,6 +422,11 @@ Options parse_options(int argc, char* argv[]) {
             options.meter = meter == "auto"
                                 ? std::nullopt
                                 : std::optional(parse_meter(meter));
+        } else if (argument == "--pickup") {
+            options.pickup_quarters = std::stod(next_value(i, argc, argv, argument));
+        } else if (argument == "--written-transposition") {
+            options.written_transposition_semitones =
+                std::stoi(next_value(i, argc, argv, argument));
         } else if (argument == "--quality") {
             const auto quality = next_value(i, argc, argv, argument);
             if (quality == "high") {
@@ -486,6 +517,16 @@ Options parse_options(int argc, char* argv[]) {
     if (options.key_fifths &&
         (*options.key_fifths < -7 || *options.key_fifths > 7)) {
         throw std::invalid_argument("--key-fifths must be between -7 and 7.");
+    }
+    if (options.pickup_quarters &&
+        (!std::isfinite(*options.pickup_quarters) || *options.pickup_quarters <= 0.0 ||
+         *options.pickup_quarters > 16.0)) {
+        throw std::invalid_argument("--pickup must be greater than 0 and at most 16 quarters.");
+    }
+    if (options.written_transposition_semitones < -48 ||
+        options.written_transposition_semitones > 48) {
+        throw std::invalid_argument(
+            "--written-transposition must be between -48 and 48 semitones.");
     }
     if (!std::isfinite(options.realtime_latency_ms) ||
         options.realtime_latency_ms < 20.0 || options.realtime_latency_ms > 50.0) {
@@ -587,6 +628,19 @@ void write_json(const std::filesystem::path& path, const std::vector<transcribe:
     output << "  ]\n}\n";
     if (!output) {
         throw std::runtime_error("Failed while writing JSON output.");
+    }
+}
+
+void write_score_project(const std::filesystem::path& path,
+                         const transcribe::ScoreDocument& score) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("Could not create score project: " + path.string());
+    }
+    output << transcribe::serialize_score_document(score);
+    output << '\n';
+    if (!output) {
+        throw std::runtime_error("Failed while writing score project.");
     }
 }
 
@@ -866,7 +920,8 @@ void process_input(const std::filesystem::path& input_path, const Options& optio
                    const std::filesystem::path& musicxml_path,
                    const std::filesystem::path& tab_path,
                    const std::optional<std::filesystem::path>& midi_path,
-                   const std::optional<std::filesystem::path>& json_path) {
+                   const std::optional<std::filesystem::path>& json_path,
+                   const std::optional<std::filesystem::path>& score_project_path) {
     const auto report_progress = [&options](double progress) {
         if (!options.quiet) {
             std::cerr << '\r' << progress_bar(progress) << std::flush;
@@ -1026,42 +1081,77 @@ void process_input(const std::filesystem::path& input_path, const Options& optio
         throw std::runtime_error("No stable pitches were detected in " + input_path.string() + ".");
     }
 
-    auto metadata = transcribe::infer_score_metadata(notes);
-    if (options.tempo_bpm) {
-        metadata.tempo_bpm = *options.tempo_bpm;
-        metadata.tempo_confidence = 1.0;
-        metadata.tempo_inferred = true;
-    }
-    if (options.key_fifths) {
-        metadata.key_fifths = *options.key_fifths;
-        metadata.key_confidence = 1.0;
-        metadata.key_inferred = true;
-    }
-    if (options.minor_key) {
-        metadata.minor_key = *options.minor_key;
-        metadata.key_confidence = 1.0;
-        metadata.key_inferred = true;
-    }
+    transcribe::InterpretationOptions interpretation_options;
+    interpretation_options.tempo_bpm = options.tempo_bpm;
     if (options.meter) {
-        metadata.time_numerator = (*options.meter)[0];
-        metadata.time_denominator = (*options.meter)[1];
-        metadata.meter_confidence = 1.0;
-        metadata.meter_inferred = true;
+        interpretation_options.meter = transcribe::MeterConstraint{
+            (*options.meter)[0], (*options.meter)[1], {}};
     }
-    transcribe::write_musicxml(musicxml_path, notes, metadata, options.guitar_tab,
+    interpretation_options.key_fifths = options.key_fifths;
+    interpretation_options.minor_key = options.minor_key;
+    interpretation_options.pickup_quarters = options.pickup_quarters;
+    interpretation_options.written_transposition_semitones =
+        options.written_transposition_semitones;
+    switch (options.instrument) {
+    case transcribe::InstrumentPrior::Guitar:
+        interpretation_options.instrument = "Guitar";
+        break;
+    case transcribe::InstrumentPrior::Piano:
+        interpretation_options.instrument = "Piano";
+        break;
+    case transcribe::InstrumentPrior::Voice:
+        interpretation_options.instrument = "Voice";
+        break;
+    case transcribe::InstrumentPrior::None:
+        break;
+    }
+    const auto interpretation = transcribe::interpret_notes(notes, interpretation_options);
+    if (interpretation.hypotheses.empty()) {
+        throw std::runtime_error("Musical interpretation produced no score hypothesis.");
+    }
+    const auto metadata =
+        transcribe::metadata_for_hypothesis(interpretation.hypotheses.front());
+    auto score = transcribe::make_score_document(
+        interpretation, 0, input_path.string(), metadata, options.guitar_tab);
+    auto score_note_values = transcribe::score_notes(score);
+    const auto fingering =
+        transcribe::assign_guitar_tab_fingerings(score_note_values, options.guitar_tab);
+    for (const auto& position : fingering.positions) {
+        if (position.note_index >= score.notes.size()) {
+            throw std::runtime_error("Guitar tablature assignment returned an invalid note index.");
+        }
+        auto tab = std::find_if(score.tab_notes.begin(), score.tab_notes.end(),
+            [&](const auto& candidate) {
+                return candidate.notation_note_id ==
+                    score.notes[position.note_index].id;
+            });
+        if (tab != score.tab_notes.end() &&
+            position.string_number > 0 && position.fret >= 0) {
+            tab->string_number = position.string_number;
+            tab->fret = position.fret;
+            tab->manually_corrected = position.manually_corrected;
+        }
+    }
+    transcribe::write_musicxml(musicxml_path, score,
                                options.preserve_expressive_timing);
-    transcribe::write_guitar_tab(tab_path, notes, options.guitar_tab);
+    transcribe::write_guitar_tab(tab_path, score, options.guitar_tab);
     if (midi_path) {
-        transcribe::write_midi(*midi_path, notes, metadata);
+        transcribe::write_midi(*midi_path, score);
     }
     if (json_path) {
         write_json(*json_path, notes, metadata);
+    }
+    if (score_project_path) {
+        write_score_project(*score_project_path, score);
     }
 
     if (!options.quiet) {
         std::cout << input_path.string() << ": " << notes.size() << " notes\n"
                   << "  Tempo: ";
-        if (metadata.tempo_inferred) {
+        if (options.tempo_bpm) {
+            std::cout << std::fixed << std::setprecision(1) << metadata.tempo_bpm
+                      << " BPM (user supplied)";
+        } else if (metadata.tempo_inferred) {
             std::cout << std::fixed << std::setprecision(1) << metadata.tempo_bpm
                       << " BPM (confidence " << std::setprecision(2)
                       << metadata.tempo_confidence << ')';
@@ -1069,7 +1159,10 @@ void process_input(const std::filesystem::path& input_path, const Options& optio
             std::cout << "insufficient onset evidence (120 BPM default)";
         }
         std::cout << "\n  Meter: ";
-        if (metadata.meter_inferred) {
+        if (options.meter) {
+            std::cout << metadata.time_numerator << '/' << metadata.time_denominator
+                      << " (user supplied)";
+        } else if (metadata.meter_inferred) {
             std::cout << metadata.time_numerator << '/' << metadata.time_denominator
                       << " (confidence " << std::setprecision(2)
                       << metadata.meter_confidence << ')';
@@ -1077,7 +1170,9 @@ void process_input(const std::filesystem::path& input_path, const Options& optio
             std::cout << "uncertain (4/4 default)";
         }
         std::cout << "\n  Key: ";
-        if (metadata.key_inferred) {
+        if (options.key_fifths || options.minor_key) {
+            std::cout << key_name(metadata) << " (user constrained)";
+        } else if (metadata.key_inferred) {
             std::cout << key_name(metadata) << " (confidence " << std::setprecision(2)
                       << metadata.key_confidence << ')';
         } else {
@@ -1090,6 +1185,9 @@ void process_input(const std::filesystem::path& input_path, const Options& optio
         }
         if (json_path) {
             std::cout << "  JSON: " << json_path->string() << '\n';
+        }
+        if (score_project_path) {
+            std::cout << "  Score project: " << score_project_path->string() << '\n';
         }
         if (options.benchmark) {
             std::cout << std::fixed << std::setprecision(3)
@@ -1124,7 +1222,7 @@ void process_single(const Options& options) {
     const auto input_path = options.asio ? std::filesystem::path("ASIO input")
                                          : *options.input;
     process_input(input_path, options, options.musicxml, options.tab, options.midi,
-                  options.json);
+                  options.json, options.score_project);
 }
 
 void process_batch(const Options& options) {
@@ -1168,7 +1266,10 @@ void process_batch(const Options& options) {
                           options.midi ? std::optional(output_directory / (stem + ".mid"))
                                        : std::nullopt,
                           options.json ? std::optional(output_directory / (stem + ".json"))
-                                       : std::nullopt);
+                                       : std::nullopt,
+                          options.score_project
+                              ? std::optional(output_directory / (stem + ".score.json"))
+                              : std::nullopt);
         } catch (const std::exception& error) {
             ++failures;
             std::cerr << file.string() << ": " << error.what() << '\n';

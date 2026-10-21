@@ -1,136 +1,24 @@
 #include "transcribe/guitar_tab.hpp"
+#include "transcribe/score.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
-#include <limits>
-#include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 namespace transcribe {
 namespace {
 
-struct FretPosition {
-    int string;
-    int fret;
-    double cost{};
-};
-
-struct Fingering {
-    double cost{};
-    std::vector<FretPosition> positions;
-};
-
 struct TabEvent {
     double start{};
     double duration{};
     std::array<std::string, 6> strings;
-    std::vector<std::size_t> note_indices;
-    std::vector<std::vector<FretPosition>> alternatives;
 };
-
-std::vector<FretPosition> candidates_for(int midi_pitch, const GuitarTabOptions& options) {
-    std::vector<FretPosition> candidates;
-    for (std::size_t string = 0; string < options.tuning.size(); ++string) {
-        const int fret = midi_pitch - options.tuning[string] - options.capo_fret;
-        if (fret >= 0 && fret <= options.maximum_fret) {
-            candidates.push_back({static_cast<int>(string), fret});
-        }
-    }
-    return candidates;
-}
-
-double position_cost(const FretPosition& candidate, double previous_position,
-                     const GuitarTabOptions& options) {
-    const double preferred_distance =
-        std::abs(candidate.fret - options.preferred_position);
-    const double shift = std::abs(candidate.fret - previous_position);
-    return 0.12 * candidate.fret + 0.75 * preferred_distance +
-           options.position_shift_cost * shift + 0.1 * candidate.string;
-}
-
-std::vector<Fingering> assign_group(const std::vector<const Note*>& group,
-                                    double previous_position,
-                                    const GuitarTabOptions& options,
-                                    std::size_t maximum_solutions,
-                                    const std::vector<std::array<bool, 6>>&
-                                        blocked_strings = {},
-                                    const std::vector<std::optional<FretPosition>>&
-                                        fixed_positions = {}) {
-    std::vector<FretPosition> current(group.size(), {-1, -1, 0.0});
-    std::vector<bool> occupied(options.tuning.size(), false);
-    std::vector<Fingering> solutions;
-    const std::size_t assignable = std::min(group.size(), options.tuning.size());
-
-    const auto search = [&](auto&& self, std::size_t index, double cost) -> void {
-        if (index == assignable) {
-            int minimum_fret = options.maximum_fret;
-            int maximum_fret = 0;
-            for (std::size_t i = 0; i < assignable; ++i) {
-                minimum_fret = std::min(minimum_fret, current[i].fret);
-                maximum_fret = std::max(maximum_fret, current[i].fret);
-            }
-            cost += std::max(0, maximum_fret - minimum_fret - 4) * 1.5;
-            solutions.push_back({cost, current});
-            std::stable_sort(solutions.begin(), solutions.end(),
-                             [](const Fingering& left, const Fingering& right) {
-                                 return left.cost < right.cost;
-                             });
-            if (solutions.size() > maximum_solutions) {
-                solutions.pop_back();
-            }
-            return;
-        }
-        auto candidates = candidates_for(group[index]->midi_pitch, options);
-        if (index < fixed_positions.size() && fixed_positions[index]) {
-            candidates = {*fixed_positions[index]};
-        }
-        for (const auto& candidate : candidates) {
-            const auto string = static_cast<std::size_t>(candidate.string);
-            if (occupied[string] ||
-                (index < blocked_strings.size() &&
-                 blocked_strings[index][string])) {
-                continue;
-            }
-            const auto scored = FretPosition{
-                candidate.string, candidate.fret,
-                position_cost(candidate, previous_position, options)};
-            occupied[static_cast<std::size_t>(candidate.string)] = true;
-            current[index] = scored;
-            self(self, index + 1, cost + scored.cost);
-            occupied[static_cast<std::size_t>(candidate.string)] = false;
-        }
-    };
-    search(search, 0, 0.0);
-
-    if (solutions.empty()) {
-        Fingering fallback;
-        fallback.positions.resize(group.size(), {-1, -1, 0.0});
-        std::vector<bool> fallback_occupied(options.tuning.size(), false);
-        for (std::size_t i = 0; i < assignable; ++i) {
-            auto candidates = candidates_for(group[i]->midi_pitch, options);
-            if (i < fixed_positions.size() && fixed_positions[i]) {
-                candidates = {*fixed_positions[i]};
-            }
-            for (const auto& candidate : candidates) {
-                const auto string = static_cast<std::size_t>(candidate.string);
-                if (fallback_occupied[string] ||
-                    (i < blocked_strings.size() && blocked_strings[i][string])) {
-                    continue;
-                }
-                fallback.positions[i] = candidate;
-                fallback_occupied[string] = true;
-                break;
-            }
-        }
-        solutions.push_back(std::move(fallback));
-    }
-    return solutions;
-}
 
 void validate_options(const GuitarTabOptions& options) {
     if (options.maximum_fret < 0 || options.maximum_fret > 36) {
@@ -178,120 +66,24 @@ std::vector<std::vector<std::size_t>> note_groups(
 
 } // namespace
 
-std::vector<GuitarTabPosition> assign_guitar_tab_positions(
+FingeringResult assign_guitar_tab_fingerings(
     const std::vector<Note>& notes, const GuitarTabOptions& options) {
     validate_options(options);
-    std::vector<std::size_t> ordered_indices(notes.size());
-    for (std::size_t i = 0; i < ordered_indices.size(); ++i) {
-        ordered_indices[i] = i;
-    }
-    std::stable_sort(ordered_indices.begin(), ordered_indices.end(),
-                     [&notes](std::size_t left, std::size_t right) {
-                         return notes[left].start_seconds < notes[right].start_seconds;
-                     });
+    FingeringOptions fingering_options;
+    fingering_options.tuning = options.tuning;
+    fingering_options.capo_fret = options.capo_fret;
+    fingering_options.maximum_fret = options.maximum_fret;
+    fingering_options.preferred_position = options.preferred_position;
+    fingering_options.position_shift_cost = options.position_shift_cost;
+    fingering_options.maximum_alternatives = options.alternative_fingerings;
+    fingering_options.position_overrides = options.position_overrides;
+    fingering_options.manual_corrections = options.manual_corrections;
+    return assign_fingerings(notes, fingering_options);
+}
 
-    std::vector<GuitarTabPosition> result(notes.size());
-    for (std::size_t i = 0; i < result.size(); ++i) {
-        result[i].note_index = i;
-        result[i].string_number = 0;
-        result[i].fret = -1;
-    }
-    std::vector<std::optional<FretPosition>> fixed_positions(notes.size());
-    for (const auto& position : options.position_overrides) {
-        if (position.note_index >= notes.size() ||
-            fixed_positions[position.note_index] ||
-            position.string_number < 1 ||
-            position.string_number > static_cast<int>(options.tuning.size()) ||
-            position.fret < 0 || position.fret > options.maximum_fret) {
-            throw std::invalid_argument("A guitar tab position override is invalid.");
-        }
-        const auto string_index = static_cast<std::size_t>(position.string_number - 1);
-        if (notes[position.note_index].midi_pitch !=
-            options.tuning[string_index] + options.capo_fret + position.fret) {
-            throw std::invalid_argument(
-                "A guitar tab position override does not match its note pitch.");
-        }
-        fixed_positions[position.note_index] =
-            FretPosition{static_cast<int>(string_index), position.fret, 0.0};
-    }
-    for (std::size_t left = 0; left < notes.size(); ++left) {
-        if (!fixed_positions[left]) {
-            continue;
-        }
-        const double left_end =
-            notes[left].start_seconds + notes[left].duration_seconds;
-        for (std::size_t right = left + 1; right < notes.size(); ++right) {
-            if (!fixed_positions[right] ||
-                fixed_positions[left]->string != fixed_positions[right]->string) {
-                continue;
-            }
-            const double right_end =
-                notes[right].start_seconds + notes[right].duration_seconds;
-            if (notes[left].start_seconds < right_end &&
-                notes[right].start_seconds < left_end) {
-                throw std::invalid_argument(
-                    "Overlapping notes cannot use the same overridden guitar string.");
-            }
-        }
-    }
-
-    struct ActivePosition {
-        double end_seconds{};
-        int string{};
-    };
-    std::vector<ActivePosition> active_positions;
-    double previous_position = options.preferred_position;
-    for (const auto& group_indices : note_groups(notes, ordered_indices)) {
-        const double group_start = notes[group_indices.front()].start_seconds;
-        active_positions.erase(
-            std::remove_if(active_positions.begin(), active_positions.end(),
-                           [group_start](const ActivePosition& active) {
-                               return active.end_seconds <= group_start;
-                           }),
-            active_positions.end());
-        std::vector<const Note*> group;
-        std::vector<std::array<bool, 6>> blocked_strings(
-            group_indices.size(), std::array<bool, 6>{});
-        std::vector<std::optional<FretPosition>> group_fixed_positions;
-        group.reserve(group_indices.size());
-        group_fixed_positions.reserve(group_indices.size());
-        for (std::size_t index = 0; index < group_indices.size(); ++index) {
-            const auto note_index = group_indices[index];
-            for (const auto& active : active_positions) {
-                if (active.end_seconds > notes[note_index].start_seconds) {
-                    blocked_strings[index][static_cast<std::size_t>(active.string)] = true;
-                }
-            }
-            if (fixed_positions[note_index] &&
-                blocked_strings[index][static_cast<std::size_t>(
-                    fixed_positions[note_index]->string)]) {
-                throw std::invalid_argument(
-                    "An overridden guitar string is occupied by an overlapping note.");
-            }
-            group_fixed_positions.push_back(fixed_positions[note_index]);
-            group.push_back(&notes[note_index]);
-        }
-        const auto solutions = assign_group(group, previous_position, options, 1,
-                                            blocked_strings,
-                                            group_fixed_positions);
-        const auto& positions = solutions.front().positions;
-        for (std::size_t i = 0; i < group_indices.size(); ++i) {
-            const auto& position = positions[i];
-            result[group_indices[i]].string_number =
-                position.string < 0 ? 0 : position.string + 1;
-            result[group_indices[i]].fret = position.fret;
-            if (position.fret >= 0) {
-                previous_position = (previous_position + position.fret) * 0.5;
-                const auto& note = notes[group_indices[i]];
-                if (note.duration_seconds > 0.0) {
-                    active_positions.push_back(
-                        {note.start_seconds + note.duration_seconds,
-                         position.string});
-                }
-            }
-        }
-    }
-    return result;
+std::vector<GuitarTabPosition> assign_guitar_tab_positions(
+    const std::vector<Note>& notes, const GuitarTabOptions& options) {
+    return assign_guitar_tab_fingerings(notes, options).positions;
 }
 
 void write_guitar_tab(const std::filesystem::path& path, const std::vector<Note>& notes) {
@@ -300,9 +92,43 @@ void write_guitar_tab(const std::filesystem::path& path, const std::vector<Note>
 
 void write_guitar_tab(const std::filesystem::path& path, const std::vector<Note>& notes,
                       const GuitarTabOptions& requested_options) {
+    const auto fingering =
+        assign_guitar_tab_fingerings(notes, requested_options);
+    write_guitar_tab(path, notes, requested_options, fingering);
+}
+
+void write_guitar_tab(const std::filesystem::path& path,
+                      const std::vector<Note>& notes,
+                      const GuitarTabOptions& requested_options,
+                      const FingeringResult& fingering) {
     validate_options(requested_options);
-    const auto assigned_positions =
-        assign_guitar_tab_positions(notes, requested_options);
+    if (fingering.positions.size() != notes.size() ||
+        fingering.notes.size() != notes.size()) {
+        throw std::invalid_argument(
+            "The supplied fingering does not match the note sequence.");
+    }
+    for (std::size_t index = 0; index < notes.size(); ++index) {
+        const auto& position = fingering.positions[index];
+        if (position.note_index != index || position.string_number < 0 ||
+            position.string_number > 6 ||
+            (position.string_number == 0 && position.fret != -1) ||
+            (position.string_number > 0 &&
+             (position.fret < 0 ||
+              position.fret > requested_options.maximum_fret ||
+              requested_options.tuning[position.string_number - 1] +
+                      requested_options.capo_fret + position.fret !=
+                  notes[index].midi_pitch))) {
+            throw std::invalid_argument(
+                "The supplied fingering contains an invalid note position.");
+        }
+    }
+    for (const auto& alternative : fingering.alternatives) {
+        if (alternative.positions.size() != notes.size()) {
+            throw std::invalid_argument(
+                "A supplied fingering alternative does not match the note sequence.");
+        }
+    }
+    const auto& assigned_positions = fingering.positions;
 
     std::ofstream output(path, std::ios::binary);
     if (!output) {
@@ -319,32 +145,19 @@ void write_guitar_tab(const std::filesystem::path& path, const std::vector<Note>
                      });
 
     std::vector<TabEvent> events;
-    double previous_position = requested_options.preferred_position;
     for (const auto& group_indices : note_groups(notes, ordered_indices)) {
-        std::vector<const Note*> group;
-        group.reserve(group_indices.size());
-        for (const auto index : group_indices) {
-            group.push_back(&notes[index]);
-        }
-        const auto solutions = assign_group(
-            group, previous_position, requested_options,
-            requested_options.alternative_fingerings + 1);
         TabEvent event;
-        event.start = group.front()->start_seconds;
-        event.note_indices = group_indices;
-        for (std::size_t alternative = 1; alternative < solutions.size(); ++alternative) {
-            event.alternatives.push_back(solutions[alternative].positions);
-        }
-        for (std::size_t i = 0; i < group.size(); ++i) {
+        event.start = notes[group_indices.front()].start_seconds;
+        for (std::size_t i = 0; i < group_indices.size(); ++i) {
             const auto& position = assigned_positions[group_indices[i]];
-            event.duration = std::max(event.duration, group[i]->duration_seconds);
+            event.duration =
+                std::max(event.duration, notes[group_indices[i]].duration_seconds);
             if (position.string_number < 1) {
                 continue;
             }
             const auto string = static_cast<std::size_t>(position.string_number - 1);
             event.strings[string] =
                 std::to_string(position.fret);
-            previous_position = (previous_position + position.fret) * 0.5;
         }
         events.push_back(std::move(event));
     }
@@ -409,40 +222,121 @@ void write_guitar_tab(const std::filesystem::path& path, const std::vector<Note>
         output << "Capo: fret " << requested_options.capo_fret << '\n';
     }
     output << "Fingering, legato marks, and rhythm are approximate.\n";
+    if (fingering.search_truncated) {
+        output << "Warning: the bounded fingering search reached its per-chord "
+                  "visit limit; review the assignments.\n";
+    }
     for (auto& line : lines) {
         output << line.str() << "|\n";
     }
     output << "\nNotes:\n";
     for (const auto index : ordered_indices) {
         const auto* note = &notes[index];
+        const auto& assignment = fingering.notes[index];
         output << std::fixed << std::setprecision(2) << note->start_seconds << "s  "
                << note->name << "  " << note->duration_seconds << "s  confidence "
-               << std::setprecision(2) << note->confidence << '\n';
+               << std::setprecision(2) << note->confidence << "  ";
+        if (!assignment.playable) {
+            output << "fingering unassigned";
+        } else {
+            output << "string " << assignment.position.string_number
+                   << " fret " << assignment.position.fret;
+            if (assignment.ambiguous) output << " (ambiguous)";
+            if (assignment.position.manually_corrected) output << " (manual)";
+        }
+        if (assignment.correction_rejected) {
+            output << " (saved correction rejected)";
+        }
+        output << '\n';
     }
     if (requested_options.alternative_fingerings > 0) {
         output << "\nAlternative fingerings:\n";
-        for (const auto& event : events) {
-            for (std::size_t alternative = 0;
-                 alternative < event.alternatives.size(); ++alternative) {
-                output << std::fixed << std::setprecision(2) << event.start << "s option "
-                       << alternative + 1 << ':';
-                for (std::size_t i = 0; i < event.note_indices.size(); ++i) {
-                    const auto& position = event.alternatives[alternative][i];
-                    output << ' ' << notes[event.note_indices[i]].name << '=';
-                    if (position.string < 0) {
-                        output << "unplayable";
-                    } else {
-                        output << "string " << position.string + 1 << " fret "
-                               << position.fret;
-                    }
+        for (std::size_t index = 0; index < fingering.alternatives.size(); ++index) {
+            const auto& alternative = fingering.alternatives[index];
+            const auto& cost = alternative.cost;
+            output << std::fixed << std::setprecision(2)
+                   << "Option " << index + 1 << " cost=" << cost.total()
+                   << " (fret=" << cost.fret_height
+                   << ", preferred=" << cost.preferred_position
+                   << ", hand movement=" << cost.hand_movement
+                   << ", string preference=" << cost.string_preference
+                   << ", chord stretch=" << cost.chord_stretch
+                   << ", unassigned=" << cost.unassigned_notes << "):";
+            for (const auto note_index : ordered_indices) {
+                const auto& position = alternative.positions[note_index];
+                output << ' ' << notes[note_index].name << '=';
+                if (position.string_number < 1) {
+                    output << "unplayable";
+                } else {
+                    output << "string " << position.string_number << " fret "
+                           << position.fret;
                 }
-                output << '\n';
             }
+            output << '\n';
         }
     }
     if (!output) {
         throw std::runtime_error("Failed while writing tablature output.");
     }
+}
+
+void write_guitar_tab(const std::filesystem::path& path,
+                      const ScoreDocument& score,
+                      const GuitarTabOptions& requested_options) {
+    validate_score_document(score);
+    if (score.instrument.tuning.size() != requested_options.tuning.size()) {
+        throw std::invalid_argument(
+            "ASCII tablature export requires exactly six configured guitar strings.");
+    }
+
+    auto options = requested_options;
+    std::copy(score.instrument.tuning.begin(), score.instrument.tuning.end(),
+              options.tuning.begin());
+    options.capo_fret = score.instrument.capo_fret;
+
+    auto notes = score_notes(score);
+    std::vector<const ScoreNote*> ordered_score_notes;
+    ordered_score_notes.reserve(score.notes.size());
+    for (const auto& note : score.notes) ordered_score_notes.push_back(&note);
+    std::stable_sort(ordered_score_notes.begin(), ordered_score_notes.end(),
+        [](const auto* left, const auto* right) {
+            if (left->onset_quarters != right->onset_quarters) {
+                return left->onset_quarters < right->onset_quarters;
+            }
+            if (left->sounding_midi_pitch != right->sounding_midi_pitch) {
+                return left->sounding_midi_pitch < right->sounding_midi_pitch;
+            }
+            return left->id < right->id;
+        });
+
+    std::unordered_map<std::string, const ScoreTabNote*> tab_by_note;
+    tab_by_note.reserve(score.tab_notes.size());
+    for (const auto& tab : score.tab_notes) {
+        tab_by_note.emplace(tab.notation_note_id, &tab);
+    }
+
+    FingeringResult fingering;
+    fingering.positions.reserve(notes.size());
+    fingering.notes.reserve(notes.size());
+    fingering.fully_playable = true;
+    for (std::size_t index = 0; index < ordered_score_notes.size(); ++index) {
+        const auto* note = ordered_score_notes[index];
+        const auto found = tab_by_note.find(note->id);
+        GuitarTabPosition position{index, 0, -1, false};
+        if (found != tab_by_note.end() && found->second->string_number &&
+            found->second->fret) {
+            position.string_number = *found->second->string_number;
+            position.fret = *found->second->fret;
+            position.manually_corrected = found->second->manually_corrected;
+        }
+        FingeringNoteResult note_result;
+        note_result.position = position;
+        note_result.playable = position.string_number > 0;
+        fingering.fully_playable &= note_result.playable;
+        fingering.positions.push_back(position);
+        fingering.notes.push_back(std::move(note_result));
+    }
+    write_guitar_tab(path, notes, options, fingering);
 }
 
 } // namespace transcribe

@@ -254,10 +254,22 @@ void TranscriptionDocument::resync(const std::vector<LiveNote>& snapshot) {
     requires_resync_ = false;
 }
 
-std::string TranscriptionDocument::add_manual_note(LiveNote note, const std::string& reason) {
-    note.id = "manual-" + std::to_string(++manual_serial_);
+std::string TranscriptionDocument::add_manual_note(LiveNote note,
+                                                   const std::string& reason,
+                                                   std::string stable_id) {
+    if (stable_id.empty()) stable_id = "manual-" + std::to_string(++manual_serial_);
+    note.id = std::move(stable_id);
     note.sample_rate = note.sample_rate ? note.sample_rate : sample_rate_;
     note.state = EventLifecycle::ManuallyCorrected;
+    if (auto* existing = find(note.id)) {
+        if (!existing->manual ||
+            existing->current.state != EventLifecycle::Rejected) {
+            throw std::invalid_argument("Duplicate note id: " + note.id);
+        }
+        existing->current = note;
+        record(*existing, RevisionOrigin::Manual, note, reason);
+        return note.id;
+    }
     index_.emplace(note.id, records_.size());
     records_.push_back({note, {}, true});
     record(records_.back(), RevisionOrigin::Manual, note, reason);
@@ -309,12 +321,29 @@ ProposalReview TranscriptionDocument::review(const ScoreProposal& proposal,
                 best = i;
             }
         }
+        if (!best) {
+            for (std::size_t i = 0; i < records_.size(); ++i) {
+                const auto& record = records_[i];
+                const auto& current = record.current;
+                if (matched[i] || !record.manual ||
+                    current.state == EventLifecycle::Rejected ||
+                    frame_distance(current.onset_frame, proposed.onset_frame) > tolerance) {
+                    continue;
+                }
+                if (!best || frame_distance(current.onset_frame, proposed.onset_frame) <
+                        frame_distance(records_[*best].current.onset_frame,
+                                       proposed.onset_frame)) {
+                    best = i;
+                }
+            }
+        }
         if (best) {
             matched[*best] = true;
             const auto& current = records_[*best].current;
             const bool same_offset = current.offset_frame && proposed.offset_frame &&
                 frame_distance(*current.offset_frame, *proposed.offset_frame) <= timing_tolerance;
-            if (frame_distance(current.onset_frame, proposed.onset_frame) > timing_tolerance ||
+            if (current.midi_pitch != proposed.midi_pitch ||
+                frame_distance(current.onset_frame, proposed.onset_frame) > timing_tolerance ||
                 !same_offset) {
                 add_change({{}, ProposedChangeKind::Modify, current.id, current, proposed,
                             records_[*best].manual});

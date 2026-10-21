@@ -252,6 +252,8 @@ public:
     std::uint64_t ingested_frames() const;
     // Mono downmix on the recording timeline; gaps are zero-filled.
     AudioBuffer recording() const;
+    // Copies only the newest requested mono frames for bounded-rate UI previews.
+    AudioBuffer recording_tail(std::size_t maximum_frames) const;
     const LiveOptions& options() const noexcept;
 
 private:
@@ -333,7 +335,8 @@ public:
     void apply(const LiveEvent& event);
     void apply(const EventBatch& batch);
     void resync(const std::vector<LiveNote>& snapshot);
-    std::string add_manual_note(LiveNote note, const std::string& reason = "manual add");
+    std::string add_manual_note(LiveNote note, const std::string& reason = "manual add",
+                                std::string stable_id = {});
     void edit_manual_note(const LiveNote& note, const std::string& reason = "manual edit");
     void delete_manual_note(const std::string& id, const std::string& reason = "manual delete");
 

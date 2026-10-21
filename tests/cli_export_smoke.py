@@ -29,7 +29,8 @@ def main():
     help_result = subprocess.run(
         [str(executable), "--help"], check=True, capture_output=True, text=True
     )
-    for flag in ("--live", "--quality", "--tempo", "--key-fifths", "--mode", "--meter", "--backend"):
+    for flag in ("--live", "--quality", "--tempo", "--key-fifths", "--mode", "--meter",
+                 "--pickup", "--written-transposition", "--backend", "--score-project"):
         require(flag in help_result.stdout, f"CLI help is missing {flag}")
     live_validation = subprocess.run(
         [str(executable), "--live", "0"], capture_output=True, text=True
@@ -76,6 +77,7 @@ def main():
         tab = output / "score.tab.txt"
         midi = output / "score.mid"
         notes_json = output / "notes.json"
+        score_project = output / "score-project.json"
         result = subprocess.run(
             [
                 str(executable),
@@ -92,6 +94,8 @@ def main():
                 "minor",
                 "--meter",
                 "3/4",
+                "--pickup",
+                "1",
                 "--musicxml",
                 str(musicxml),
                 "--tab",
@@ -100,6 +104,8 @@ def main():
                 str(midi),
                 "--json",
                 str(notes_json),
+                "--score-project",
+                str(score_project),
                 "--quiet",
             ],
             capture_output=True,
@@ -107,12 +113,20 @@ def main():
         )
         require(result.returncode == 0, f"CLI export failed:\n{result.stderr}")
 
-        for path in (musicxml, tab, midi, notes_json):
+        for path in (musicxml, tab, midi, notes_json, score_project):
             require(path.is_file() and path.stat().st_size > 0, f"Missing output: {path.name}")
 
         exported = ET.parse(musicxml).getroot()
         require(exported.tag == "score-partwise", "MusicXML root is not score-partwise")
         result_json = json.loads(notes_json.read_text(encoding="utf-8"))
+        canonical_project = json.loads(score_project.read_text(encoding="utf-8"))
+        require(canonical_project["schema_version"] == 1,
+                "Score project schema version is missing or unsupported")
+        require(canonical_project["notes"] and canonical_project["source_events"],
+                "Score project is missing canonical notes or source-event provenance")
+        require(canonical_project["tab_notes"][0]["notation_note_id"] ==
+                canonical_project["notes"][0]["id"],
+                "Score project tablature does not link to its notation note")
         score_parts = exported.findall("./part-list/score-part")
         require(len(score_parts) >= 2, "MusicXML lacks synchronized notation/tab parts")
         notation_id = score_parts[0].attrib["id"]
@@ -133,6 +147,10 @@ def main():
             and notation.findtext(".//attributes/time/beat-type") == "4",
             "MusicXML meter override was not applied",
         )
+        require(
+            notation.find("./measure").attrib.get("implicit") == "yes",
+            "MusicXML pickup measure was not marked implicit",
+        )
         sound = exported.find(".//sound")
         require(sound is not None and float(sound.attrib["tempo"]) == 96.0,
                 "MusicXML tempo override was not applied")
@@ -149,6 +167,44 @@ def main():
                 "JSON meter does not match the CLI override")
         require(midi.read_bytes().startswith(b"MThd"), "MIDI header is invalid")
         require(tab.read_text(encoding="utf-8").strip(), "Tab export is empty")
+
+        transposed_musicxml = output / "transposed.musicxml"
+        transposed = subprocess.run(
+            [
+                str(executable), str(audio), "--quiet",
+                "--meter", "9/8", "--pickup", "0.5",
+                "--written-transposition", "2",
+                "--musicxml", str(transposed_musicxml),
+                "--tab", str(output / "transposed.tab"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        require(transposed.returncode == 0, f"Constrained score export failed:\n{transposed.stderr}")
+        transposed_root = ET.parse(transposed_musicxml).getroot()
+        transposed_parts = transposed_root.findall("./part-list/score-part")
+        transposed_notation = transposed_root.find(
+            f"./part[@id='{transposed_parts[0].attrib['id']}']"
+        )
+        require(transposed_notation is not None, "Transposed notation part is missing")
+        require(
+            transposed_notation.findtext(".//attributes/time/beats") == "9"
+            and transposed_notation.findtext(".//attributes/time/beat-type") == "8",
+            "Compound meter override was not applied",
+        )
+        require(
+            transposed_notation.find("./measure").attrib.get("implicit") == "yes",
+            "Constrained pickup was not written as an implicit measure",
+        )
+        require(
+            transposed_notation.findtext(".//attributes/transpose/chromatic") == "-2",
+            "Written transposition was not represented in MusicXML",
+        )
+        require(
+            pitches_in_part(transposed_notation) == {pitch + 2 for pitch in json_pitches},
+            "Written transposition did not shift notation pitches by two semitones",
+        )
 
         batch_input = output / "batch-input"
         batch_output = output / "batch-output"

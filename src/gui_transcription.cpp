@@ -126,13 +126,59 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
     }
 
     Result result;
-    result.metadata = infer_score_metadata(notes);
-    result.notes = std::move(notes);
-    write_musicxml(request.musicxml_path, result.notes, result.metadata,
-                   request.guitar_tab_options, request.preserve_expressive_timing);
-    write_guitar_tab(request.tab_path, result.notes, request.guitar_tab_options);
-    if (!request.midi_path.empty()) {
-        write_midi(request.midi_path, result.notes, result.metadata);
+    auto interpretation_options = request.interpretation_options;
+    if (request.instrument == InstrumentPrior::Guitar) {
+        interpretation_options.instrument = "Guitar";
+    } else if (request.instrument == InstrumentPrior::Piano) {
+        interpretation_options.instrument = "Piano";
+    } else if (request.instrument == InstrumentPrior::Voice) {
+        interpretation_options.instrument = "Voice";
+    }
+    const auto interpretation = interpret_notes(notes, interpretation_options);
+    if (interpretation.hypotheses.empty()) {
+        throw std::runtime_error("Musical interpretation produced no score hypothesis.");
+    }
+    result.metadata = metadata_for_hypothesis(interpretation.hypotheses.front());
+    result.score = make_score_document(
+        interpretation, 0,
+        request.use_asio ? "live-capture" : request.input_path.string(),
+        result.metadata,
+        request.guitar_tab_options);
+    result.notes = score_notes(result.score);
+    result.fingering =
+        assign_guitar_tab_fingerings(result.notes, request.guitar_tab_options);
+    for (const auto& position : result.fingering.positions) {
+        if (position.note_index >= result.notes.size() ||
+            position.note_index >= result.score.notes.size()) {
+            throw std::runtime_error("Guitar tablature assignment returned an invalid note index.");
+        }
+        auto tab = std::find_if(result.score.tab_notes.begin(),
+                                result.score.tab_notes.end(),
+            [&](const auto& candidate) {
+                return candidate.notation_note_id ==
+                    result.score.notes[position.note_index].id;
+            });
+        if (tab != result.score.tab_notes.end() &&
+            position.string_number > 0 && position.fret >= 0) {
+            tab->string_number = position.string_number;
+            tab->fret = position.fret;
+            tab->manually_corrected = position.manually_corrected;
+        }
+    }
+    if (!request.proposal_only) {
+#ifdef TRANSCRIBE_ENABLE_VEROVIO
+        write_musicxml(request.musicxml_path, result.score,
+                       request.preserve_expressive_timing,
+                       &result.musicxml_source);
+#else
+        write_musicxml(request.musicxml_path, result.score,
+                       request.preserve_expressive_timing);
+#endif
+        write_guitar_tab(request.tab_path, result.score,
+                         request.guitar_tab_options);
+        if (!request.midi_path.empty()) {
+            write_midi(request.midi_path, result.score);
+        }
     }
 
     if (live_preview_callback) {

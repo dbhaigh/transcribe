@@ -682,6 +682,7 @@ TEST_CASE("guitar tablature supports alternate tuning capo and alternatives") {
                           std::istreambuf_iterator<char>()};
     REQUIRE(tab.find("Capo: fret 2") != std::string::npos);
     REQUIRE(tab.find("Alternative fingerings:") != std::string::npos);
+    REQUIRE(tab.find("hand movement=") != std::string::npos);
 }
 
 TEST_CASE("overlapping overridden notes cannot occupy the same guitar string") {

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transcriber notation fixtures</title>
+  <style>
+    body { margin: 24px; color: #18232a; background: #e8eceb; font: 14px "Segoe UI", sans-serif; }
+    header { max-width: 1100px; margin: 0 auto 18px; }
+    #status { color: #40575f; }
+    main { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; max-width: 1500px; margin: auto; }
+    article { min-width: 0; padding: 14px; background: white; box-shadow: 0 2px 9px #0002; }
+    h2 { margin: 0 0 10px; font-size: 16px; }
+    .page { margin: 0 0 12px; }
+    svg { display: block; width: 100%; height: auto; }
+    .error { color: #a00; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Notation visual fixtures</h1>
+    <p>Review the common and complex engraving samples after updating Verovio or the MusicXML contract.</p>
+    <div id="status" role="status">Loading local renderer and fixtures…</div>
+  </header>
+  <main id="fixtures"></main>
+  <script type="module">
+    const status = document.getElementById("status");
+    const output = document.getElementById("fixtures");
+    const worker = new Worker("notation-worker.js", { type: "module" });
+    const fixtures = ["common", "complex"];
+    const expectedNoteIds = new Map();
+    let requestId = 0;
+
+    worker.addEventListener("message", (event) => {
+      const message = event.data || {};
+      if (message.requestId !== requestId) return;
+      if (message.type === "error") {
+        status.className = "error";
+        status.textContent = `Fixture render failed: ${message.message}`;
+        return;
+      }
+      const article = output.querySelector(`[data-fixture="${message.fixture}"]`);
+      if (!article) return;
+      const renderedIds = new Set();
+      message.pages.forEach((svg) => {
+        const document = new DOMParser().parseFromString(svg, "image/svg+xml");
+        document.querySelectorAll("[id]").forEach((element) => renderedIds.add(element.id));
+      });
+      const missingIds = (expectedNoteIds.get(message.fixture) || [])
+        .filter((id) => !renderedIds.has(id));
+      if (missingIds.length) {
+        status.className = "error";
+        status.textContent =
+          `${message.fixture} engraving omitted note IDs: ${missingIds.join(", ")}`;
+        return;
+      }
+      article.querySelector(".pages").replaceChildren();
+      message.pages.forEach((svg) => {
+        const page = document.createElement("div");
+        page.className = "page";
+        page.innerHTML = svg;
+        article.querySelector(".pages").appendChild(page);
+      });
+      article.dataset.rendered = "true";
+      article.dataset.renderedNotes = String(expectedNoteIds.get(message.fixture).length);
+      const nextIndex = fixtures.findIndex((name) => name === message.fixture) + 1;
+      if (nextIndex < fixtures.length) renderFixture(nextIndex);
+      else status.textContent = "Both fixtures rendered. Review spelling, spacing, voices, tuplets, ties and tablature visually.";
+    });
+
+    async function renderFixture(index) {
+      const name = fixtures[index];
+      let article = output.querySelector(`[data-fixture="${name}"]`);
+      if (!article) {
+        article = document.createElement("article");
+        article.dataset.fixture = name;
+        article.innerHTML = `<h2>${name === "common" ? "Common notation" : "Complex notation"}</h2><div class="pages"></div>`;
+        output.appendChild(article);
+      }
+      status.textContent = `Rendering ${name} fixture (${index + 1}/${fixtures.length})…`;
+      try {
+        const response = await fetch(`fixtures/notation/${name}.musicxml`);
+        if (!response.ok) throw new Error(`Fixture request returned HTTP ${response.status}.`);
+        const musicxml = await response.text();
+        const document = new DOMParser().parseFromString(musicxml, "application/xml");
+        if (document.querySelector("parsererror")) {
+          throw new Error("Fixture is not well-formed MusicXML.");
+        }
+        expectedNoteIds.set(name, [...document.querySelectorAll("note")]
+          .filter((note) => note.querySelector("pitch"))
+          .map((note) => note.getAttribute("id"))
+          .filter(Boolean));
+        requestId += 1;
+        worker.postMessage({
+          type: "render",
+          requestId,
+          fixture: name,
+          musicxml,
+        });
+      } catch (error) {
+        status.className = "error";
+        status.textContent = `Could not load ${name} fixture: ${error.message}`;
+      }
+    }
+
+    worker.addEventListener("error", (event) => {
+      status.className = "error";
+      status.textContent = `Renderer worker failed: ${event.message || "unknown error"}`;
+    });
+
+    renderFixture(0);
+  </script>
+</body>
+</html>
