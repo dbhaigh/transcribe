@@ -1,7 +1,8 @@
 # WebView2 transcription workstation
 
-The optional workstation is the existing WebView2 front end to Transcriber's
-C++ application state, not a separate sample application. It uses the same
+The optional workstation is Transcriber's sole graphical interface and is the
+WebView2 front end to its C++ application state, not a separate sample
+application. It uses the same
 transcription requests, canonical score revision, editing commands, export
 path, live events, and MusicXML accepted by the native application.
 
@@ -69,13 +70,12 @@ current accepted score intact and keeps the proposal available for retry.
 - Pitch alternatives and confidence are displayed only when supplied by the
   backend. Raw evidence shown in the inspector is capped for display; this
   does not change the canonical event evidence.
-- The native Win32 fallback remains available when WebView2 is disabled.
 - UI smoke tests verify markup, asset wiring, bridge operation allowlisting,
   and selected JavaScript integration points. They are not a substitute for
   device testing or pixel-based WebView2 visual regression tests; those depend
   on a pinned WebView2 runtime and graphics environment.
 
-The WebView2 UI itself is an optional Windows build feature and does not add a
-runtime requirement to the default CLI or native GUI build. Verovio is a
-separate optional offline renderer; without it, the existing editable canvas
-remains available.
+The WebView2 UI is an optional Windows build feature and does not add a runtime
+requirement to the default CLI-only build. It is the only GUI; disabling
+WebView2 produces no graphical application. Verovio is a separate optional
+offline renderer; without it, the existing editable canvas remains available.

@@ -6,6 +6,27 @@
 #include <stdexcept>
 
 namespace transcribe {
+
+std::string_view evidence_semantics_name(EvidenceSemantics semantics) noexcept {
+    switch (semantics) {
+    case EvidenceSemantics::Unspecified: return "unspecified";
+    case EvidenceSemantics::HeuristicScore: return "heuristic-score";
+    case EvidenceSemantics::RelativeActivation: return "relative-activation";
+    case EvidenceSemantics::RawActivation: return "raw-activation";
+    case EvidenceSemantics::CalibratedProbability: return "calibrated-probability";
+    }
+    return "unspecified";
+}
+
+EvidenceSemantics parse_evidence_semantics(std::string_view value) {
+    if (value == "unspecified") return EvidenceSemantics::Unspecified;
+    if (value == "heuristic-score") return EvidenceSemantics::HeuristicScore;
+    if (value == "relative-activation") return EvidenceSemantics::RelativeActivation;
+    if (value == "raw-activation") return EvidenceSemantics::RawActivation;
+    if (value == "calibrated-probability") return EvidenceSemantics::CalibratedProbability;
+    throw std::invalid_argument("Unknown evidence semantics: " + std::string(value));
+}
+
 namespace {
 
 void validate(const TemporalDecodingOptions& o) {
@@ -45,6 +66,13 @@ void order_evidence(std::vector<CanonicalNoteEvent>& events) {
 std::uint64_t sample_at(double seconds, const AudioBuffer& audio) {
     return static_cast<std::uint64_t>(std::llround(std::clamp(
         seconds * audio.sample_rate, 0.0, static_cast<double>(audio.samples.size()))));
+}
+
+bool valid_evidence_semantics(EvidenceSemantics semantics) {
+    return static_cast<int>(semantics) >=
+            static_cast<int>(EvidenceSemantics::Unspecified) &&
+        static_cast<int>(semantics) <=
+            static_cast<int>(EvidenceSemantics::CalibratedProbability);
 }
 
 struct Region { double start; double end; bool strong_at_start{true}; };
@@ -130,6 +158,8 @@ DecodedTranscription decode_note_events_impl(const AudioBuffer& audio,
             !std::isfinite(track.hop_seconds) || track.hop_seconds <= 0 ||
             track.method.empty() || track.evidence_kind.empty() ||
             track.raw_midi_pitch < -1 || track.raw_midi_pitch > 127 ||
+            !valid_evidence_semantics(track.selected_strength_semantics) ||
+            !valid_evidence_semantics(track.raw_value_semantics) ||
             (!track.raw_values.empty() && track.raw_values.size() != track.frames.size()) ||
             (!track.spectral_peak_fractions.empty() &&
              track.spectral_peak_fractions.size() != track.frames.size())) {
@@ -233,7 +263,11 @@ DecodedTranscription decode_note_events_impl(const AudioBuffer& audio,
                         f.voicing_probability, std::nullopt,
                         track.raw_values.empty() ? std::nullopt :
                             std::optional<double>(track.raw_values[index]),
-                        track.raw_midi_pitch < 0 ? f.midi_pitch : track.raw_midi_pitch});
+                            track.raw_midi_pitch < 0 ? f.midi_pitch : track.raw_midi_pitch,
+                            track.selected_strength_semantics,
+                            track.raw_value_semantics,
+                            track.spectral_peak_fractions.empty() ? std::nullopt :
+                                std::optional<double>(track.spectral_peak_fractions[index])});
                 }
                 std::vector<Region> pieces;
                 if (options.refine_with_audio) {

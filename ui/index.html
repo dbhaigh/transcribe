@@ -33,6 +33,18 @@
     </header>
 
     <section class="transport" role="toolbar" aria-label="Transcription and playback controls">
+      <div class="transport-cluster transport-project" aria-label="Project controls">
+        <button id="new-project" class="button button-quiet" type="button"
+                title="Create a new local project">New</button>
+        <button id="open-project" class="button button-secondary" type="button"
+                title="Open a saved Transcriber project">Open project</button>
+        <button id="save-project" class="button button-secondary" type="button"
+                title="Save the accepted score and project settings">Save</button>
+        <button id="save-score-copy" class="button button-quiet" type="button"
+                title="Export a score-only project without an audio reference">Score copy</button>
+        <button id="project-summary-button" class="button button-quiet" type="button"
+                title="View project recording, model, score revision, and export status">Summary</button>
+      </div>
       <div class="transport-cluster transport-source">
         <button id="open-audio" class="button button-secondary browse-button" type="button"
                 data-field="input" title="Open an audio file (O)" aria-keyshortcuts="O">Open audio</button>
@@ -205,6 +217,15 @@
                 <select id="quality-mode"><option value="quality">High quality</option><option value="fast">Fast preview</option></select>
               </div>
             </div>
+            <label class="check-row review-mode-control" for="review-mode">
+              <input id="review-mode" type="checkbox">
+              <span class="check-custom" aria-hidden="true"></span>
+              <span>Evidence review <span class="optional">OFFLINE</span></span>
+            </label>
+            <p class="field-hint">
+              Retain bounded raw detector evidence, inspect heuristic flags, and audition note regions.
+              Detector scores are not probabilities; no calibration dataset is configured.
+            </p>
             <div class="guitar-options analysis-options">
               <div><label class="field-label" for="key-control">Key signature</label>
                 <select id="key-control">
@@ -233,7 +254,7 @@
                 <select id="guitar-tuning">
                   <option value="standard">Standard E</option><option value="drop-d">Drop D</option>
                   <option value="dadgad">DADGAD</option><option value="open-d">Open D</option>
-                  <option value="open-g">Open G</option>
+                  <option value="open-g">Open G</option><option value="custom">Project tuning</option>
                 </select>
               </div>
               <div><label class="field-label" for="capo-fret">Capo</label>
@@ -365,9 +386,26 @@
         <dl class="evidence-grid">
           <div><dt>Measured onset</dt><dd id="detected-onset">—</dd></div>
           <div><dt>Measured offset</dt><dd id="detected-offset">—</dd></div>
-          <div><dt>Calibrated confidence</dt><dd id="detected-confidence">—</dd></div>
+          <div><dt>Calibrated correctness</dt><dd id="detected-confidence">—</dd></div>
           <div><dt>Raw evidence</dt><dd id="detected-evidence">—</dd></div>
         </dl>
+
+        <section id="review-card" class="inspector-card review-card hidden"
+                 aria-label="Evidence review">
+          <div class="inspector-heading"><span>REVIEW SUGGESTIONS</span>
+            <span id="review-status">Enable evidence review</span></div>
+          <p id="review-limitation" class="field-hint">
+            No held-out labelled calibration set or distribution-shift detector is configured.
+          </p>
+          <div id="review-queue" class="review-queue" aria-label="Review priority queue">
+            Review items will be ranked after evidence review is available.
+          </div>
+          <button id="audition-event" class="button button-small button-secondary"
+                  type="button" disabled>Audition note region</button>
+          <div id="review-items" class="review-items" aria-live="polite">
+            Evidence review is disabled.
+          </div>
+        </section>
 
         <section class="inspector-card">
           <div class="inspector-heading"><span>ALTERNATIVE PITCH EVIDENCE</span>
@@ -384,8 +422,9 @@
           </div>
         </section>
         <section class="inspector-card">
-          <div class="inspector-heading"><span>CONFIDENCE</span><span>Reported evidence only</span></div>
-          <canvas id="confidence-heatmap" aria-label="Calibrated note confidence visualization"></canvas>
+          <div class="inspector-heading"><span>CALIBRATION</span><span>Only validated probabilities</span></div>
+          <canvas id="confidence-heatmap" aria-label="Calibrated correctness estimates, when available"></canvas>
+          <p class="field-hint">Grey events have no calibrated correctness estimate.</p>
         </section>
 
         <details class="edit-details" open>
@@ -452,7 +491,14 @@
       <button id="open-folder-button" class="status-link" type="button" title="Open the output folder">Output folder</button>
     </footer>
   </div>
-
+  <dialog id="project-summary-dialog" class="project-dialog" aria-labelledby="project-summary-heading">
+    <div class="project-dialog-heading">
+      <h2 id="project-summary-heading">Project summary</h2>
+      <button id="close-project-summary" class="button button-quiet" type="button"
+              aria-label="Close project summary">Close</button>
+    </div>
+    <pre id="project-summary-details">No project is open.</pre>
+  </dialog>
   <script src="workspace.js"></script>
   <script src="app.js"></script>
   <script src="editor.js"></script>

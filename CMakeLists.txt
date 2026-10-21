@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(transcriber VERSION 0.1.4 LANGUAGES CXX)
+project(transcriber VERSION 0.1.5 LANGUAGES CXX)
 
 option(TRANSCRIBE_ENABLE_ASIO "Build real-time capture using RtAudio's ASIO backend" OFF)
 option(TRANSCRIBE_ENABLE_ONNX "Build ONNX Runtime model inference support" OFF)
@@ -10,11 +10,58 @@ set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNX Runtime installation root")
 set(TRANSCRIBE_DIRECTML_SDK_ROOT "" CACHE PATH
     "Root of the DirectML SDK containing DirectML.h")
 option(TRANSCRIBE_ENABLE_FFMPEG "Enable FFmpeg decoding for compressed audio formats" OFF)
-option(TRANSCRIBE_ENABLE_WEBVIEW2 "Use the WebView2 GUI instead of the native Win32 form" OFF)
+option(TRANSCRIBE_ENABLE_WEBVIEW2 "Build the WebView2 workstation GUI" OFF)
 option(TRANSCRIBE_ENABLE_VEROVIO "Enable offline Verovio engraving in the WebView2 GUI" OFF)
 set(TRANSCRIBE_VEROVIO_DIST_DIR "" CACHE PATH
     "Path to the dist directory of the pinned Verovio npm package")
 option(TRANSCRIBE_BUILD_TESTS "Build Catch2-based unit tests" OFF)
+option(TRANSCRIBE_WARNINGS_AS_ERRORS
+    "Treat warnings in production targets as errors" OFF)
+option(TRANSCRIBE_ENABLE_SANITIZERS
+    "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(TRANSCRIBE_ENABLE_CLANG_TIDY
+    "Run clang-tidy static analysis while compiling production targets" OFF)
+
+if(TRANSCRIBE_ENABLE_CLANG_TIDY)
+    find_program(TRANSCRIBE_CLANG_TIDY_EXECUTABLE NAMES clang-tidy REQUIRED)
+    set(CMAKE_CXX_CLANG_TIDY
+        "${TRANSCRIBE_CLANG_TIDY_EXECUTABLE};--checks=clang-analyzer-core.*,clang-analyzer-cplusplus.*,clang-analyzer-deadcode.*;--warnings-as-errors=*")
+endif()
+
+if(TRANSCRIBE_ENABLE_SANITIZERS)
+    if(MSVC OR NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        message(FATAL_ERROR
+            "TRANSCRIBE_ENABLE_SANITIZERS requires a GCC- or Clang-compatible compiler.")
+    endif()
+endif()
+
+if(WIN32 AND MSVC)
+    include(InstallRequiredSystemLibraries)
+endif()
+
+function(transcriber_apply_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive-)
+        if(TRANSCRIBE_WARNINGS_AS_ERRORS AND
+           NOT "${target}" STREQUAL "transcriber-tests")
+            target_compile_options(${target} PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        if(TRANSCRIBE_WARNINGS_AS_ERRORS AND
+           NOT "${target}" STREQUAL "transcriber-tests")
+            target_compile_options(${target} PRIVATE -Werror)
+        endif()
+    endif()
+endfunction()
+
+function(transcriber_apply_sanitizers target)
+    if(TRANSCRIBE_ENABLE_SANITIZERS)
+        target_compile_options(${target} PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+    endif()
+endfunction()
 
 if(TRANSCRIBE_ENABLE_WEBVIEW2 AND NOT WIN32)
     message(FATAL_ERROR "The WebView2 GUI is supported only on Windows.")
@@ -72,6 +119,8 @@ add_library(transcriber_core STATIC
     src/inference.cpp
     src/interpretation.cpp
     src/score.cpp
+    src/project.cpp
+    src/review.cpp
     src/fingering.cpp
     src/live.cpp
     src/live_document.cpp
@@ -84,159 +133,150 @@ target_compile_features(transcriber_core PUBLIC cxx_std_20)
 
 add_executable(transcriber src/main.cpp)
 target_link_libraries(transcriber PRIVATE transcriber_core)
+target_compile_definitions(transcriber PRIVATE
+    TRANSCRIBE_VERSION="${PROJECT_VERSION}")
 
-if(WIN32)
+if(WIN32 AND TRANSCRIBE_ENABLE_WEBVIEW2)
     add_library(transcriber_gui_backend STATIC src/gui_transcription.cpp)
     target_link_libraries(transcriber_gui_backend PUBLIC transcriber_core)
     target_compile_features(transcriber_gui_backend PUBLIC cxx_std_20)
 
-    if(TRANSCRIBE_ENABLE_WEBVIEW2)
-        set(TRANSCRIBE_WEBVIEW2_SDK_ROOT "" CACHE PATH
-            "Root of an extracted Microsoft.Web.WebView2 NuGet package")
-        set(TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH "" CACHE FILEPATH
-            "Path to a pre-downloaded Evergreen WebView2 bootstrapper")
-        if(TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH)
-            set(_webview2_bootstrapper "${TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH}")
-        else()
-            set(_webview2_bootstrapper
-                "${CMAKE_CURRENT_BINARY_DIR}/webview2-runtime/MicrosoftEdgeWebView2Setup.exe")
-            if(NOT EXISTS "${_webview2_bootstrapper}")
-                get_filename_component(_webview2_runtime_dir
-                    "${_webview2_bootstrapper}" DIRECTORY)
-                file(MAKE_DIRECTORY "${_webview2_runtime_dir}")
-                file(DOWNLOAD
-                    "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
-                    "${_webview2_bootstrapper}"
-                    STATUS _webview2_download_status
-                    TLS_VERIFY ON
-                    TIMEOUT 180)
-                list(GET _webview2_download_status 0 _webview2_download_code)
-                list(GET _webview2_download_status 1 _webview2_download_message)
-                if(NOT _webview2_download_code EQUAL 0)
-                    file(REMOVE "${_webview2_bootstrapper}")
-                    message(FATAL_ERROR
-                        "Could not download the Evergreen WebView2 bootstrapper: "
-                        "${_webview2_download_message}. Set "
-                        "TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH to a local copy to build offline.")
-                endif()
+    set(TRANSCRIBE_WEBVIEW2_SDK_ROOT "" CACHE PATH
+        "Root of an extracted Microsoft.Web.WebView2 NuGet package")
+    set(TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH "" CACHE FILEPATH
+        "Path to a pre-downloaded Evergreen WebView2 bootstrapper")
+    if(TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH)
+        set(_webview2_bootstrapper "${TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH}")
+    else()
+        set(_webview2_bootstrapper
+            "${CMAKE_CURRENT_BINARY_DIR}/webview2-runtime/MicrosoftEdgeWebView2Setup.exe")
+        if(NOT EXISTS "${_webview2_bootstrapper}")
+            get_filename_component(_webview2_runtime_dir
+                "${_webview2_bootstrapper}" DIRECTORY)
+            file(MAKE_DIRECTORY "${_webview2_runtime_dir}")
+            file(DOWNLOAD
+                "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+                "${_webview2_bootstrapper}"
+                STATUS _webview2_download_status
+                TLS_VERIFY ON
+                TIMEOUT 180)
+            list(GET _webview2_download_status 0 _webview2_download_code)
+            list(GET _webview2_download_status 1 _webview2_download_message)
+            if(NOT _webview2_download_code EQUAL 0)
+                file(REMOVE "${_webview2_bootstrapper}")
+                message(FATAL_ERROR
+                    "Could not download the Evergreen WebView2 bootstrapper: "
+                    "${_webview2_download_message}. Set "
+                    "TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH to a local copy to build offline.")
             endif()
         endif()
-        if(NOT EXISTS "${_webview2_bootstrapper}")
-            message(FATAL_ERROR
-                "WebView2 bootstrapper not found: ${_webview2_bootstrapper}")
-        endif()
-        file(SIZE "${_webview2_bootstrapper}" _webview2_bootstrapper_size)
-        if(_webview2_bootstrapper_size LESS 100000)
-            message(FATAL_ERROR
-                "WebView2 bootstrapper is unexpectedly small: ${_webview2_bootstrapper}")
-        endif()
-        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-            set(_webview2_arch x64)
-        else()
-            set(_webview2_arch x86)
-        endif()
-        find_path(WEBVIEW2_INCLUDE_DIR WebView2.h
-            HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT
-            PATH_SUFFIXES build/native/include include)
-        find_file(WEBVIEW2_LOADER_DLL WebView2Loader.dll
-            HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT
-            PATH_SUFFIXES "runtimes/win-${_webview2_arch}/native"
-                          "build/native/${_webview2_arch}")
-        find_file(WEBVIEW2_LICENSE_FILE LICENSE.txt
-            HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT)
-        find_file(WEBVIEW2_NOTICE_FILE NOTICE.txt
-            HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT)
-        if(NOT WEBVIEW2_INCLUDE_DIR OR NOT WEBVIEW2_LOADER_DLL OR
-           NOT WEBVIEW2_LICENSE_FILE OR NOT WEBVIEW2_NOTICE_FILE)
-            message(FATAL_ERROR
-                "WebView2 SDK not found. Set TRANSCRIBE_WEBVIEW2_SDK_ROOT to an extracted "
-                "Microsoft.Web.WebView2 NuGet package.")
-        endif()
-        add_executable(transcriber-gui WIN32 src/gui_webview.cpp)
-        target_include_directories(transcriber-gui SYSTEM PRIVATE "${WEBVIEW2_INCLUDE_DIR}")
-        target_compile_definitions(transcriber-gui PRIVATE TRANSCRIBE_ENABLE_WEBVIEW2=1)
-        set_property(SOURCE src/gui_webview.cpp APPEND PROPERTY OBJECT_DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/styles.css"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/workspace.js"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/app.js"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/editor.js"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation.js"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation-worker.js"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation-fixtures.html")
-        target_link_libraries(transcriber-gui PRIVATE transcriber_gui_backend
-            comdlg32 user32 gdi32 shell32 ole32 winmm)
-        add_custom_command(TARGET transcriber-gui POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${WEBVIEW2_LOADER_DLL}" "$<TARGET_FILE_DIR:transcriber-gui>/WebView2Loader.dll"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${WEBVIEW2_LICENSE_FILE}" "$<TARGET_FILE_DIR:transcriber-gui>/WebView2-LICENSE.txt"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${WEBVIEW2_NOTICE_FILE}" "$<TARGET_FILE_DIR:transcriber-gui>/WebView2-NOTICE.txt"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_webview2_bootstrapper}" "$<TARGET_FILE_DIR:transcriber-gui>/MicrosoftEdgeWebView2Setup.exe"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_CURRENT_SOURCE_DIR}/ui" "$<TARGET_FILE_DIR:transcriber-gui>/ui")
-        if(TRANSCRIBE_ENABLE_VEROVIO)
-            target_compile_definitions(transcriber_gui_backend PRIVATE
-                TRANSCRIBE_ENABLE_VEROVIO=1)
-            target_compile_definitions(transcriber-gui PRIVATE
-                TRANSCRIBE_ENABLE_VEROVIO=1)
-            set_property(SOURCE src/gui_webview.cpp APPEND PROPERTY OBJECT_DEPENDS
-                "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio-module.mjs"
-                "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio.mjs"
-                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING"
-                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING.LESSER"
-                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/NOTICE.txt"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/notation/common.musicxml"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/notation/complex.musicxml")
-            add_custom_command(TARGET transcriber-gui POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory
-                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio-module.mjs"
-                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/verovio-module.mjs"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio.mjs"
-                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/verovio.mjs"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING"
-                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/COPYING"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING.LESSER"
-                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/COPYING.LESSER"
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/NOTICE.txt"
-                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/NOTICE.txt"
-                COMMAND ${CMAKE_COMMAND} -E make_directory
-                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/fixtures/notation"
-                COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/notation"
-                    "$<TARGET_FILE_DIR:transcriber-gui>/ui/fixtures/notation")
-        endif()
+    endif()
+    if(NOT EXISTS "${_webview2_bootstrapper}")
+        message(FATAL_ERROR
+            "WebView2 bootstrapper not found: ${_webview2_bootstrapper}")
+    endif()
+    file(SIZE "${_webview2_bootstrapper}" _webview2_bootstrapper_size)
+    if(_webview2_bootstrapper_size LESS 100000)
+        message(FATAL_ERROR
+            "WebView2 bootstrapper is unexpectedly small: ${_webview2_bootstrapper}")
+    endif()
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_webview2_arch x64)
     else()
-        add_executable(transcriber-gui WIN32 src/gui.cpp)
-        target_link_libraries(transcriber-gui PRIVATE transcriber_gui_backend
-            comdlg32 user32 gdi32 comctl32 shell32)
+        set(_webview2_arch x86)
+    endif()
+    find_path(WEBVIEW2_INCLUDE_DIR WebView2.h
+        HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT
+        PATH_SUFFIXES build/native/include include)
+    find_file(WEBVIEW2_LOADER_DLL WebView2Loader.dll
+        HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT
+        PATH_SUFFIXES "runtimes/win-${_webview2_arch}/native"
+                      "build/native/${_webview2_arch}")
+    find_file(WEBVIEW2_LICENSE_FILE LICENSE.txt
+        HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT)
+    find_file(WEBVIEW2_NOTICE_FILE NOTICE.txt
+        HINTS "${TRANSCRIBE_WEBVIEW2_SDK_ROOT}" ENV WEBVIEW2_SDK_ROOT)
+    if(NOT WEBVIEW2_INCLUDE_DIR OR NOT WEBVIEW2_LOADER_DLL OR
+       NOT WEBVIEW2_LICENSE_FILE OR NOT WEBVIEW2_NOTICE_FILE)
+        message(FATAL_ERROR
+            "WebView2 SDK not found. Set TRANSCRIBE_WEBVIEW2_SDK_ROOT to an extracted "
+            "Microsoft.Web.WebView2 NuGet package.")
+    endif()
+
+    add_executable(transcriber-gui WIN32 src/gui_webview.cpp)
+    target_include_directories(transcriber-gui SYSTEM PRIVATE "${WEBVIEW2_INCLUDE_DIR}")
+    target_compile_definitions(transcriber-gui PRIVATE TRANSCRIBE_ENABLE_WEBVIEW2=1)
+    set_property(SOURCE src/gui_webview.cpp APPEND PROPERTY OBJECT_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ui/styles.css"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ui/workspace.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ui/app.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ui/editor.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation-worker.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ui/notation-fixtures.html")
+    target_link_libraries(transcriber-gui PRIVATE transcriber_gui_backend
+        comdlg32 user32 gdi32 shell32 ole32 winmm)
+    add_custom_command(TARGET transcriber-gui POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${WEBVIEW2_LOADER_DLL}" "$<TARGET_FILE_DIR:transcriber-gui>/WebView2Loader.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${WEBVIEW2_LICENSE_FILE}" "$<TARGET_FILE_DIR:transcriber-gui>/WebView2-LICENSE.txt"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${WEBVIEW2_NOTICE_FILE}" "$<TARGET_FILE_DIR:transcriber-gui>/WebView2-NOTICE.txt"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_webview2_bootstrapper}" "$<TARGET_FILE_DIR:transcriber-gui>/MicrosoftEdgeWebView2Setup.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui" "$<TARGET_FILE_DIR:transcriber-gui>/ui")
+    if(TRANSCRIBE_ENABLE_VEROVIO)
+        target_compile_definitions(transcriber_gui_backend PRIVATE
+            TRANSCRIBE_ENABLE_VEROVIO=1)
+        target_compile_definitions(transcriber-gui PRIVATE
+            TRANSCRIBE_ENABLE_VEROVIO=1)
+        set_property(SOURCE src/gui_webview.cpp APPEND PROPERTY OBJECT_DEPENDS
+            "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio-module.mjs"
+            "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio.mjs"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING.LESSER"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/NOTICE.txt"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/notation/common.musicxml"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/notation/complex.musicxml")
+        add_custom_command(TARGET transcriber-gui POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio-module.mjs"
+                "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/verovio-module.mjs"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${TRANSCRIBE_VEROVIO_DIST_DIR}/verovio.mjs"
+                "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/verovio.mjs"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING"
+                "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/COPYING"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/COPYING.LESSER"
+                "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/COPYING.LESSER"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/verovio/NOTICE.txt"
+                "$<TARGET_FILE_DIR:transcriber-gui>/ui/vendor/verovio/NOTICE.txt"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:transcriber-gui>/ui/fixtures/notation"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/notation"
+                "$<TARGET_FILE_DIR:transcriber-gui>/ui/fixtures/notation")
     endif()
     target_compile_definitions(transcriber-gui PRIVATE UNICODE _UNICODE)
 endif()
 
-foreach(target transcriber_core transcriber)
-    if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-endforeach()
-if(WIN32)
-    if(MSVC)
-        target_compile_options(transcriber-gui PRIVATE /W4 /permissive-)
-        target_compile_options(transcriber_gui_backend PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(transcriber-gui PRIVATE -Wall -Wextra -Wpedantic)
-        target_compile_options(transcriber_gui_backend PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
+transcriber_apply_warnings(transcriber_core)
+transcriber_apply_warnings(transcriber)
+transcriber_apply_sanitizers(transcriber_core)
+transcriber_apply_sanitizers(transcriber)
+if(WIN32 AND TRANSCRIBE_ENABLE_WEBVIEW2)
+    transcriber_apply_warnings(transcriber_gui_backend)
+    transcriber_apply_warnings(transcriber-gui)
+    transcriber_apply_sanitizers(transcriber_gui_backend)
+    transcriber_apply_sanitizers(transcriber-gui)
 endif()
 
 if(TRANSCRIBE_ENABLE_ASIO)
@@ -267,7 +307,8 @@ if(TRANSCRIBE_ENABLE_ONNX)
     if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
         message(FATAL_ERROR "ONNX Runtime was not found. Set ONNXRUNTIME_ROOT to its installation directory.")
     endif()
-    target_include_directories(transcriber_core PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
+    target_include_directories(transcriber_core SYSTEM PRIVATE
+        "${ONNXRUNTIME_INCLUDE_DIR}")
     target_link_libraries(transcriber_core PUBLIC "${ONNXRUNTIME_LIBRARY}")
     target_compile_definitions(transcriber_core PUBLIC TRANSCRIBE_ENABLE_ONNX=1)
     if(TRANSCRIBE_ONNX_ENABLE_CUDA)
@@ -349,7 +390,9 @@ if(TRANSCRIBE_BUILD_TESTS)
         tests/inference_tests.cpp
         tests/live_tests.cpp
         tests/interpretation_tests.cpp)
-    target_sources(transcriber-tests PRIVATE tests/fingering_tests.cpp tests/score_tests.cpp)
+    target_sources(transcriber-tests PRIVATE
+        tests/fingering_tests.cpp tests/score_tests.cpp tests/review_tests.cpp
+        tests/project_tests.cpp)
     target_link_libraries(transcriber-tests PRIVATE transcriber_core Catch2::Catch2WithMain)
     target_compile_features(transcriber-tests PRIVATE cxx_std_20)
     if(TRANSCRIBE_ENABLE_ONNX)
@@ -359,14 +402,6 @@ if(TRANSCRIBE_BUILD_TESTS)
         target_compile_definitions(transcriber-tests PRIVATE
             TRANSCRIBE_BASIC_PITCH_MODEL_PATH="${BASIC_PITCH_MODEL_PATH}")
     endif()
-    if(MSVC)
-        target_compile_options(transcriber-tests PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(transcriber-tests PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
-    include(Catch)
-    catch_discover_tests(transcriber-tests)
-
     add_executable(transcriber-evaluate tests/evaluation_runner.cpp)
     target_link_libraries(transcriber-evaluate PRIVATE transcriber_core)
     add_executable(transcriber-performance tests/performance_runner.cpp)
@@ -376,17 +411,20 @@ if(TRANSCRIBE_BUILD_TESTS)
     if(WIN32)
         target_link_libraries(transcriber-performance PRIVATE psapi)
     endif()
-    if(MSVC)
-        target_compile_options(transcriber-evaluate PRIVATE /W4 /permissive-)
-        target_compile_options(transcriber-performance PRIVATE /W4 /permissive-)
-        target_compile_options(transcriber-live PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(transcriber-evaluate PRIVATE -Wall -Wextra -Wpedantic)
-        target_compile_options(transcriber-performance PRIVATE -Wall -Wextra -Wpedantic)
-        target_compile_options(transcriber-live PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
+    foreach(target transcriber-tests transcriber-evaluate
+                   transcriber-performance transcriber-live)
+        transcriber_apply_warnings(${target})
+        transcriber_apply_sanitizers(${target})
+    endforeach()
+    include(Catch)
+    catch_discover_tests(transcriber-tests)
+
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME dependency_manifest_smoke
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/dependency_audit.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}")
         add_test(NAME evaluation_framework
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/evaluation_tests.py"
                 "$<TARGET_FILE:transcriber-evaluate>"
@@ -494,12 +532,17 @@ if(TRANSCRIBE_BUILD_TESTS)
 endif()
 
 install(TARGETS transcriber RUNTIME DESTINATION bin)
-install(FILES README.md DESTINATION share/doc/transcriber)
+install(FILES
+    LICENSE
+    README.md
+    docs/dependency-licenses.md
+    docs/release-checklist.md
+    DESTINATION share/doc/transcriber)
 install(DIRECTORY samples/ DESTINATION share/transcriber/samples
     FILES_MATCHING PATTERN "*.wav" PATTERN "*.expected.txt" PATTERN "README.md")
 if(WIN32)
-    install(TARGETS transcriber-gui RUNTIME DESTINATION bin)
     if(TRANSCRIBE_ENABLE_WEBVIEW2)
+        install(TARGETS transcriber-gui RUNTIME DESTINATION bin)
         install(FILES
             "${WEBVIEW2_LOADER_DLL}"
             "${WEBVIEW2_LICENSE_FILE}"
@@ -525,6 +568,58 @@ if(TRANSCRIBE_ENABLE_ONNX)
         python/models/basic_pitch.onnx
         python/models/LICENSE-basic-pitch.txt
         DESTINATION share/transcriber/models)
+
+    if(WIN32)
+        find_file(ONNXRUNTIME_RUNTIME_DLL onnxruntime.dll
+            HINTS "${ONNXRUNTIME_ROOT}" ENV ONNXRUNTIME_ROOT
+            PATH_SUFFIXES lib bin)
+        if(ONNXRUNTIME_RUNTIME_DLL)
+            install(FILES "${ONNXRUNTIME_RUNTIME_DLL}" DESTINATION bin)
+        else()
+            message(WARNING
+                "The ONNX Runtime DLL was not found for installation. "
+                "An ONNX-enabled Windows package will need it supplied separately.")
+        endif()
+    elseif(UNIX AND NOT APPLE)
+        file(REAL_PATH "${ONNXRUNTIME_LIBRARY}" _onnxruntime_real_library)
+        get_filename_component(_onnxruntime_library_name
+            "${_onnxruntime_real_library}" NAME)
+        string(REGEX MATCH "^libonnxruntime\\.so\\.[0-9]+"
+            _onnxruntime_soname "${_onnxruntime_library_name}")
+        if(_onnxruntime_soname)
+            install(FILES "${_onnxruntime_real_library}"
+                DESTINATION lib RENAME "${_onnxruntime_soname}")
+        else()
+            install(FILES "${_onnxruntime_real_library}" DESTINATION lib)
+        endif()
+        set_property(TARGET transcriber APPEND PROPERTY INSTALL_RPATH "$ORIGIN/../lib")
+    endif()
+
+    find_file(ONNXRUNTIME_LICENSE_FILE
+        NAMES LICENSE LICENSE.txt
+        HINTS "${ONNXRUNTIME_ROOT}" ENV ONNXRUNTIME_ROOT
+        NO_DEFAULT_PATH)
+    find_file(ONNXRUNTIME_THIRD_PARTY_NOTICES
+        NAMES ThirdPartyNotices.txt THIRD_PARTY_NOTICES.txt
+        HINTS "${ONNXRUNTIME_ROOT}" ENV ONNXRUNTIME_ROOT
+        NO_DEFAULT_PATH)
+    if(ONNXRUNTIME_LICENSE_FILE)
+        install(FILES "${ONNXRUNTIME_LICENSE_FILE}"
+            DESTINATION share/doc/transcriber/third-party/onnxruntime
+            RENAME LICENSE.txt)
+    else()
+        message(WARNING
+            "ONNX Runtime license text was not found. "
+            "Include it when redistributing an ONNX-enabled build.")
+    endif()
+    if(ONNXRUNTIME_THIRD_PARTY_NOTICES)
+        install(FILES "${ONNXRUNTIME_THIRD_PARTY_NOTICES}"
+            DESTINATION share/doc/transcriber/third-party/onnxruntime)
+    else()
+        message(WARNING
+            "ONNX Runtime third-party notices were not found. "
+            "Include them when redistributing an ONNX-enabled build.")
+    endif()
 endif()
 
 set(CPACK_PACKAGE_VENDOR "Transcriber contributors")

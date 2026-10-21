@@ -95,6 +95,21 @@ TEST_CASE("interpretation preserves raw timing and honors user constraints", "[i
     REQUIRE(events[2].offset_seconds == original_offset);
 }
 
+TEST_CASE("legacy detector confidence remains heuristic evidence, not calibration",
+          "[interpretation][review]") {
+    const std::vector<transcribe::Note> notes{
+        {60, 0.0, 0.5, "C4", 0.83, 0.2}};
+    const auto result = transcribe::interpret_notes(notes);
+
+    REQUIRE(result.source_events.size() == 1);
+    REQUIRE_FALSE(result.source_events.front()->calibrated_confidence);
+    REQUIRE(result.source_events.front()->evidence.size() == 1);
+    REQUIRE(result.source_events.front()->evidence.front().raw_strength ==
+            Catch::Approx(0.83));
+    REQUIRE(result.source_events.front()->evidence.front().strength_semantics ==
+            transcribe::EvidenceSemantics::HeuristicScore);
+}
+
 TEST_CASE("uncertain empty and sparse inputs retain alternatives instead of asserting a meter",
           "[interpretation]") {
     const auto empty = transcribe::interpret_note_events({});

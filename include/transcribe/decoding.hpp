@@ -4,10 +4,14 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace transcribe {
 
 enum class EventLifecycle { Provisional, Stabilized, Refined, ManuallyCorrected, Rejected };
+
+std::string_view evidence_semantics_name(EvidenceSemantics semantics) noexcept;
+EvidenceSemantics parse_evidence_semantics(std::string_view value);
 
 struct EventEvidence {
     double time_seconds{};
@@ -17,6 +21,9 @@ struct EventEvidence {
     std::optional<double> fractional_midi;
     std::optional<double> raw_model_value;
     int raw_midi_pitch{-1};
+    EvidenceSemantics strength_semantics{EvidenceSemantics::Unspecified};
+    EvidenceSemantics raw_value_semantics{EvidenceSemantics::Unspecified};
+    std::optional<double> spectral_peak_fraction;
 };
 
 struct CanonicalNoteEvent {

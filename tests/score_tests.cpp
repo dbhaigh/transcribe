@@ -74,6 +74,69 @@ TEST_CASE("canonical score project round trips source evidence and notation rela
             Catch::Approx(2.0));
 }
 
+TEST_CASE("legacy note confidence remains available without becoming calibrated",
+          "[score][review]") {
+    const auto document = sample_score();
+    REQUIRE_FALSE(document.notes.front().calibrated_confidence);
+    const auto notes = transcribe::score_notes(document);
+    REQUIRE(notes.front().confidence == Catch::Approx(0.8));
+}
+
+TEST_CASE("review decisions are revisioned, serialized, and undoable",
+          "[score][review][serialization]") {
+    transcribe::ScoreEditor editor(sample_score());
+    const auto note_id = editor.document().notes.front().id;
+
+    transcribe::ScoreTransaction transaction;
+    transaction.base_revision = editor.document().revision;
+    transaction.actor = "review-ui";
+    transaction.reason = "Accept an evidence review suggestion";
+    transaction.command_id = "review-1";
+    transaction.commands.emplace_back(transcribe::RecordReviewDecision{
+        "suggestion-1", note_id,
+        transcribe::ReviewDecisionOutcome::Accepted, "Applied manually"});
+    editor.apply(transaction);
+
+    REQUIRE(editor.document().review_decisions.size() == 1);
+    REQUIRE(editor.document().review_decisions.front().revision ==
+            editor.document().revision);
+    const auto restored = transcribe::deserialize_score_document(
+        transcribe::serialize_score_document(editor.document()));
+    REQUIRE(restored.review_decisions.size() == 1);
+    REQUIRE(restored.review_decisions.front().suggestion_id == "suggestion-1");
+    REQUIRE(restored.review_decisions.front().outcome ==
+            transcribe::ReviewDecisionOutcome::Accepted);
+
+    editor.undo(editor.document().revision);
+    REQUIRE(editor.document().review_decisions.empty());
+    editor.redo(editor.document().revision);
+    REQUIRE(editor.document().review_decisions.size() == 1);
+}
+
+TEST_CASE("review decisions reject invalid and duplicate transactions",
+          "[score][review][editing]") {
+    transcribe::ScoreEditor editor(sample_score());
+    const auto note_id = editor.document().notes.front().id;
+
+    transcribe::ScoreTransaction transaction;
+    transaction.base_revision = editor.document().revision;
+    transaction.reason = "Record a review result";
+    transaction.commands.emplace_back(transcribe::RecordReviewDecision{
+        "suggestion-1", note_id,
+        transcribe::ReviewDecisionOutcome::Rejected, "Dismissed"});
+    transaction.commands.emplace_back(transcribe::RecordReviewDecision{
+        "suggestion-1", note_id,
+        transcribe::ReviewDecisionOutcome::Accepted, "Duplicate"});
+    REQUIRE_THROWS_AS(editor.apply(transaction), std::invalid_argument);
+    REQUIRE(editor.document().review_decisions.empty());
+
+    transaction.commands.resize(1);
+    std::get<transcribe::RecordReviewDecision>(transaction.commands.front())
+        .note_id = "missing-note";
+    REQUIRE_THROWS_AS(editor.apply(transaction), std::invalid_argument);
+    REQUIRE(editor.document().review_decisions.empty());
+}
+
 TEST_CASE("score note IDs remain distinct from linked source event IDs",
           "[score][identity]") {
     auto document = sample_score();
@@ -250,6 +313,10 @@ TEST_CASE("score migration accepts version zero and rejects unknown future schem
             transcribe::ScoreEditOrigin::Migration);
     REQUIRE(migrated.notes.front().measured_onset_seconds ==
             Catch::Approx(0.5));
+    REQUIRE_FALSE(migrated.notes.front().calibrated_confidence);
+    REQUIRE(migrated.notes.front().raw_evidence.size() == 1);
+    REQUIRE(migrated.notes.front().raw_evidence.front().strength_semantics ==
+            transcribe::EvidenceSemantics::HeuristicScore);
     REQUIRE_THROWS_AS(transcribe::deserialize_score_document(
         R"({"schema_version":999})"), std::invalid_argument);
     REQUIRE_THROWS_AS(transcribe::deserialize_score_document(

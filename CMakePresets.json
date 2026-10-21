@@ -1,0 +1,195 @@
+{
+  "version": 2,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "TRANSCRIBE_BUILD_TESTS": "ON",
+        "TRANSCRIBE_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "windows-debug",
+      "inherits": "windows-base"
+    },
+    {
+      "name": "windows-release",
+      "inherits": "windows-base"
+    },
+    {
+      "name": "windows-webview2-release",
+      "inherits": "windows-release",
+      "cacheVariables": {
+        "TRANSCRIBE_ENABLE_WEBVIEW2": "ON"
+      }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "TRANSCRIBE_BUILD_TESTS": "ON",
+        "TRANSCRIBE_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "linux-gcc-debug",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "linux-gcc-release",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "linux-clang-debug",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "linux-clang-release",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "linux-sanitizer",
+      "inherits": "linux-gcc-debug",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "TRANSCRIBE_ENABLE_SANITIZERS": "ON",
+        "TRANSCRIBE_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "linux-ffmpeg-release",
+      "inherits": "linux-gcc-release",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "TRANSCRIBE_ENABLE_FFMPEG": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-webview2-release",
+      "configurePreset": "windows-webview2-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-gcc-debug",
+      "configurePreset": "linux-gcc-debug"
+    },
+    {
+      "name": "linux-gcc-release",
+      "configurePreset": "linux-gcc-release"
+    },
+    {
+      "name": "linux-clang-debug",
+      "configurePreset": "linux-clang-debug"
+    },
+    {
+      "name": "linux-clang-release",
+      "configurePreset": "linux-clang-release"
+    },
+    {
+      "name": "linux-sanitizer",
+      "configurePreset": "linux-sanitizer"
+    },
+    {
+      "name": "linux-ffmpeg-release",
+      "configurePreset": "linux-ffmpeg-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-gcc-debug",
+      "configurePreset": "linux-gcc-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-gcc-release",
+      "configurePreset": "linux-gcc-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-clang-debug",
+      "configurePreset": "linux-clang-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-clang-release",
+      "configurePreset": "linux-clang-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-sanitizer",
+      "configurePreset": "linux-sanitizer",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-ffmpeg-release",
+      "configurePreset": "linux-ffmpeg-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

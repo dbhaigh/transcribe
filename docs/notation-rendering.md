@@ -32,8 +32,8 @@ view, never the score data store.
 
 **Selection:** Verovio is the optional WebView2 engraving backend. Its
 MusicXML-to-SVG toolkit and local WASM build fit the existing bridge and avoid
-replacing the C++ engine or native GUI. The LGPL dependency is isolated to the
-optional WebView2 UI; the default native GUI and CLI do not link or load it.
+replacing the C++ engine. The LGPL dependency is isolated to the optional
+WebView2 UI; the CLI does not link or load it.
 OSMD remains a reasonable alternative if future compatibility tests show a
 MusicXML feature that Verovio cannot render acceptably.
 
@@ -94,7 +94,7 @@ texts, package provenance notice, and visual fixtures into its local UI asset
 directory. The renderer identifies Verovio and its LGPL license in the UI. A
 deployed WebView2 runtime is still required as for the existing application;
 no Internet connection is needed for transcription or engraving after
-deployment. The dependency is not used by the native Win32 GUI build.
+deployment. The dependency is not used by CLI-only builds.
 
 ## Scope and known limitations
 

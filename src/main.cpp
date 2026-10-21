@@ -71,7 +71,8 @@ struct Options {
 };
 
 void print_usage(std::ostream& output) {
-    output <<     "Transcriber 0.1.4 - turn audio into MusicXML, MIDI, and guitar tablature\n\n"
+    output <<     "Transcriber " << TRANSCRIBE_VERSION
+           << " - turn audio into MusicXML, MIDI, and guitar tablature\n\n"
               "Usage:\n"
               "  transcriber <input.wav> [options]\n"
               "  transcriber --asio <seconds> [options]\n"

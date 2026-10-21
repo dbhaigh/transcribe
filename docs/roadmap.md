@@ -2,14 +2,17 @@
 
 Baseline: Transcriber 0.1.4, commit
 `0561397b3705aeb8763726ea4b73fd83b4012aac`.
-This is a proposed implementation sequence, **not implemented work**.
+This roadmap was created from the audit of that baseline. It is a proposed
+sequence, not a claim that the baseline included the later changes. Status
+notes below record release-hardening work added after the audit.
 Evidence, severity and limitations are in [the engineering audit](engineering-audit.md).
 Finding IDs below link to that report's sections.
 
 ## Guardrails
 
-1. Preserve the dependency-light C++20 WAV/YIN default and native Win32
-   fallback. Keep ONNX, FFmpeg, ASIO, WebView2 and GPU providers opt-in.
+1. Preserve the dependency-light C++20 WAV/YIN CLI default. The optional
+   WebView2 workstation is the sole graphical frontend. Keep ONNX, FFmpeg,
+   ASIO, WebView2 and GPU providers opt-in.
 2. Keep public overloads, CLI flags, default output names when unambiguous,
    valid config precedence, and existing JSON keys. Add optional provenance
    fields rather than silently changing old meanings.
@@ -48,9 +51,9 @@ Finding IDs below link to that report's sections.
 | R03 / P1 | Define shared note/metadata validation and fail before destination truncation. [F14](engineering-audit.md#f14---public-scoreapi-invariants-are-weaker-than-cli-validation) | None | Table-driven invalid finite/range/overflow cases fail explicitly; current valid overloads/exports remain compatible. |
 | R04 / P1 | Repair MusicXML token duration/type arithmetic, with exact rational semantic checks. [F13](engineering-audit.md#f13---musicxml-one-tick-tokens-disagree-with-their-written-note-type) | None | Off-grid one-tick fixture no longer has inconsistent notation; every token's type/dots/tuplets equals duration/divisions; voices total correctly across bars. |
 | R05 / P1 | Reject same-stem batch collisions before any writes. [F22](engineering-audit.md#f22---multiple-output-files-can-leave-partial-or-overwritten-results) | None | FFmpeg batch containing `take.wav`/`take.flac` never silently overwrites. Unique names retain current paths; partial-batch recovery still works. |
-| R06 / P1 | Decide project licensing and produce dependency/model provenance inventory. [F03](engineering-audit.md#f03---distribution-licensing-and-reproducible-provenance-are-incomplete) | Owner approval for project license | Every distributed binary/model has identified version/origin/license/digest; no license is invented. Document bundled-model exception and artifact/export origin. |
-| R07 / P1 | Stage/install matching Windows runtime dependencies and notices for supported builds. [F02](engineering-audit.md#f02---installed-full-featured-windows-payload-omits-required-dlls) | R06 | Inspect imports and test clean environment: default native and CPU-ONNX/WebView2 CLI+GUI launch; CLI transcribes with no developer PATH. No arbitrary system-DLL copying. |
-| R08 / P2 | Add installed-package smoke CI, separate from build-tree tests. [F02](engineering-audit.md#f02---installed-full-featured-windows-payload-omits-required-dlls), [F25](engineering-audit.md#f25---existing-tests-do-not-gate-the-most-important-accuracyux-contracts) | R07 | Unpack artifact outside checkout, run help and sample export with clean dependency paths, verify assets/model/notices. MSVC and supported MinGW packaging policies are explicit. |
+| R06 / P1 | Decide project licensing and produce dependency/model provenance inventory. [F03](engineering-audit.md#f03---distribution-licensing-and-reproducible-provenance-are-incomplete) | Owner approval for project license | **Done:** root MIT license, dependency/model inventory, and package installation of the license are in place. Optional dependency terms and notices still require per-artifact review. |
+| R07 / P1 | Stage/install matching Windows runtime dependencies and notices for supported builds. [F02](engineering-audit.md#f02---installed-full-featured-windows-payload-omits-required-dlls) | R06 | **Partial:** MSVC runtime staging, WebView2 assets/notices, and ONNX CPU runtime staging rules are configured. Clean-machine MSVC/WebView2/ONNX validation and optional provider dependencies remain release qualification. |
+| R08 / P2 | Add broader installed-package smoke CI, separate from build-tree tests. [F02](engineering-audit.md#f02---installed-full-featured-windows-payload-omits-required-dlls), [F25](engineering-audit.md#f25---existing-tests-do-not-gate-the-most-important-accuracyux-contracts) | R07 | **Partial:** CI is configured to extract and smoke-test default Windows/Linux, FFmpeg, CPU ONNX, and WebView2/Verovio archives. Clean-machine validation of external FFmpeg/GPU/ASIO runtimes, interactive WebView2 launch, and a supported MinGW package remain release qualification work. |
 
 R04 should fix notation arithmetic without simultaneously adding tempo maps
 or rewriting voice assignment. R07 should initially support the CPU runtime
@@ -118,7 +121,7 @@ possible training overlap.
 | R32 / P3 | Reuse measured FFmpeg conversion buffers. [F24](engineering-audit.md#f24---ffmpeg-flush-errors-can-become-success-decode-allocation-is-repetitive) | R31 | Reduced measured allocation count, identical decoded samples/counts, no unexpected peak-memory growth. |
 | R33 / P2 | Add supported-rhythm semantic fixtures, then fix one quantization/voice case at a time. [F12](engineering-audit.md#f12---rhythm-inference-and-quantization-lack-a-common-musical-time-model) | R04 | Pickup/syncopation/swing/triplet/overlap fixtures have explicit expected measures/ties/voice totals and timing bounds. Raw JSON/MIDI seconds remain unchanged. |
 | R34 / P2 | Clarify canvas performance-time semantics and add rendering/edit regression fixtures. [F21](engineering-audit.md#f21---custom-canvas-notation-and-exported-notation-are-not-equivalent) | None | Chords/accidentals/selection/drag/export identities verified at supported sizes; unsupported engraving explicitly labeled. Browser screenshots support, not replace, semantic tests. |
-| R35 / P2 | Make CI's test inventory explicit; add semantic MIDI and concurrency/sanitizer lanes. [F25](engineering-audit.md#f25---existing-tests-do-not-gate-the-most-important-accuracyux-contracts) | R01 | Expected registrations checked; Python/Node skips visible; MIDI events/timing parsed; Linux ASan/UBSan and supported threaded stress lane run. Hardware/data jobs remain optional and labeled. |
+| R35 / P2 | Make CI's test inventory explicit; add semantic MIDI and concurrency/sanitizer lanes. [F25](engineering-audit.md#f25---existing-tests-do-not-gate-the-most-important-accuracyux-contracts) | R01 | **Partial:** Windows/Linux Debug/Release, GCC/Clang, Python/Node UI smoke, compiler warnings-as-errors, Linux ASan/UBSan, and clang-tidy are configured. Semantic MIDI assertions, supported threaded stress lanes, hardware capture, and licensed real-audio data remain separate work or optional qualification. |
 | R36 / P3 | Extract only duplicated validation/options/serialization policy demonstrated by fixes. [F28](engineering-audit.md#f28---duplicated-policies-and-unmeasured-dsp-costs-invite-drift) | R02, R03, R13 | Existing CLI/GUI fixtures and option behavior unchanged; no mandatory GUI dependency enters core. One extraction per patch. |
 | R37 / P3 | Profile and optimize a single DSP cost center only after correctness baselines. [F28](engineering-audit.md#f28---duplicated-policies-and-unmeasured-dsp-costs-invite-drift) | R01, R21 | >=10 warm measured runs on declared fixtures; report median/p95/peak memory and output equality. Select an optimization only if it exceeds a predeclared practical gain, e.g. >=10% in the targeted stage without material total-time/memory regression. |
 
@@ -133,8 +136,9 @@ and ONNX session reuse rather than reimplementing them.
    arithmetic unambiguous.
 2. R03, R05 and R16: establish library/export invariants and avoid lost or
    conflicting results.
-3. R06-R08: qualify an actual distributable release, with owner-approved
-   licensing and clean-machine checks.
+3. R06-R08: qualify an actual distributable release, with the root MIT
+   license and inventory in place, and complete the remaining clean-machine
+   checks.
 4. R09-R11: make real-time failure/teardown paths testable and safe.
 5. R13-R18: repair preference/editor/export state and startup lifetime
    independently; no UI redesign.

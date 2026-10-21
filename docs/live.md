@@ -270,6 +270,7 @@ The skip-with-gap path is exercised deterministically by the `[live]` lag and
   live event display, canonical score updates, and in-capture edits. It offers
   offline refinement as a separate reviewed proposal; non-conflicting changes
   may be applied directly, while changes against manual edits require an
-  individual approval. The native Win32 fallback retains its existing workflow.
+  individual approval. The WebView2 workstation is the only graphical
+  interface; CLI workflows remain available separately.
   End-to-end capture and refinement have not been verified on physical ASIO
   hardware in this environment.

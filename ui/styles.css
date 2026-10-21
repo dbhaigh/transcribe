@@ -336,6 +336,22 @@ summary:focus-visible, [tabindex="0"]:focus-visible {
 .transport-playback { flex: 0 0 auto; }
 .transport-context { flex: 0 0 auto; gap: 9px; }
 .transport-edit { flex: 0 0 auto; }
+.transport-project { flex: 0 1 auto; }
+.transport-project .button { min-height: 30px; padding: 0 8px; font-size: 9px; }
+.project-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(80vh, 680px);
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 18px 64px rgba(0, 0, 0, .4);
+}
+.project-dialog::backdrop { background: rgba(0, 0, 0, .62); }
+.project-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.project-dialog-heading h2 { margin: 0; }
+.project-dialog pre { margin-top: 16px; color: var(--muted); font: 11px/1.8 "DM Mono", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .button { min-height: 32px; padding: 0 10px; border-radius: 5px; }
 .button-secondary { border: 1px solid var(--border); background: #202e37; color: #d9e4e7; font-size: 10px; }
 .button-primary { border: 1px solid #5dd1aa; background: #245b4d; color: #e7fff6; font-size: 10px; font-weight: 650; }
@@ -489,6 +505,21 @@ input:not([type=checkbox]), select { min-width: 0; border-color: var(--border); 
 .refinement-actions .button { min-height: 28px; }
 .alternatives-list { padding: 6px 8px; line-height: 1.5; }
 .alternative-pitch { padding: 5px 7px; font-size: 9px; }
+.review-card { padding-top: 2px; }
+.review-card > .field-hint { margin: 6px 8px; }
+.review-queue { display: grid; gap: 4px; max-height: 150px; overflow: auto; padding: 0 8px 6px; color: var(--muted); font-size: 9px; }
+.review-queue-item { min-height: 28px; padding: 5px 7px; border: 1px solid var(--border-soft); border-radius: 4px; background: var(--panel-raised); color: var(--text); font: 9px "DM Mono", Consolas, monospace; text-align: left; cursor: pointer; }
+.review-queue-item:hover, .review-queue-item:focus-visible { border-color: var(--amber); outline: none; }
+.review-queue-item[aria-current="true"] { border-color: var(--mint); background: rgba(116, 228, 189, .08); }
+.review-card > #audition-event { margin: 0 8px 6px; }
+.review-items { display: grid; gap: 5px; max-height: 240px; overflow: auto; padding: 0 8px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.review-assessment, .review-finding, .review-suggestion p { margin: 0; padding: 5px 6px; border-radius: 4px; background: var(--panel-raised); }
+.review-assessment.state-ambiguous { border-left: 2px solid var(--amber); }
+.review-assessment.state-not-assessed { border-left: 2px solid var(--muted); }
+.review-finding { color: var(--text); }
+.review-suggestion { display: grid; gap: 5px; padding: 6px; border: 1px solid var(--border-soft); border-radius: 5px; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.review-mode-control { margin-top: 6px; }
 .inspector-card canvas { height: 36px; }
 .edit-details { margin: 0; }
 .note-edit-fields { grid-template-columns: repeat(2,minmax(0,1fr)); padding: 0 8px 7px; }
@@ -547,6 +578,8 @@ body[data-theme="light"] .note-name, body[data-theme="light"] .stat strong { col
 @media (max-width: 1320px) {
   .transport { justify-content: flex-start; flex-wrap: wrap; }
   .transport-cluster + .transport-cluster { padding-left: 8px; }
+  .transport-project { flex: 1 0 100%; justify-content: flex-end; padding: 0 !important; border: 0 !important; }
+  .transport-project + .transport-cluster { padding-left: 0; border-left: 0; }
   .transport-context { margin-left: auto; }
   .transport-edit { margin-left: auto; }
 }
@@ -573,6 +606,7 @@ body[data-theme="light"] .note-name, body[data-theme="light"] .stat strong { col
   .transport-cluster { flex-wrap: wrap; }
   .transport-cluster + .transport-cluster { padding-left: 5px; }
   .transport-source { flex: 1 1 100%; }
+  .transport-project { flex: 1 1 100%; justify-content: flex-start; }
   .transport-context { flex: 1 1 100%; min-width: 0; margin-left: 0; }
   .transport-edit { margin-left: auto; }
   .workspace, .source-collapsed, .inspector-collapsed {

@@ -192,9 +192,19 @@ Validation:
 - Added concurrent normal/preview FFT/cache tests, sample-content/sample-rate
   invalidation, all public preview FFT sizes, and CPU/memory/warm-cache report
   tests. Existing tests are retained.
-- Linux/macOS builds, alternate compilers, GPU providers, physical ASIO
-  devices and GUI responsiveness under interactive load were not measured.
-  Catch2's existing Clang `__COUNTER__` warnings remain.
+- In the local validation recorded above, Linux/macOS builds, alternate
+  compilers, GPU providers, physical ASIO devices and GUI responsiveness under
+  interactive load were not measured. Catch2's existing Clang `__COUNTER__`
+  warnings remain.
+
+The CI workflow is configured for Windows and Linux Debug/Release matrices,
+Linux GCC/Clang builds, an optional FFmpeg build, CPU ONNX packaging, and a
+Windows WebView2/Verovio package check. It also defines Linux sanitizer and
+clang-tidy jobs. Those workflow definitions do not update the historical
+measurements above; consult the exact Actions run for executed results.
+The workflow uploads per-build evaluation reports but intentionally does not gate on
+single-run timing noise. The default and ONNX CPU packages are exercised from
+an extracted archive; optional FFmpeg still depends on host runtime libraries.
 
 ## Cache, concurrency and deferred work
 

@@ -68,6 +68,21 @@ double quarter_measure_length(const MeterHypothesis& meter) {
     return static_cast<double>(meter.numerator) * 4.0 / meter.denominator;
 }
 
+double interpretation_weight(const CanonicalNoteEvent& event) {
+    if (event.calibrated_confidence) return *event.calibrated_confidence;
+    if (event.detection_method != "legacy-note-vector") return 0.5;
+    const auto pitch = static_cast<int>(std::lround(event.midi_pitch));
+    double strongest_evidence = -1.0;
+    for (const auto& evidence : event.evidence) {
+        if (evidence.midi_pitch == pitch) {
+            strongest_evidence = std::max(strongest_evidence,
+                                          evidence.raw_strength);
+        }
+    }
+    return strongest_evidence >= 0.0
+        ? std::clamp(strongest_evidence, 0.0, 1.0) : 0.5;
+}
+
 std::vector<SourceNote> active_notes(
     std::span<const std::shared_ptr<const CanonicalNoteEvent>> events) {
     std::vector<SourceNote> result;
@@ -76,7 +91,7 @@ std::vector<SourceNote> active_notes(
         const auto& event = *events[i];
         if (event.state == EventLifecycle::Rejected) continue;
         result.push_back({i, event.midi_pitch, event.onset_seconds, event.offset_seconds,
-                          event.calibrated_confidence.value_or(0.5),
+                          interpretation_weight(event),
                           event.velocity, event.articulation});
     }
     std::stable_sort(result.begin(), result.end(), [](const SourceNote& a, const SourceNote& b) {
@@ -955,12 +970,21 @@ ScoreInterpretation interpret_notes(std::span<const Note> notes,
     events.reserve(notes.size());
     for (std::size_t i = 0; i < notes.size(); ++i) {
         const auto& note = notes[i];
-        events.push_back({"note-" + std::to_string(i + 1),
-                          static_cast<double>(note.midi_pitch), note.start_seconds,
-                          note.start_seconds + note.duration_seconds, 0, 0, 0,
-                          "notes-adapter", {}, "note-vector", {}, EventLifecycle::Stabilized,
-                          note.confidence, note.amplitude, std::nullopt, std::nullopt,
-                          std::nullopt, std::nullopt, {}});
+        CanonicalNoteEvent event;
+        event.id = "note-" + std::to_string(i + 1);
+        event.midi_pitch = static_cast<double>(note.midi_pitch);
+        event.onset_seconds = note.start_seconds;
+        event.offset_seconds = note.start_seconds + note.duration_seconds;
+        event.source_model = "notes-adapter";
+        event.detection_method = "legacy-note-vector";
+        event.evidence_kind = "legacy-heuristic-score";
+        event.state = EventLifecycle::Stabilized;
+        event.evidence.push_back({
+            note.start_seconds, note.midi_pitch, note.confidence, 0.0,
+            std::nullopt, std::nullopt, note.midi_pitch,
+            EvidenceSemantics::HeuristicScore, EvidenceSemantics::Unspecified,
+            std::nullopt});
+        events.push_back(std::move(event));
     }
     return interpret_note_events(events, options);
 }

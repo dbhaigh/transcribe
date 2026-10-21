@@ -14,6 +14,7 @@
     dadgad: "DADGAD",
     "open-d": "Open D",
     "open-g": "Open G",
+    custom: "Project tuning",
   };
   let notes = [];
   let tabPositions = [];
@@ -43,13 +44,21 @@
   let audioContext = null;
   let activeOscillators = [];
   let currentMetadata = {};
+  let currentProjectSettings = null;
+  let currentTuningOverride = null;
+  let projectActive = false;
   let scoreId = "";
   let scoreRevision = 0;
   let nextUserNoteId = 1;
   let rejectedFingeringCorrectionCount = 0;
   let fingeringSearchTruncated = false;
+  let reviewEnabled = false;
+  let reviewByNote = new Map();
+  let prioritizedReviewNotes = [];
+  let reviewDecisions = [];
+  let dismissedReviewSuggestions = new Set();
   const contextControlIds = [
-    "tempo-control", "key-control", "minor-control", "meter-control",
+    "tempo-control", "tempo-auto", "key-control", "minor-control", "meter-control",
     "pickup-control", "written-transposition-control", "guitar-tuning", "capo-fret",
   ];
   let contextBeforeLastChange = null;
@@ -65,7 +74,8 @@
   }
 
   function currentTuning() {
-    return tuningPitches[$("guitar-tuning").value] || tuningPitches.standard;
+    return currentTuningOverride ||
+      tuningPitches[$("guitar-tuning").value] || tuningPitches.standard;
   }
 
   function currentCapo() {
@@ -214,8 +224,7 @@
         }
       }
       context.fillStyle = selected ? "#fff2bd" : stateColor;
-      context.globalAlpha = note.state === "provisional" ? .68
-        : .58 + Math.max(0, Math.min(1, note.confidence || 0)) * .42;
+      context.globalAlpha = note.state === "provisional" ? .68 : .88;
       if (note.state === "provisional") context.setLineDash([2, 2]);
       context.beginPath();
       context.ellipse(x, y, radius, radius * .72, -.28, 0, Math.PI * 2);
@@ -403,12 +412,12 @@
     notes.forEach((note) => {
       const x = 4 + note.start * scale;
       const w = Math.max(2, note.duration * scale);
-      if (!Number.isFinite(note.confidence)) {
+      if (!Number.isFinite(note.calibrated_confidence)) {
         context.fillStyle = "rgba(120, 137, 145, .38)";
         context.fillRect(x, height * .25, w, height * .5);
         return;
       }
-      const value = Math.max(0, Math.min(1, note.confidence));
+      const value = Math.max(0, Math.min(1, note.calibrated_confidence));
       const hue = 4 + value * 150;
       context.fillStyle = `hsla(${hue}, 68%, 58%, ${.35 + value * .65})`;
       context.fillRect(x, height * .25, w, height * .5);
@@ -439,10 +448,13 @@
   }
 
   function readScoreContext() {
-    return Object.fromEntries(contextControlIds.map((id) => [
+    const context = Object.fromEntries(contextControlIds.map((id) => [
       id,
       $(id).type === "checkbox" ? $(id).checked : $(id).value,
     ]));
+    context._customTuning = currentTuningOverride
+      ? [...currentTuningOverride] : null;
+    return context;
   }
 
   function saveSnapshot(target = history, source = notes, settings = readScoreContext()) {
@@ -450,6 +462,8 @@
       notes: source.map((note) => ({ ...note })),
       positions: tabPositions.map((position) => ({ ...position })),
       settings: { ...settings },
+      reviewDecisions: reviewDecisions.map((decision) => ({ ...decision })),
+      dismissedReviewSuggestions: [...dismissedReviewSuggestions],
     });
     if (target.length > 100) target.shift();
   }
@@ -593,6 +607,7 @@
             : "",
         ].filter(Boolean).join(" ") ||
         "Ranked, pitch-preserving fingering suggestions appear for the selected note.";
+      renderReview(null);
       return;
     }
     const position = tabPositions[selectedIndex] || computeTabPosition(note, selectedIndex);
@@ -615,8 +630,8 @@
       ? `${note.measured_start.toFixed(3)} s` : "Not measured";
     $("detected-offset").textContent = Number.isFinite(note.measured_end)
       ? `${note.measured_end.toFixed(3)} s` : "Not measured";
-    $("detected-confidence").textContent = Number.isFinite(note.confidence)
-      ? `${Math.round(Math.max(0, Math.min(1, note.confidence)) * 100)}%`
+    $("detected-confidence").textContent = Number.isFinite(note.calibrated_confidence)
+      ? `${Math.round(Math.max(0, Math.min(1, note.calibrated_confidence)) * 100)}%`
       : "Not provided";
     const evidence = Array.isArray(note.raw_evidence) ? note.raw_evidence : [];
     const evidenceCount = Number.isInteger(note.raw_evidence_count)
@@ -627,13 +642,13 @@
       ? strengths.reduce((sum, value) => sum + value, 0) / strengths.length
       : null;
     $("detected-evidence").textContent = evidenceCount
-      ? `${evidenceCount} samples${evidenceCount > evidence.length ? ` · ${evidence.length} shown` : ""}${meanStrength === null ? "" : ` · mean shown strength ${meanStrength.toFixed(3)}`}`
+      ? `${evidenceCount} samples${evidenceCount > evidence.length ? ` · ${evidence.length} shown` : ""}${meanStrength === null ? "" : ` · mean detector strength ${meanStrength.toFixed(3)} · not a probability`}`
       : Number.isFinite(note.raw_strength)
         ? `Raw backend strength ${note.raw_strength.toFixed(3)} · not a probability`
         : "No raw evidence";
-    $("edit-instructions").textContent = Number.isFinite(note.confidence)
-      ? `Calibrated confidence ${Math.round(note.confidence * 100)}%`
-      : "Confidence not supplied by the backend";
+    $("edit-instructions").textContent = Number.isFinite(note.calibrated_confidence)
+      ? `Calibrated correctness estimate ${Math.round(note.calibrated_confidence * 100)}%`
+      : "No calibrated correctness estimate is available";
     $("edit-pitch").value = note.midi;
     $("edit-start").value = note.start.toFixed(2);
     $("edit-duration").value = note.duration.toFixed(2);
@@ -654,12 +669,15 @@
       const suggestion = document.createElement("button");
       suggestion.type = "button";
       suggestion.className = "alternative-pitch";
-      suggestion.textContent = `${noteName(candidate.midi)} · MIDI ${candidate.midi}`;
-      suggestion.title = "Pitch candidate returned by the active inference backend.";
+      const rawValue = Number(candidate.raw_value);
+      suggestion.textContent = `${noteName(candidate.midi)} · MIDI ${candidate.midi}${Number.isFinite(rawValue) ? ` · raw ${rawValue.toFixed(3)}` : ""}`;
+      suggestion.title = "Alternative raw backend activation. It is not a probability of correctness.";
       suggestion.addEventListener("click", () => {
         saveSnapshot();
         notes[selectedIndex].midi = candidate.midi;
         notes[selectedIndex].name = noteName(candidate.midi);
+        notes[selectedIndex].user_authored = true;
+        notes[selectedIndex].state = "manually_corrected";
         tabPositions[selectedIndex] = computeTabPosition(notes[selectedIndex], selectedIndex);
         renderSelected();
         drawAll();
@@ -727,6 +745,239 @@
       });
       fingeringContainer.appendChild(suggestion);
     });
+    renderReview(note);
+  }
+
+  function renderReview(note) {
+    const card = $("review-card");
+    card.classList.toggle("hidden", !reviewEnabled);
+    renderReviewQueue();
+    const list = $("review-items");
+    list.replaceChildren();
+    $("audition-event").disabled = !reviewEnabled || !note ||
+      liveCaptureActive ||
+      !/\.wav$/i.test($("input-path").value);
+    if (!reviewEnabled) {
+      $("review-status").textContent = "Disabled";
+      list.textContent = "Enable Evidence review before transcription.";
+      return;
+    }
+    if (!note) {
+      $("review-status").textContent = "Select a note";
+      list.textContent = "Select a note to inspect review findings.";
+      return;
+    }
+    const review = reviewByNote.get(note.id);
+    if (!review) {
+      $("review-status").textContent = "No review data";
+      list.textContent = "Run an offline transcription with evidence review enabled.";
+      return;
+    }
+    $("review-status").textContent =
+      `${review.evidence_samples} raw evidence sample(s)`;
+    const assessments = Array.isArray(review.assessments)
+      ? review.assessments : [];
+    assessments.forEach((assessment) => {
+      const item = document.createElement("p");
+      item.className = `review-assessment state-${assessment.state}`;
+      item.textContent = `${assessment.dimension}: ${assessment.explanation}`;
+      list.appendChild(item);
+    });
+    const findings = Array.isArray(review.findings) ? review.findings : [];
+    findings.forEach((finding) => {
+      const item = document.createElement("p");
+      item.className = "review-finding";
+      item.textContent =
+        `${finding.category.replaceAll("-", " ")} · rank ${Number(finding.ranking_score).toFixed(2)}: ${finding.explanation}`;
+      list.appendChild(item);
+    });
+    const suggestions = Array.isArray(review.suggestions)
+      ? review.suggestions : [];
+    const available = suggestions.filter((suggestion) =>
+      !dismissedReviewSuggestions.has(suggestion.id));
+    available.forEach((suggestion) => {
+      const wrapper = document.createElement("div");
+      wrapper.className = "review-suggestion";
+      const detail = document.createElement("p");
+      detail.textContent =
+        `${suggestion.explanation} Rank ${Number(suggestion.ranking_score).toFixed(2)} (not a probability). ${suggestion.ranking_basis}`;
+      wrapper.appendChild(detail);
+      const controls = document.createElement("div");
+      controls.className = "review-actions";
+      const accept = document.createElement("button");
+      accept.type = "button";
+      accept.className = "button button-small";
+      accept.textContent = suggestion.kind === "split-repeated-note"
+        ? "Split note" : "Apply suggestion";
+      accept.addEventListener("click", () => acceptReviewSuggestion(suggestion));
+      const dismiss = document.createElement("button");
+      dismiss.type = "button";
+      dismiss.className = "button button-small button-quiet";
+      dismiss.textContent = "Dismiss";
+      dismiss.addEventListener("click", () => decideReviewSuggestion(
+        suggestion, "rejected"));
+      controls.append(accept, dismiss);
+      wrapper.appendChild(controls);
+      list.appendChild(wrapper);
+    });
+    if (!list.childElementCount) {
+      list.textContent = "No ranked correction suggestions for this note.";
+    }
+  }
+
+  function rebuildReviewQueue() {
+    prioritizedReviewNotes = [];
+    if (!reviewEnabled) return;
+    notes.forEach((note, index) => {
+      const review = reviewByNote.get(note.id);
+      if (!review) return;
+      const findings = Array.isArray(review.findings) ? review.findings : [];
+      const suggestions = (Array.isArray(review.suggestions)
+        ? review.suggestions : []).filter((suggestion) =>
+        !dismissedReviewSuggestions.has(suggestion.id));
+      const ambiguous = (Array.isArray(review.assessments)
+        ? review.assessments : []).filter((assessment) =>
+        assessment.state === "ambiguous");
+      const ranked = findings.map((item) => ({
+        score: Number(item.ranking_score),
+        label: String(item.category || "finding").replaceAll("-", " "),
+      })).concat(suggestions.map((item) => ({
+        score: Number(item.ranking_score),
+        label: String(item.kind || "suggestion").replaceAll("-", " "),
+      }))).filter((item) => Number.isFinite(item.score));
+      if (!ranked.length && !ambiguous.length) return;
+      ranked.sort((left, right) => right.score - left.score);
+      const hasRank = ranked.length > 0;
+      prioritizedReviewNotes.push({
+        index,
+        note,
+        score: hasRank ? ranked[0].score : null,
+        sortScore: hasRank ? ranked[0].score : -1,
+        label: hasRank ? ranked[0].label
+          : `ambiguous ${ambiguous[0].dimension}`,
+      });
+    });
+    prioritizedReviewNotes.sort((left, right) =>
+      right.sortScore - left.sortScore ||
+      Number(left.note.measured_start ?? left.note.start) -
+        Number(right.note.measured_start ?? right.note.start));
+  }
+
+  function renderReviewQueue() {
+    const queue = $("review-queue");
+    queue.replaceChildren();
+    if (!reviewEnabled) {
+      queue.textContent = "Enable evidence review before transcription.";
+      return;
+    }
+    if (!prioritizedReviewNotes.length) {
+      queue.textContent = reviewByNote.size
+        ? "No ranked findings need review."
+        : "Run an offline transcription with evidence review enabled.";
+      return;
+    }
+    prioritizedReviewNotes.slice(0, 12).forEach((entry) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "review-queue-item";
+      button.setAttribute("aria-current",
+        notes[selectedIndex]?.id === entry.note.id ? "true" : "false");
+      const time = Number(entry.note.measured_start ?? entry.note.start);
+      const rank = entry.score === null
+        ? "unranked" : `rank ${entry.score.toFixed(2)}`;
+      button.textContent =
+        `${noteName(entry.note.midi)} · ${time.toFixed(2)} s · ` +
+        `${entry.label} · ${rank}`;
+      button.title = "Select this event to inspect its evidence and audition the source audio.";
+      button.addEventListener("click", () => chooseNote(entry.index));
+      queue.appendChild(button);
+    });
+  }
+
+  function decideReviewSuggestion(suggestion, outcome) {
+    if (dismissedReviewSuggestions.has(suggestion.id)) return;
+    saveSnapshot();
+    redoHistory = [];
+    reviewDecisions.push({
+      id: suggestion.id,
+      note_id: suggestion.note_id,
+      outcome,
+    });
+    dismissedReviewSuggestions.add(suggestion.id);
+    rebuildReviewQueue();
+    markEdited();
+    renderReview(notes[selectedIndex] || null);
+    updateHistoryButtons();
+  }
+
+  function acceptReviewSuggestion(suggestion) {
+    const index = notes.findIndex((candidate) =>
+      candidate.id === suggestion.note_id);
+    if (index < 0 || dismissedReviewSuggestions.has(suggestion.id)) return;
+    const note = notes[index];
+    let scoreSplit = null;
+    if (suggestion.kind === "split-repeated-note") {
+      const measuredDuration = Number(note.measured_end) -
+        Number(note.measured_start);
+      const measuredSplit = Number(suggestion.split_time_seconds);
+      if (!Number.isFinite(measuredSplit) || measuredDuration <= 0 ||
+          measuredSplit <= Number(note.measured_start) ||
+          measuredSplit >= Number(note.measured_end)) {
+        $("review-status").textContent = "Split suggestion no longer fits this event";
+        return;
+      }
+      const fraction = (measuredSplit - Number(note.measured_start)) /
+        measuredDuration;
+      scoreSplit = note.start + note.duration * fraction;
+    } else {
+      const pitch = Number(suggestion.suggested_midi_pitch);
+      if (!Number.isInteger(pitch) || pitch < 0 || pitch > 127) {
+        $("review-status").textContent = "Suggestion pitch is outside MIDI range";
+        return;
+      }
+    }
+    saveSnapshot();
+    redoHistory = [];
+    if (suggestion.kind === "split-repeated-note") {
+      const second = {
+        ...note,
+        id: `user-${scoreId || "score"}-${nextUserNoteId++}`,
+        start: scoreSplit,
+        duration: note.start + note.duration - scoreSplit,
+        confidence: null,
+        amplitude: null,
+        detected_midi: null,
+        raw_evidence: [],
+        pitch_alternatives: [],
+        source_event_ids: [],
+        user_authored: true,
+        state: "manually_corrected",
+      };
+      note.duration = scoreSplit - note.start;
+      note.user_authored = true;
+      note.state = "manually_corrected";
+      notes.splice(index + 1, 0, second);
+      tabPositions.splice(index + 1, 0, computeTabPosition(second, index + 1));
+    } else {
+      const pitch = Number(suggestion.suggested_midi_pitch);
+      note.midi = pitch;
+      note.name = noteName(pitch);
+      note.user_authored = true;
+      note.state = "manually_corrected";
+      tabPositions[index] = computeTabPosition(note, index);
+    }
+    reviewDecisions.push({
+      id: suggestion.id,
+      note_id: suggestion.note_id,
+      outcome: "accepted",
+    });
+    dismissedReviewSuggestions.add(suggestion.id);
+    rebuildReviewQueue();
+    selectedIndex = index;
+    renderSelected();
+    drawAll();
+    markEdited();
+    updateHistoryButtons();
   }
 
   function chooseNote(index) {
@@ -954,15 +1205,23 @@
   function restoreSnapshot(snapshot) {
     notes = snapshot.notes.map((note) => ({ ...note }));
     tabPositions = snapshot.positions.map((position) => ({ ...position }));
+    reviewDecisions = (snapshot.reviewDecisions || [])
+      .map((decision) => ({ ...decision }));
+    dismissedReviewSuggestions = new Set(
+      snapshot.dismissedReviewSuggestions || []);
     if (snapshot.settings) {
       contextControlIds.forEach((id) => {
         const control = $(id);
         if (control.type === "checkbox") control.checked = Boolean(snapshot.settings[id]);
         else control.value = snapshot.settings[id];
       });
+      currentTuningOverride = Array.isArray(snapshot.settings._customTuning)
+        ? [...snapshot.settings._customTuning] : null;
       contextBeforeLastChange = readScoreContext();
+      refreshStringOptions();
       updateContextSummary();
     }
+    if (reviewEnabled) rebuildReviewQueue();
     selectedIndex = Math.min(selectedIndex, notes.length - 1);
     renderSelected();
     drawAll();
@@ -1040,6 +1299,7 @@
         position.fret >= 0
         ? [[note.id, `${position.string}:${position.fret}`]] : [];
     }));
+    if (reviewEnabled) rebuildReviewQueue();
     duration = totalDuration();
     renderSelected();
     drawAll();
@@ -1079,14 +1339,21 @@
     if (Number.isInteger(currentMetadata.score_revision)) {
       scoreRevision = currentMetadata.score_revision;
     }
-    if (currentMetadata.tempo_inferred) {
+    if (currentProjectSettings?.tempo_automatic) {
+      $("tempo-auto").checked = true;
+    } else if (currentMetadata.tempo_inferred) {
+      $("tempo-auto").checked = false;
       $("tempo-control").value = Math.round(currentMetadata.tempo);
     }
-    if (currentMetadata.meter_inferred) {
+    if (currentProjectSettings?.meter_automatic) {
+      $("meter-control").value = "auto";
+    } else if (currentMetadata.meter_inferred) {
       $("meter-control").value =
         `${currentMetadata.time_numerator}/${currentMetadata.time_denominator}`;
     }
-    if (currentMetadata.key_inferred) {
+    if (currentProjectSettings?.key_automatic) {
+      $("key-control").value = "auto";
+    } else if (currentMetadata.key_inferred) {
       $("key-control").value = String(currentMetadata.key_fifths);
       $("minor-control").checked = Boolean(currentMetadata.minor_key);
     }
@@ -1282,6 +1549,12 @@
 
   function exportEdits() {
     if (!exportReady) return;
+    $("export-edits").disabled = true;
+    window.dispatchEvent(new CustomEvent("transcribe:export-started"));
+    send("export-edits", scoreWriteFields());
+  }
+
+  function scoreWriteFields(extra = {}) {
     const notesPayload = notes.map((note) => [
       note.id, note.midi, note.start, note.duration,
       Math.max(0, Math.min(1, note.confidence || 0)),
@@ -1291,24 +1564,35 @@
       position.manual && position.string > 0
         ? `${index},${position.string},${position.fret}` : ""
     ).filter(Boolean).join(";");
-    $("export-edits").disabled = true;
-    window.dispatchEvent(new CustomEvent("transcribe:export-started"));
-    send("export-edits", {
+    return {
       notes: notesPayload,
       tab_positions: positionsPayload,
       tempo: $("tempo-control").value,
+      tempo_auto: $("tempo-auto").checked ? "1" : "0",
       key_fifths: $("key-control").value,
+      key_auto: $("key-control").value === "auto" ? "1" : "0",
       minor: $("minor-control").checked ? "1" : "0",
       meter: $("meter-control").value,
+      meter_auto: $("meter-control").value === "auto" ? "1" : "0",
       pickup: $("pickup-control").value,
       written_transposition: $("written-transposition-control").value,
       base_revision: String(scoreRevision),
+      review_decisions: reviewDecisions.map((decision) =>
+        [decision.id, decision.note_id, decision.outcome].join(",")).join(";"),
       tuning: $("guitar-tuning").value,
       capo: String(currentCapo()),
+      model: $("model-path").value,
+      instrument: $("instrument-prior").value,
+      quality: $("quality-mode").value,
+      live_backend: $("live-backend").value,
+      polyphonic: $("polyphonic").checked ? "1" : "0",
+      preserve_timing: $("preserve-timing").checked ? "1" : "0",
+      latency_ms: $("latency-ms").value,
       musicxml: $("musicxml-path").value,
       tab: $("tab-path").value,
       midi: $("midi-path").value,
-    });
+      ...extra,
+    };
   }
 
   $("staff-view").addEventListener("pointerdown", (event) => beginDrag(event, $("staff-view"), "staff"));
@@ -1341,7 +1625,25 @@
   $("measure-prev").addEventListener("click", () => navigateMeasure(-1));
   $("measure-next").addEventListener("click", () => navigateMeasure(1));
   contextControlIds.forEach((id) => $(id).addEventListener("change", () => {
+    if (id === "guitar-tuning" && $("guitar-tuning").value !== "custom") {
+      currentTuningOverride = null;
+    }
     if (!exportReady) {
+      if (projectActive) {
+        saveSnapshot(history, notes, contextBeforeLastChange || readScoreContext());
+        redoHistory = [];
+        contextBeforeLastChange = readScoreContext();
+        if (id === "guitar-tuning" || id === "capo-fret") {
+          assignTabPositions();
+          refreshStringOptions();
+          renderSelected();
+          drawAll();
+        }
+        updateContextSummary();
+        markEdited();
+        updateHistoryButtons();
+        return;
+      }
       contextBeforeLastChange = readScoreContext();
       updateContextSummary();
       return;
@@ -1359,7 +1661,6 @@
     markEdited();
     updateHistoryButtons();
   }));
-  $("tempo-auto").addEventListener("change", updateContextSummary);
   function refreshStringOptions() {
     const selected = $("edit-string").value;
     $("edit-string").innerHTML = currentTuning().map((pitch, index) =>
@@ -1393,7 +1694,7 @@
     } else if (!typing && (event.ctrlKey || event.metaKey) &&
         event.key.toLowerCase() === "s") {
       event.preventDefault();
-      exportEdits();
+      window.dispatchEvent(new CustomEvent("transcribe:save-request"));
     } else if (!typing && !event.ctrlKey && !event.metaKey &&
         event.key.toLowerCase() === "o") {
       event.preventDefault();
@@ -1427,6 +1728,81 @@
   });
 
   window.addEventListener("transcribe:notes", (event) => acceptNotes(event.detail));
+  window.addEventListener("transcribe:project-active", (event) => {
+    projectActive = Boolean(event.detail?.active);
+  });
+  window.addEventListener("transcribe:project-settings", (event) => {
+    currentProjectSettings = event.detail || null;
+    const tuning = currentProjectSettings?.tuning;
+    currentTuningOverride = Array.isArray(tuning) && tuning.length === 6 &&
+      tuning.every((pitch) => Number.isInteger(pitch))
+      ? tuning.map(Number) : null;
+    refreshStringOptions();
+    updateContextSummary();
+    drawAll();
+  });
+  window.addEventListener("transcribe:project-save", (event) => {
+    const detail = event.detail || {};
+    window.dispatchEvent(new CustomEvent("transcribe:export-started"));
+    send("save-project", scoreWriteFields({ project_path: detail.path || "" }));
+  });
+  window.addEventListener("transcribe:project-copy", (event) => {
+    const detail = event.detail || {};
+    window.dispatchEvent(new CustomEvent("transcribe:export-started"));
+    send("save-score-copy", scoreWriteFields({ project_path: detail.path || "" }));
+  });
+  window.addEventListener("transcribe:project-autosave", (event) => {
+    const detail = event.detail || {};
+    send("autosave-project", scoreWriteFields({
+      generation: String(detail.generation || 0),
+    }));
+  });
+  window.addEventListener("transcribe:project-autosaving", (event) => {
+    const revision = Number(event.detail?.score_revision);
+    if (Number.isInteger(revision) && revision >= scoreRevision) {
+      scoreRevision = revision;
+      if (currentMetadata) currentMetadata.score_revision = revision;
+    }
+    currentProjectSettings = {
+      ...(currentProjectSettings || {}),
+      tempo_automatic: $("tempo-auto").checked,
+      meter_automatic: $("meter-control").value === "auto",
+      key_automatic: $("key-control").value === "auto",
+    };
+  });
+  window.addEventListener("transcribe:review-enabled", (event) => {
+    reviewEnabled = Boolean(event.detail?.enabled);
+    rebuildReviewQueue();
+    renderReview(notes[selectedIndex] || null);
+  });
+  window.addEventListener("transcribe:review", (event) => {
+    const detail = event.detail || {};
+    reviewEnabled = Boolean(detail.enabled);
+    const report = detail.report;
+    reviewByNote = new Map(Array.isArray(report?.notes)
+      ? report.notes.map((item) => [item.note_id, item]) : []);
+    dismissedReviewSuggestions = new Set(
+      (Array.isArray(report?.decisions) ? report.decisions : [])
+        .map((decision) => decision.suggestion_id));
+    rebuildReviewQueue();
+    $("review-limitation").textContent = report?.limitation ||
+      "No held-out labelled calibration set or distribution-shift detector is configured.";
+    if (detail.evidenceTruncated) {
+      $("review-limitation").textContent +=
+        " Evidence retention reached its bounded memory limit; some frames were sampled or omitted.";
+    }
+    renderReview(notes[selectedIndex] || null);
+  });
+  $("audition-event").addEventListener("click", () => {
+    const note = notes[selectedIndex];
+    if (!note) return;
+    const start = Math.max(0, Number.isFinite(note.measured_start)
+      ? note.measured_start - 0.18 : note.start - 0.18);
+    const end = Math.max(start + 0.05,
+      Number.isFinite(note.measured_end)
+        ? note.measured_end + 0.22 : note.start + note.duration + 0.22);
+    send("audition-event", { start: String(start), end: String(end) });
+  });
   window.addEventListener("transcribe:engraving-select", (event) => {
     const index = notes.findIndex((note) => note.id === event.detail?.id);
     chooseNote(index);
@@ -1467,6 +1843,8 @@
     const message = event.detail;
     if (message.success && Number.isInteger(message.score_revision)) {
       scoreRevision = message.score_revision;
+      reviewDecisions = [];
+      updateHistoryButtons();
     }
     contextBeforeLastChange = readScoreContext();
     $("export-edits").disabled = !exportReady;

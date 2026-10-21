@@ -1,4 +1,5 @@
 #include "transcribe/score.hpp"
+#include "transcribe/project.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -119,7 +120,19 @@ void validate_evidence(const EventEvidence& evidence) {
          (!std::isfinite(*evidence.fractional_midi) ||
           *evidence.fractional_midi < 0.0 || *evidence.fractional_midi > 127.0)) ||
         (evidence.raw_model_value && !std::isfinite(*evidence.raw_model_value)) ||
-        evidence.raw_midi_pitch < -1 || evidence.raw_midi_pitch > 127) {
+        evidence.raw_midi_pitch < -1 || evidence.raw_midi_pitch > 127 ||
+        (evidence.spectral_peak_fraction &&
+         (!std::isfinite(*evidence.spectral_peak_fraction) ||
+          *evidence.spectral_peak_fraction < 0.0 ||
+          *evidence.spectral_peak_fraction > 1.0)) ||
+        static_cast<int>(evidence.strength_semantics) <
+            static_cast<int>(EvidenceSemantics::Unspecified) ||
+        static_cast<int>(evidence.strength_semantics) >
+            static_cast<int>(EvidenceSemantics::CalibratedProbability) ||
+        static_cast<int>(evidence.raw_value_semantics) <
+            static_cast<int>(EvidenceSemantics::Unspecified) ||
+        static_cast<int>(evidence.raw_value_semantics) >
+            static_cast<int>(EvidenceSemantics::CalibratedProbability)) {
         throw std::invalid_argument("Score contains invalid raw inference evidence.");
     }
 }
@@ -434,6 +447,24 @@ void apply_command(ScoreDocument& document, const ScoreEditCommand& command,
                 note.provenance = {ScoreEditOrigin::User, transaction.actor,
                                    transaction.reason, transaction.command_id};
             }
+        } else if constexpr (std::is_same_v<Operation, RecordReviewDecision>) {
+            if (operation.suggestion_id.empty() || operation.note_id.empty() ||
+                operation.suggestion_id.size() > 256 ||
+                operation.note_id.size() > 256 ||
+                operation.reason.size() > 512 ||
+                find_note(document, operation.note_id) == nullptr ||
+                (operation.outcome != ReviewDecisionOutcome::Accepted &&
+                 operation.outcome != ReviewDecisionOutcome::Rejected) ||
+                std::any_of(document.review_decisions.begin(),
+                    document.review_decisions.end(), [&](const auto& decision) {
+                        return decision.suggestion_id == operation.suggestion_id;
+                    })) {
+                throw std::invalid_argument(
+                    "A review decision requires unique, bounded suggestion and note IDs.");
+            }
+            document.review_decisions.push_back({
+                operation.suggestion_id, operation.note_id, operation.outcome,
+                next_revision, operation.reason});
         }
     }, command);
 }
@@ -491,7 +522,18 @@ void write_evidence(std::ostream& output, const EventEvidence& evidence) {
     output << ",\"raw_model_value\":";
     if (evidence.raw_model_value) json_number(output, *evidence.raw_model_value);
     else output << "null";
-    output << ",\"raw_midi_pitch\":" << evidence.raw_midi_pitch << '}';
+    output << ",\"raw_midi_pitch\":" << evidence.raw_midi_pitch
+           << ",\"strength_semantics\":";
+    json_string(output, evidence_semantics_name(evidence.strength_semantics));
+    output << ",\"raw_value_semantics\":";
+    json_string(output, evidence_semantics_name(evidence.raw_value_semantics));
+    output << ",\"spectral_peak_fraction\":";
+    if (evidence.spectral_peak_fraction) {
+        json_number(output, *evidence.spectral_peak_fraction);
+    } else {
+        output << "null";
+    }
+    output << '}';
 }
 
 void write_event(std::ostream& output, const CanonicalNoteEvent& event) {
@@ -929,6 +971,16 @@ EventEvidence read_evidence(const JsonValue& value) {
     result.fractional_midi = optional_number(fields, "fractional_midi");
     result.raw_model_value = optional_number(fields, "raw_model_value");
     result.raw_midi_pitch = int_value(field(fields, "raw_midi_pitch"), "raw_midi_pitch");
+    if (const auto* semantics = optional_field(fields, "strength_semantics")) {
+        result.strength_semantics =
+            parse_evidence_semantics(string(*semantics, "strength_semantics"));
+    }
+    if (const auto* semantics = optional_field(fields, "raw_value_semantics")) {
+        result.raw_value_semantics =
+            parse_evidence_semantics(string(*semantics, "raw_value_semantics"));
+    }
+    result.spectral_peak_fraction =
+        optional_number(fields, "spectral_peak_fraction");
     return result;
 }
 
@@ -1137,6 +1189,22 @@ ScoreDocument read_current_document(const JsonValue::Object& fields) {
         tab.revision = uint64_value(field(values, "revision"), "revision");
         result.tab_notes.push_back(std::move(tab));
     }
+    if (const auto* decisions = optional_field(fields, "review_decisions")) {
+        for (const auto& item : array(*decisions, "review_decisions")) {
+            const auto& values = object(item, "review decision");
+            const auto outcome = string(field(values, "outcome"), "outcome");
+            if (outcome != "accepted" && outcome != "rejected") {
+                throw std::invalid_argument("Score review decision outcome is invalid.");
+            }
+            result.review_decisions.push_back({
+                string(field(values, "suggestion_id"), "suggestion_id"),
+                string(field(values, "note_id"), "note_id"),
+                outcome == "accepted" ? ReviewDecisionOutcome::Accepted
+                                      : ReviewDecisionOutcome::Rejected,
+                uint64_value(field(values, "revision"), "revision"),
+                string(field(values, "reason"), "reason")});
+        }
+    }
     for (const auto& item : array(field(fields, "history"), "history")) {
         const auto& values = object(item, "revision record");
         result.history.push_back({
@@ -1185,8 +1253,12 @@ ScoreDocument migrate_legacy_document(const JsonValue::Object& fields) {
         event.offset_seconds = start + duration;
         event.audio_source_id = result.source_id;
         event.detection_method = "legacy-project-migration";
-        event.calibrated_confidence = confidence;
+        event.evidence_kind = "legacy-heuristic-score";
         event.intensity_rms = amplitude;
+        event.evidence.push_back({
+            start, midi, confidence, 0.0, std::nullopt, std::nullopt, midi,
+            EvidenceSemantics::HeuristicScore,
+            EvidenceSemantics::Unspecified, std::nullopt});
         result.source_events.push_back(event);
         ScoreNote note;
         note.id = "legacy-note-" + std::to_string(index + 1);
@@ -1199,8 +1271,8 @@ ScoreDocument migrate_legacy_document(const JsonValue::Object& fields) {
         note.written_midi_pitch = midi;
         note.voice = 1;
         note.interpretation_evidence = confidence;
-        note.calibrated_confidence = confidence;
         note.intensity_rms = amplitude;
+        note.raw_evidence = event.evidence;
         note.user_authored = false;
         note.provenance = {ScoreEditOrigin::Migration, "migration",
                            "Migrated from version 0 flat-note project", {}};
@@ -1338,6 +1410,19 @@ ScoreDocument make_score_document(const ScoreInterpretation& interpretation,
     return document;
 }
 
+ScoreDocument make_empty_score_document(std::string score_id) {
+    if (score_id.empty()) {
+        throw std::invalid_argument("An empty score requires a stable score ID.");
+    }
+    ScoreDocument document;
+    document.id = std::move(score_id);
+    document.revision = 1;
+    document.history.push_back({
+        1, ScoreEditOrigin::User, "user", "Created empty score", {}});
+    validate_score_document(document);
+    return document;
+}
+
 double score_position_seconds(const ScoreDocument& document, double quarter_position) {
     if (!std::isfinite(quarter_position) || quarter_position < 0.0) {
         throw std::invalid_argument("Score position must be finite and nonnegative.");
@@ -1391,7 +1476,14 @@ std::vector<Note> score_notes(const ScoreDocument& document) {
         const double start = score_position_seconds(document, note->onset_quarters);
         const double end = score_position_seconds(
             document, note->onset_quarters + note->duration_quarters);
-        const double confidence = note->calibrated_confidence.value_or(0.0);
+        double confidence = note->calibrated_confidence.value_or(0.0);
+        if (!note->calibrated_confidence) {
+            for (const auto& evidence : note->raw_evidence) {
+                if (evidence.midi_pitch == note->sounding_midi_pitch) {
+                    confidence = std::max(confidence, evidence.raw_strength);
+                }
+            }
+        }
         result.push_back({note->sounding_midi_pitch, start, std::max(0.0, end - start),
                           midi_note_name(note->sounding_midi_pitch),
                           std::clamp(confidence, 0.0, 1.0),
@@ -1555,7 +1647,8 @@ void validate_score_document(const ScoreDocument& document) {
     if (document.source_events.size() > 1000000 ||
         document.notes.size() > 100000 ||
         document.rests.size() > 100000 ||
-        document.tab_notes.size() > 100000) {
+        document.tab_notes.size() > 100000 ||
+        document.review_decisions.size() > 100000) {
         throw std::length_error("Score document exceeds a supported element limit.");
     }
     std::unordered_set<std::string> source_ids;
@@ -1712,6 +1805,19 @@ void validate_score_document(const ScoreDocument& document) {
             throw std::invalid_argument("Score revision history is not monotonic.");
         }
         previous_revision = record.revision;
+    }
+    std::unordered_set<std::string> review_ids;
+    for (const auto& decision : document.review_decisions) {
+        if (decision.suggestion_id.empty() || decision.note_id.empty() ||
+            decision.suggestion_id.size() > 256 || decision.note_id.size() > 256 ||
+            decision.reason.size() > 512 || decision.revision == 0 ||
+            decision.revision > document.revision ||
+            !review_ids.insert(decision.suggestion_id).second ||
+            (decision.outcome != ReviewDecisionOutcome::Accepted &&
+             decision.outcome != ReviewDecisionOutcome::Rejected)) {
+            throw std::invalid_argument(
+                "Score review decision is invalid or duplicated.");
+        }
     }
 }
 
@@ -2022,6 +2128,21 @@ std::string serialize_score_document(const ScoreDocument& document) {
                << (tab.manually_corrected ? "true" : "false")
                << ",\"revision\":" << tab.revision << '}';
     }
+    output << "],\"review_decisions\":[";
+    for (std::size_t i = 0; i < document.review_decisions.size(); ++i) {
+        if (i) output << ',';
+        const auto& decision = document.review_decisions[i];
+        output << "{\"suggestion_id\":";
+        json_string(output, decision.suggestion_id);
+        output << ",\"note_id\":";
+        json_string(output, decision.note_id);
+        output << ",\"outcome\":";
+        json_string(output, decision.outcome == ReviewDecisionOutcome::Accepted
+            ? "accepted" : "rejected");
+        output << ",\"revision\":" << decision.revision << ",\"reason\":";
+        json_string(output, decision.reason);
+        output << '}';
+    }
     output << "],\"history\":[";
     for (std::size_t i = 0; i < document.history.size(); ++i) {
         if (i) output << ',';
@@ -2062,6 +2183,299 @@ ScoreDocument deserialize_score_document(std::string_view json) {
     }
     validate_score_document(result);
     return result;
+}
+
+void validate_project_document(const ProjectDocument& project) {
+    if (project.schema_version != project_schema_version ||
+        project.id.empty() || project.id.size() > 256 ||
+        project.title.empty() || project.title.size() > 4096 ||
+        project.last_saved_path.size() > 32768) {
+        throw std::invalid_argument("Project identity or schema version is invalid.");
+    }
+    validate_score_document(project.score);
+    if (project.audio.policy == ProjectAudioPolicy::ExternalReference) {
+        if (project.audio.reference_path.empty() ||
+            project.audio.reference_path.size() > 32768) {
+            throw std::invalid_argument(
+                "A linked project must contain a valid source-audio reference.");
+        }
+    } else if (!project.audio.reference_path.empty() ||
+               project.audio.relative_to_project) {
+        throw std::invalid_argument(
+            "A score-only project cannot contain an audio reference.");
+    }
+    if (project.audio.sample_rate > 768000 || project.audio.channels == 0 ||
+        project.audio.channels > 32 ||
+        (project.audio.frame_count > 0 && project.audio.sample_rate == 0)) {
+        throw std::invalid_argument("Project recording metadata is invalid.");
+    }
+    const auto& analysis = project.analysis;
+    if (analysis.backend_identifier.empty() ||
+        analysis.backend_identifier.size() > 1024 ||
+        analysis.model_identifier.empty() ||
+        analysis.model_identifier.size() > 1024 ||
+        analysis.model_reference.size() > 32768 ||
+        analysis.instrument_prior.empty() ||
+        analysis.instrument_prior.size() > 128 ||
+        analysis.live_backend.empty() ||
+        analysis.live_backend.size() > 128 ||
+        !std::isfinite(analysis.latency_ms) ||
+        analysis.latency_ms < 0.0 || analysis.latency_ms > 10000.0) {
+        throw std::invalid_argument("Project analysis configuration is invalid.");
+    }
+    if (project.exports.size() > 32) {
+        throw std::length_error("Project contains too many export-status records.");
+    }
+    std::unordered_set<std::string> export_formats;
+    for (const auto& status : project.exports) {
+        if ((status.format != "musicxml" && status.format != "tablature" &&
+             status.format != "midi") ||
+            !export_formats.insert(status.format).second ||
+            status.path.empty() || status.path.size() > 32768 ||
+            status.score_revision == 0 ||
+            status.score_revision > project.score.revision ||
+            status.error.size() > 4096) {
+            throw std::invalid_argument("Project export-status record is invalid.");
+        }
+    }
+}
+
+std::string serialize_project_document(const ProjectDocument& project) {
+    validate_project_document(project);
+    std::ostringstream output;
+    output << "{\"format\":\"transcriber-project\",\"project_schema_version\":"
+           << project.schema_version << ",\"id\":";
+    json_string(output, project.id);
+    output << ",\"title\":";
+    json_string(output, project.title);
+    output << ",\"last_saved_path\":";
+    json_string(output, project.last_saved_path);
+    output << ",\"audio\":{\"policy\":";
+    json_string(output, project.audio.policy == ProjectAudioPolicy::ScoreOnly
+        ? "score-only" : "external-reference");
+    output << ",\"reference_path\":";
+    json_string(output, project.audio.reference_path);
+    output << ",\"relative_to_project\":"
+           << (project.audio.relative_to_project ? "true" : "false")
+           << ",\"sample_rate\":" << project.audio.sample_rate
+           << ",\"channels\":" << project.audio.channels
+           << ",\"frame_count\":" << project.audio.frame_count
+           << "},\"analysis\":{\"backend_identifier\":";
+    json_string(output, project.analysis.backend_identifier);
+    output << ",\"model_identifier\":";
+    json_string(output, project.analysis.model_identifier);
+    output << ",\"model_reference\":";
+    json_string(output, project.analysis.model_reference);
+    output << ",\"instrument_prior\":";
+    json_string(output, project.analysis.instrument_prior);
+    output << ",\"live_backend\":";
+    json_string(output, project.analysis.live_backend);
+    output << ",\"tempo_automatic\":"
+    << (project.analysis.tempo_automatic ? "true" : "false")
+    << ",\"meter_automatic\":"
+    << (project.analysis.meter_automatic ? "true" : "false")
+    << ",\"key_automatic\":"
+    << (project.analysis.key_automatic ? "true" : "false")
+    << ",\"polyphonic\":"
+           << (project.analysis.polyphonic ? "true" : "false")
+           << ",\"fast_preview\":"
+           << (project.analysis.fast_preview ? "true" : "false")
+           << ",\"preserve_expressive_timing\":"
+           << (project.analysis.preserve_expressive_timing ? "true" : "false")
+           << ",\"latency_ms\":";
+    json_number(output, project.analysis.latency_ms);
+    output << "},\"exports\":[";
+    for (std::size_t index = 0; index < project.exports.size(); ++index) {
+        if (index) output << ',';
+        const auto& status = project.exports[index];
+        output << "{\"format\":";
+        json_string(output, status.format);
+        output << ",\"path\":";
+        json_string(output, status.path);
+        output << ",\"score_revision\":" << status.score_revision
+               << ",\"success\":" << (status.success ? "true" : "false")
+               << ",\"error\":";
+        json_string(output, status.error);
+        output << '}';
+    }
+    output << "],\"score\":" << serialize_score_document(project.score) << '}';
+    if (!output) throw std::runtime_error("Failed to serialize project document.");
+    return output.str();
+}
+
+ProjectDocument deserialize_project_document(std::string_view json) {
+    const auto parsed = JsonParser(json).parse();
+    const auto& fields = object(parsed, "project");
+    const auto* format = optional_field(fields, "format");
+    if (format == nullptr) {
+        ProjectDocument migrated;
+        migrated.score = deserialize_score_document(json);
+        migrated.id = migrated.score.id + "-project";
+        migrated.title = migrated.score.source_id.empty()
+            ? "Recovered score" : migrated.score.source_id;
+        migrated.analysis.model_identifier = "builtin:yin";
+        migrated.analysis.backend_identifier = "builtin:yin";
+        if (!migrated.score.source_id.empty() &&
+            migrated.score.source_id != "live-capture") {
+            migrated.audio.policy = ProjectAudioPolicy::ExternalReference;
+            migrated.audio.reference_path = migrated.score.source_id;
+            migrated.audio.sample_rate = migrated.score.source_sample_rate;
+        }
+        validate_project_document(migrated);
+        return migrated;
+    }
+    if (string(*format, "format") != "transcriber-project") {
+        throw std::invalid_argument("The selected file is not a Transcriber project.");
+    }
+
+    const auto* schema = optional_field(fields, "project_schema_version");
+    if (schema == nullptr) {
+        throw std::invalid_argument("Project has no supported schema version.");
+    }
+    const auto schema_version = integer(*schema, "project_schema_version");
+    if (schema_version < 0 ||
+        schema_version > static_cast<std::int64_t>(project_schema_version)) {
+        throw std::invalid_argument("Unsupported project schema version: " +
+                                    std::to_string(schema_version));
+    }
+
+    ProjectDocument project;
+    project.schema_version = project_schema_version;
+    const auto& score_fields = object(field(fields, "score"), "score");
+    if (schema_version == 0) {
+        const auto* score_schema = optional_field(score_fields, "schema_version");
+        if (score_schema == nullptr) {
+            const auto* legacy_version = optional_field(score_fields, "version");
+            if (legacy_version == nullptr ||
+                integer(*legacy_version, "version") != 0) {
+                throw std::invalid_argument(
+                    "Legacy project contains an unsupported score schema.");
+            }
+            project.score = migrate_legacy_document(score_fields);
+        } else {
+            if (integer(*score_schema, "schema_version") != score_schema_version) {
+                throw std::invalid_argument(
+                    "Legacy project contains an unsupported score schema.");
+            }
+            project.score = read_current_document(score_fields);
+        }
+        const auto* id = optional_field(fields, "id");
+        project.id = id == nullptr ? project.score.id + "-project"
+                                   : string(*id, "id");
+        const auto* title = optional_field(fields, "title");
+        project.title = title == nullptr ? "Migrated project"
+                                         : string(*title, "title");
+        const auto* audio = optional_field(fields, "audio");
+        if (audio != nullptr) {
+            const auto& audio_fields = object(*audio, "audio");
+            const auto* reference = optional_field(audio_fields, "reference_path");
+            if (reference != nullptr && !string(*reference, "reference_path").empty()) {
+                project.audio.policy = ProjectAudioPolicy::ExternalReference;
+                project.audio.reference_path = string(*reference, "reference_path");
+                const auto* relative =
+                    optional_field(audio_fields, "relative_to_project");
+                if (relative != nullptr) {
+                    project.audio.relative_to_project =
+                        boolean(*relative, "relative_to_project");
+                }
+            }
+        }
+        const auto* analysis = optional_field(fields, "analysis");
+        if (analysis != nullptr) {
+            const auto& analysis_fields = object(*analysis, "analysis");
+            if (const auto* backend =
+                    optional_field(analysis_fields, "backend_identifier")) {
+                project.analysis.backend_identifier =
+                    string(*backend, "backend_identifier");
+            }
+            if (const auto* model =
+                    optional_field(analysis_fields, "model_identifier")) {
+                project.analysis.model_identifier = string(*model, "model_identifier");
+            }
+        }
+    } else {
+        project.id = string(field(fields, "id"), "id");
+        project.title = string(field(fields, "title"), "title");
+        project.last_saved_path =
+            string(field(fields, "last_saved_path"), "last_saved_path");
+
+        const auto& audio_fields = object(field(fields, "audio"), "audio");
+        const auto policy = string(field(audio_fields, "policy"), "audio policy");
+        if (policy == "score-only") {
+            project.audio.policy = ProjectAudioPolicy::ScoreOnly;
+        } else if (policy == "external-reference") {
+            project.audio.policy = ProjectAudioPolicy::ExternalReference;
+        } else {
+            throw std::invalid_argument("Project audio policy is not supported.");
+        }
+        project.audio.reference_path =
+            string(field(audio_fields, "reference_path"), "audio reference");
+        project.audio.relative_to_project =
+            boolean(field(audio_fields, "relative_to_project"),
+                     "relative_to_project");
+        project.audio.sample_rate =
+            uint32_value(field(audio_fields, "sample_rate"), "audio sample rate");
+        project.audio.channels =
+            uint32_value(field(audio_fields, "channels"), "audio channels");
+        project.audio.frame_count =
+            uint64_value(field(audio_fields, "frame_count"), "audio frame count");
+
+        const auto& analysis_fields = object(field(fields, "analysis"), "analysis");
+        project.analysis.backend_identifier =
+            string(field(analysis_fields, "backend_identifier"), "backend identifier");
+        project.analysis.model_identifier =
+            string(field(analysis_fields, "model_identifier"), "model identifier");
+        project.analysis.model_reference =
+            string(field(analysis_fields, "model_reference"), "model reference");
+        project.analysis.instrument_prior =
+            string(field(analysis_fields, "instrument_prior"), "instrument prior");
+        project.analysis.live_backend =
+            string(field(analysis_fields, "live_backend"), "live backend");
+        if (const auto* value =
+                optional_field(analysis_fields, "tempo_automatic")) {
+            project.analysis.tempo_automatic =
+                boolean(*value, "tempo_automatic");
+        }
+        if (const auto* value =
+                optional_field(analysis_fields, "meter_automatic")) {
+            project.analysis.meter_automatic =
+                boolean(*value, "meter_automatic");
+        }
+        if (const auto* value =
+                optional_field(analysis_fields, "key_automatic")) {
+            project.analysis.key_automatic =
+                boolean(*value, "key_automatic");
+        }
+        project.analysis.polyphonic =
+            boolean(field(analysis_fields, "polyphonic"), "polyphonic");
+        project.analysis.fast_preview =
+            boolean(field(analysis_fields, "fast_preview"), "fast_preview");
+        project.analysis.preserve_expressive_timing =
+            boolean(field(analysis_fields, "preserve_expressive_timing"),
+                     "preserve_expressive_timing");
+        project.analysis.latency_ms =
+            number(field(analysis_fields, "latency_ms"), "latency_ms");
+
+        for (const auto& value : array(field(fields, "exports"), "exports")) {
+            const auto& export_fields = object(value, "export status");
+            project.exports.push_back({
+                string(field(export_fields, "format"), "export format"),
+                string(field(export_fields, "path"), "export path"),
+                uint64_value(field(export_fields, "score_revision"),
+                             "export score revision"),
+                boolean(field(export_fields, "success"), "export success"),
+                string(field(export_fields, "error"), "export error")});
+        }
+        const auto* score_schema = optional_field(score_fields, "schema_version");
+        if (score_schema == nullptr ||
+            integer(*score_schema, "schema_version") != score_schema_version) {
+            throw std::invalid_argument(
+                "Project contains an unsupported score schema version.");
+        }
+        project.score = read_current_document(score_fields);
+    }
+    validate_project_document(project);
+    return project;
 }
 
 } // namespace transcribe

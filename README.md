@@ -1,10 +1,11 @@
 # Transcriber
 
-Transcriber is a C++20 CLI and Windows GUI for turning audio into a first-pass
-musical score and configurable guitar tablature. Version 0.1.4 adds interactive
-score editing, configurable guitar tablature, and more expressive MusicXML
-exports, while retaining the dependency-light WAV/YIN default, optional ONNX
-inference, optional FFmpeg decoding, and optional Windows ASIO capture.
+Transcriber 0.1.5 is a C++20 audio-to-score CLI with an optional Windows
+WebView2 workstation as its sole graphical interface. It combines first-pass
+transcription with editable notation/tab, canonical score projects, evidence
+review, and reproducible build/package checks while retaining the
+dependency-light WAV/YIN default and explicit optional ONNX, FFmpeg, ASIO,
+WebView2, and Verovio integrations.
 
 This release is an early transcription aid, not a commercial-grade
 polyphonic automatic music transcription (AMT) system. The fast built-in YIN
@@ -26,21 +27,38 @@ WAV / optional FFmpeg       Windows ASIO callback
                                |
                  MusicXML / guitar tab / MIDI
                                |
-                    CLI / Win32 or WebView2 GUI
+                    CLI / optional WebView2 workstation
 ```
 
-The default executable and core library use only the C++ standard library.
-Optional integrations are configured explicitly and are not needed for WAV
-transcription.
+The default CLI and core library use only the C++ standard library. Optional
+integrations are configured explicitly and are not needed for WAV
+transcription. No native Win32 GUI is built; the WebView2 workstation is the
+only graphical frontend and is enabled explicitly for Windows builds.
 
 ## Build
 
 Requires CMake 3.20+ and a C++20 compiler.
 
+The default configure is dependency-light and does not build tests:
+
 ```powershell
 cmake -S . -B build
 cmake --build build --config Release
 ```
+
+For reproducible tested configurations, CMake presets are provided. For
+example, on Windows:
+
+```powershell
+cmake --preset windows-release
+cmake --build --preset windows-release --parallel
+ctest --preset windows-release
+```
+
+On Linux, use `linux-gcc-release` or `linux-clang-release`. Optional presets
+include `linux-ffmpeg-release` and `linux-sanitizer`. See
+[the release checklist](docs/release-checklist.md) for dependencies and the
+complete preset list.
 
 To build and run the test suite (Catch2 is fetched by CMake):
 
@@ -74,9 +92,16 @@ playability-aware sequence assignments and preserves manual corrections
 without changing sounding pitch.
 The [canonical score model](docs/score-model.md) is the versioned source of
 truth for accepted notation, tablature, MIDI exports, and transactional edits.
+The [evidence-based review workflow](docs/review.md) preserves raw detector
+evidence separately from calibrated confidence and provides ranked,
+user-confirmed correction suggestions. The current workflow does not present
+uncalibrated detector values as probabilities.
+The local [project workflow](docs/projects.md) saves that accepted score,
+analysis settings, audio references, export status, and correction history in a
+versioned project file with autosave recovery.
 The optional [Verovio engraving view](docs/notation-rendering.md) renders that
-accepted score as interactive, zoomable notation in the WebView2 GUI while
-preserving the editable canvas and dependency-light native GUI.
+accepted score as interactive, zoomable notation in the WebView2 workstation
+while preserving the editable canvas.
 The optional [WebView2 workstation](docs/workstation-ui.md) connects file and
 ASIO capture, score editing, playback, interpretation settings, and explicit
 score-proposal acceptance to the existing application backend.
@@ -178,29 +203,22 @@ bounded independently of file duration. The existing `AudioBuffer` API remains
 available. ONNX and compressed FFmpeg inputs still use full-buffer
 inference/decoding.
 
-## Windows GUI
+## Windows workstation
 
-On Windows, the default build creates `transcriber-gui` with native Win32
-controls. It provides file pickers, drag-and-drop, progress, a rolling note
-preview during ASIO capture, remembered paths, and an open-output-folder
-action. This dependency-light native form remains available as a fallback.
-
-For the modern workstation UI, build with the optional WebView2 front end. It
-uses local HTML/CSS/JavaScript and custom canvas score rendering, while keeping
-audio decoding, analysis, and export in the shared C++ backend. This avoids
-adding a separate UI framework or remote score-rendering dependency. The
-workspace displays scrolling waveform and spectrogram previews, standard
-notation and synchronized guitar tablature, confidence and pitch-suggestion
-panels, and supports selecting, dragging, inserting, deleting, and editing
-notes and tab positions. Undo/redo, themes, keyboard shortcuts, instrument and
-quality controls, playback, and edited-score export are included.
+The WebView2 workstation is the only graphical interface. It uses local
+HTML/CSS/JavaScript and canvas score editing backed by the shared C++ engine;
+there is no native Win32 GUI fallback. The workspace provides file and
+supported ASIO capture workflows, waveform/spectrogram previews, synchronized
+standard notation and guitar tablature, evidence review, project save/recovery,
+transactional score editing, undo/redo, themes, keyboard shortcuts, playback,
+and edited-score export. Optional Verovio adds offline MusicXML engraving.
 
 Original-audio playback currently supports WAV files; synthesized note playback
 uses Web Audio. Playback cursor alignment is approximate, and the custom
 notation renderer is an interactive editing view rather than a full engraving
 system. Pitch alternatives are adjacent-semitone suggestions with heuristic,
-uncalibrated confidence, not additional model predictions. The WebView2 option
-is off by default so the normal build stays dependency-light.
+uncalibrated evidence, not additional model predictions. The WebView2 option
+is off by default so the normal build stays dependency-light and CLI-only.
 
 ```powershell
 .\build\Release\transcriber-gui.exe
@@ -217,17 +235,18 @@ GUI as notes stabilize. Lower window settings trade low-pitch sensitivity for
 faster response, and actual end-to-end latency depends on the audio device and
 system load.
 
-For WAV files, the GUI publishes an updated score preview as each two-second
+For WAV files, the workstation publishes an updated score preview as each two-second
 chunk is analyzed. CLI streaming keeps its 15-second default chunks. This
 progressive file mode and ASIO preview both preserve the final offline analysis
 and export behavior.
 
 ## Optional integrations
 
-### WebView2 GUI
+### WebView2 workstation
 
-Extract the `Microsoft.Web.WebView2` NuGet package and point CMake to the
-extracted package root:
+The WebView2 workstation is the only graphical frontend and is built
+explicitly on Windows. Extract the `Microsoft.Web.WebView2` NuGet package and
+point CMake to the extracted package root:
 
 ```powershell
 cmake -S . -B build-webview2 `
@@ -247,8 +266,8 @@ app offers to launch the bundled bootstrapper. Runtime installation needs
 internet access; close and restart Transcriber after installation. The runtime
 updates independently of Transcriber. See Microsoft's
 [WebView2 deployment documentation](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution)
-for deployment details. To keep using the native Win32 form, leave
-`TRANSCRIBE_ENABLE_WEBVIEW2` off.
+for deployment details. Leave `TRANSCRIBE_ENABLE_WEBVIEW2` off to build the
+dependency-light CLI without a graphical application.
 
 ### Polyphonic analysis and instrument priors
 
@@ -395,10 +414,39 @@ running CTest; that optional smoke test is skipped when no clip is supplied.
 The reproducible GuitarSet guitar evaluation and its dataset/licensing details
 are documented in [python/README.md](python/README.md).
 
-CI builds and tests on Windows and Linux and creates ZIP/TGZ packages. A local
-package can be made after configuring and building with CPack, for example
-`cpack --config build/CPackConfig.cmake -G TGZ`; Windows WebView2 packages
-include the local UI assets, loader, and runtime bootstrapper.
+## CI and release packages
+
+The GitHub Actions workflow is configured for Windows Debug/Release and Linux
+GCC/Clang Debug/Release, with separate optional FFmpeg, CPU ONNX Runtime, and
+Windows WebView2/Verovio builds. Production targets use compiler warnings as
+errors; separate Linux jobs are configured for
+AddressSanitizer/UndefinedBehaviorSanitizer tests and `clang-tidy`. The workflow
+configures CPack ZIP/TGZ creation, extracted-package CLI/help/WAV-export
+checks, and feature-specific payload/notices audits. MSVC package rules stage
+detected runtime DLLs. Linux CPU ONNX package rules stage its runtime library
+and notices; Windows CPU packages stage `onnxruntime.dll` when it is present
+in the supplied runtime distribution. WebView2 package checks cover its
+loader, bootstrapper, local assets, and notices. The default Linux archive is
+configured to run in a network-disabled Ubuntu runtime container without the
+build toolchain.
+
+The workflow uploads evaluation JSON/text reports for inspection when those
+jobs run. Synthetic timing is descriptive and is not a noisy, per-build speed
+gate. Maintained measured
+baseline results and the comparison protocol are documented in
+[Evaluation](docs/evaluation.md) and [Performance](docs/performance.md).
+Workflow configuration is not evidence of a passing run; consult the exact
+GitHub Actions run and artifact before making release claims.
+
+These archives are not managed installers. The WebView2 Evergreen Runtime is
+installed separately using the included bootstrapper. FFmpeg shared libraries
+remain external runtime prerequisites for FFmpeg builds; GPU ONNX provider
+dependencies are not bundled or hardware-qualified. ASIO builds require
+developer-supplied RtAudio/ASIO dependencies and are not exercised on hosted
+CI. See [the dependency inventory](docs/dependency-licenses.md) and
+[release checklist](docs/release-checklist.md) before redistribution. The
+repository is licensed under the MIT License; see [LICENSE](LICENSE). Optional
+dependencies retain their own licenses and notices.
 
 Do not commit model weights, unlicensed recordings, or generated build output.
 Model contributors should document provenance, license, sample rate, labels,

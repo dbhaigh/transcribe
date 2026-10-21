@@ -7,19 +7,207 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Configure with tests
-        run: cmake -S . -B build -DTRANSCRIBE_BUILD_TESTS=ON
+      - name: Configure
+        run: cmake --preset windows-${{ matrix.configuration }}
       - name: Build
-        run: cmake --build build --config Release --parallel
-      - name: Build WebView2 GUI
+        run: cmake --build --preset windows-${{ matrix.configuration }} --parallel
+      - name: Test
+        run: ctest --preset windows-${{ matrix.configuration }}
+      - name: Package and smoke-test Windows CLI
+        if: matrix.configuration == 'release'
+        shell: pwsh
+        run: |
+          $packageDir = "out\packages\windows-native"
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          cpack --config "out\build\windows-release\CPackConfig.cmake" `
+            -G ZIP -C Release -B $packageDir
+          $package = Get-ChildItem $packageDir -Filter "*.zip" |
+            Select-Object -First 1
+          if (-not $package) { throw "CPack did not create a ZIP package" }
+          python tests\package_smoke.py $package.FullName `
+            --expect-msvc-runtime --isolated-runtime
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-windows-${{ matrix.configuration }}
+          path: out/build/windows-${{ matrix.configuration }}/evaluation/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.configuration == 'release'
+        with:
+          name: transcriber-windows-cli
+          path: out/packages/windows-native/*
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        configuration: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Configure
+        run: cmake --preset linux-${{ matrix.compiler }}-${{ matrix.configuration }}
+      - name: Build
+        run: cmake --build --preset linux-${{ matrix.compiler }}-${{ matrix.configuration }} --parallel
+      - name: Test
+        run: ctest --preset linux-${{ matrix.compiler }}-${{ matrix.configuration }}
+      - name: Package and smoke-test Release CLI
+        if: matrix.configuration == 'release'
+        run: |
+          package_dir="$RUNNER_TEMP/transcriber-package"
+          mkdir -p "$package_dir"
+          cpack --config "out/build/linux-${{ matrix.compiler }}-release/CPackConfig.cmake" \
+            -G TGZ -B "$package_dir"
+          package="$(find "$package_dir" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          test -n "$package"
+          python tests/package_smoke.py "$package" --isolated-runtime
+      - name: Run default package in a minimal Ubuntu runtime container
+        if: matrix.configuration == 'release' && matrix.compiler == 'gcc'
+        run: |
+          docker build --file tests/runtime-smoke.Dockerfile \
+            --tag transcriber-runtime-smoke .
+          docker run --rm --network none \
+            --volume "$RUNNER_TEMP/transcriber-package:/package:ro" \
+            transcriber-runtime-smoke bash -euc '
+              archive="$(find /package -maxdepth 1 -type f -name "*.tar.gz" -print -quit)"
+              test -n "$archive"
+              mkdir -p /tmp/transcriber
+              tar -xzf "$archive" -C /tmp/transcriber
+              executable="$(find /tmp/transcriber -type f -name transcriber -print -quit)"
+              audio="$(find /tmp/transcriber -type f -name single_a4.wav -print -quit)"
+              test -n "$executable" && test -n "$audio"
+              "$executable" --help >/dev/null
+              "$executable" "$audio" --quiet --musicxml /tmp/transcriber-smoke.musicxml
+              test -s /tmp/transcriber-smoke.musicxml
+            '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-linux-${{ matrix.compiler }}-${{ matrix.configuration }}
+          path: out/build/linux-${{ matrix.compiler }}-${{ matrix.configuration }}/evaluation/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.configuration == 'release'
+        with:
+          name: transcriber-linux-${{ matrix.compiler }}
+          path: ${{ runner.temp }}/transcriber-package/*
+          if-no-files-found: error
+
+  linux-ffmpeg:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install FFmpeg development and runtime packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg pkg-config libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
+      - name: Configure
+        run: cmake --preset linux-ffmpeg-release
+      - name: Build
+        run: cmake --build --preset linux-ffmpeg-release --parallel
+      - name: Test
+        run: ctest --preset linux-ffmpeg-release
+      - name: Package and smoke-test FFmpeg CLI
+        run: |
+          package_dir="$RUNNER_TEMP/transcriber-ffmpeg-package"
+          mkdir -p "$package_dir"
+          cpack --config out/build/linux-ffmpeg-release/CPackConfig.cmake \
+            -G TGZ -B "$package_dir"
+          package="$(find "$package_dir" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          test -n "$package"
+          python tests/package_smoke.py "$package" --expect-ffmpeg --isolated-runtime
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-linux-ffmpeg
+          path: out/build/linux-ffmpeg-release/evaluation/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transcriber-linux-ffmpeg
+          path: ${{ runner.temp }}/transcriber-ffmpeg-package/*
+          if-no-files-found: error
+
+  linux-onnx:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download ONNX Runtime CPU 1.20.1
+        run: |
+          curl -fsSL https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-1.20.1.tgz \
+            -o "$RUNNER_TEMP/onnxruntime.tgz"
+          tar -xzf "$RUNNER_TEMP/onnxruntime.tgz" -C "$RUNNER_TEMP"
+          echo "ONNXRUNTIME_ROOT=$RUNNER_TEMP/onnxruntime-linux-x64-1.20.1" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/onnxruntime-linux-x64-1.20.1/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+      - name: Configure
+        run: >-
+          cmake -S . -B build-onnx
+          -DTRANSCRIBE_ENABLE_ONNX=ON
+          -DTRANSCRIBE_BUILD_TESTS=ON
+          -DTRANSCRIBE_WARNINGS_AS_ERRORS=ON
+          -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build-onnx --parallel
+      - name: Test
+        run: ctest --test-dir build-onnx --output-on-failure
+      - name: Package and smoke-test CPU ONNX
+        run: |
+          package_dir="$RUNNER_TEMP/transcriber-onnx-package"
+          mkdir -p "$package_dir"
+          cpack --config build-onnx/CPackConfig.cmake -G TGZ -B "$package_dir"
+          package="$(find "$package_dir" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          test -n "$package"
+          python tests/package_smoke.py "$package" --expect-model --isolated-runtime
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-linux-onnx
+          path: build-onnx/evaluation/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transcriber-linux-onnx-cpu
+          path: ${{ runner.temp }}/transcriber-onnx-package/*
+          if-no-files-found: error
+
+  windows-webview2:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Download WebView2 SDK and Verovio
         shell: pwsh
         run: |
           $version = "1.0.4258.31"
@@ -30,106 +218,69 @@ jobs:
             -Uri "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/$version/microsoft.web.webview2.$version.nupkg" `
             -OutFile $package
           Expand-Archive -Path $package -DestinationPath $sdk -Force
+          npm install --prefix "$env:RUNNER_TEMP\verovio" --no-save verovio@6.3.0
+      - name: Configure WebView2 and Verovio
+        shell: pwsh
+        run: |
           cmake -S . -B build-webview2 `
             -DTRANSCRIBE_ENABLE_WEBVIEW2=ON `
-            -DTRANSCRIBE_WEBVIEW2_SDK_ROOT="$sdk"
-          cmake --build build-webview2 --config Release --parallel
-      - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+            -DTRANSCRIBE_ENABLE_VEROVIO=ON `
+            -DTRANSCRIBE_BUILD_TESTS=ON `
+            -DTRANSCRIBE_WARNINGS_AS_ERRORS=ON `
+            -DTRANSCRIBE_WEBVIEW2_SDK_ROOT="$env:RUNNER_TEMP\webview2-sdk" `
+            -DTRANSCRIBE_VEROVIO_DIST_DIR="$env:RUNNER_TEMP\verovio\node_modules\verovio\dist"
+      - name: Build
+        run: cmake --build build-webview2 --config Release --parallel
+      - name: Test UI and engraving assets
+        run: ctest --test-dir build-webview2 -C Release --output-on-failure -R "ui_asset_smoke|notation_fixture_smoke"
+      - name: Package and smoke-test WebView2/Verovio payload
+        shell: pwsh
+        run: |
+          $packageDir = "build-webview2\packages"
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          cpack --config "build-webview2\CPackConfig.cmake" -G ZIP -C Release -B $packageDir
+          $package = Get-ChildItem $packageDir -Filter "*.zip" |
+            Select-Object -First 1
+          if (-not $package) { throw "CPack did not create a WebView2 ZIP package" }
+          python tests\package_smoke.py $package.FullName `
+            --expect-msvc-runtime --expect-webview2 --expect-verovio --isolated-runtime
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: evaluation-windows
-          path: build/evaluation/*
-          if-no-files-found: error
-      - name: Package WebView2 workstation
-        run: cpack --config build-webview2\CPackConfig.cmake -G ZIP -C Release -B build-webview2\packages
-      - uses: actions/upload-artifact@v4
-        with:
-          name: transcriber-windows-webview2
+          name: transcriber-windows-webview2-verovio
           path: build-webview2/packages/*
           if-no-files-found: error
 
-  linux:
+  linux-sanitizers:
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        compiler: [g++, clang++]
-        ffmpeg: [OFF, ON]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install FFmpeg development libraries
+          python-version: "3.12"
+      - name: Configure AddressSanitizer and UndefinedBehaviorSanitizer
+        run: cmake --preset linux-sanitizer
+      - name: Build
+        run: cmake --build --preset linux-sanitizer --parallel
+      - name: Test non-benchmark integration suite
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir out/build/linux-sanitizer -LE evaluation --output-on-failure
+
+  linux-static-analysis:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Clang static analyzer
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg pkg-config libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
-      - name: Configure
+          sudo apt-get install -y clang clang-tidy
+      - name: Configure clang-tidy
         run: >-
-          cmake -S . -B build
-          -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+          cmake -S . -B build-analysis
+          -DCMAKE_CXX_COMPILER=clang++
           -DCMAKE_BUILD_TYPE=Release
-          -DTRANSCRIBE_ENABLE_FFMPEG=${{ matrix.ffmpeg }}
-          -DTRANSCRIBE_BUILD_TESTS=ON
-      - name: Build
-        run: cmake --build build --config Release --parallel
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: evaluation-linux-${{ matrix.compiler }}-ffmpeg-${{ matrix.ffmpeg }}
-          path: build/evaluation/*
-          if-no-files-found: error
-      - name: Decode a compressed fixture
-        if: matrix.ffmpeg == 'ON'
-        run: |
-          ffmpeg -nostdin -hide_banner -loglevel error -y -i samples/single_a4.wav -c:a flac "$RUNNER_TEMP/single_a4.flac"
-          ./build/transcriber "$RUNNER_TEMP/single_a4.flac" --quiet --musicxml "$RUNNER_TEMP/score.musicxml" --tab "$RUNNER_TEMP/tab.txt"
-      - name: Package CLI
-        run: cpack --config build/CPackConfig.cmake -G TGZ -B build/packages
-      - uses: actions/upload-artifact@v4
-        with:
-          name: transcriber-linux-${{ matrix.compiler }}-ffmpeg-${{ matrix.ffmpeg }}
-          path: build/packages/*
-          if-no-files-found: error
-
-  onnx:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Set ONNX Runtime environment
-        run: |
-          echo "ONNXRUNTIME_ROOT=$RUNNER_TEMP/onnxruntime-linux-x64-1.20.1" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/onnxruntime-linux-x64-1.20.1/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
-      - name: Download ONNX Runtime
-        run: |
-          curl -fsSL https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-1.20.1.tgz -o "$RUNNER_TEMP/onnxruntime.tgz"
-          tar -xzf "$RUNNER_TEMP/onnxruntime.tgz" -C "$RUNNER_TEMP"
-      - name: Configure
-        run: >-
-          cmake -S . -B build
-          -DTRANSCRIBE_ENABLE_ONNX=ON
-          -DCMAKE_BUILD_TYPE=Release
-          -DTRANSCRIBE_BUILD_TESTS=ON
-      - name: Build
-        run: cmake --build build --config Release --parallel
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: evaluation-onnx-build
-          path: build/evaluation/*
-          if-no-files-found: error
+          -DTRANSCRIBE_ENABLE_CLANG_TIDY=ON
+          -DTRANSCRIBE_WARNINGS_AS_ERRORS=ON
+      - name: Build production targets with clang-tidy
+        run: cmake --build build-analysis --parallel

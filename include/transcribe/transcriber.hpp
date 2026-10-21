@@ -27,6 +27,14 @@ enum class NoteEventType {
     Offset
 };
 
+enum class EvidenceSemantics {
+    Unspecified,
+    HeuristicScore,
+    RelativeActivation,
+    RawActivation,
+    CalibratedProbability
+};
+
 struct NoteEvent {
     NoteEventType type{NoteEventType::Onset};
     int midi_pitch{-1};
@@ -87,6 +95,8 @@ struct FrameEvidenceTrack {
     std::vector<double> raw_values;
     // Fixed pitch for raw_values, or -1 when raw values follow each frame's selected pitch.
     int raw_midi_pitch{-1};
+    EvidenceSemantics selected_strength_semantics{EvidenceSemantics::Unspecified};
+    EvidenceSemantics raw_value_semantics{EvidenceSemantics::Unspecified};
 };
 
 struct AudioPreviewData {

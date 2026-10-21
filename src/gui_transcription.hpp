@@ -7,6 +7,7 @@
 #include "transcribe/transcriber.hpp"
 
 #include <filesystem>
+#include <cstdint>
 #include <functional>
 #include <stop_token>
 #include <string>
@@ -19,6 +20,10 @@ struct Request {
     bool polyphonic{};
     bool fast_preview{};
     bool proposal_only{};
+    bool retain_review_evidence{};
+    bool tempo_automatic{true};
+    bool meter_automatic{true};
+    bool key_automatic{true};
     InstrumentPrior instrument{InstrumentPrior::None};
     double capture_seconds{10.0};
     RealtimeOptions realtime_options;
@@ -39,6 +44,10 @@ struct Result {
     FingeringResult fingering;
     ScoreMetadata metadata;
     ScoreDocument score;
+    std::uint32_t audio_sample_rate{};
+    std::uint32_t audio_channels{1};
+    std::uint64_t audio_frame_count{};
+    bool review_evidence_truncated{};
 #ifdef TRANSCRIBE_ENABLE_VEROVIO
     std::string musicxml_source;
 #endif

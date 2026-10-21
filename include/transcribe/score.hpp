@@ -31,6 +31,16 @@ struct ScoreRevisionRecord {
     std::string command_id;
 };
 
+enum class ReviewDecisionOutcome { Accepted, Rejected };
+
+struct ScoreReviewDecision {
+    std::string suggestion_id;
+    std::string note_id;
+    ReviewDecisionOutcome outcome{ReviewDecisionOutcome::Rejected};
+    std::uint64_t revision{};
+    std::string reason;
+};
+
 struct ScoreNote {
     std::string id;
     std::vector<std::string> source_event_ids;
@@ -120,6 +130,7 @@ struct ScoreDocument {
     std::vector<ScoreNote> notes;
     std::vector<ScoreRest> rests;
     std::vector<ScoreTabNote> tab_notes;
+    std::vector<ScoreReviewDecision> review_decisions;
     std::vector<ScoreRevisionRecord> history;
 };
 
@@ -177,10 +188,17 @@ struct UpdateScoreContext {
     bool replace_tempo_map{true};
 };
 
+struct RecordReviewDecision {
+    std::string suggestion_id;
+    std::string note_id;
+    ReviewDecisionOutcome outcome{ReviewDecisionOutcome::Rejected};
+    std::string reason;
+};
+
 using ScoreEditCommand = std::variant<
     InsertScoreNote, DeleteScoreElement, ChangeScorePitch, ChangeScoreDuration,
     SplitScoreNote, MergeScoreNotes, InsertScoreRest, ChangeScoreFingering,
-    ReinterpretScoreRhythm, UpdateScoreContext>;
+    ReinterpretScoreRhythm, UpdateScoreContext, RecordReviewDecision>;
 
 struct ScoreTransaction {
     std::uint64_t base_revision{};
@@ -219,6 +237,7 @@ ScoreDocument make_score_document(
     const ScoreInterpretation& interpretation, std::size_t hypothesis_index,
     std::string source_id, const ScoreMetadata& metadata,
     const GuitarTabOptions& tab_options = {});
+ScoreDocument make_empty_score_document(std::string score_id);
 ScoreInterpretation to_score_interpretation(const ScoreDocument& document);
 std::vector<Note> score_notes(const ScoreDocument& document);
 double score_position_seconds(const ScoreDocument& document, double quarter_position);

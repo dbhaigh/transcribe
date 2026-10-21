@@ -8,16 +8,21 @@
 
 #include "gui_transcription.hpp"
 #include "transcribe/musicxml.hpp"
+#include "transcribe/project.hpp"
+#include "transcribe/review.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <chrono>
+#include <condition_variable>
 #include <cwctype>
 #include <deque>
 #include <filesystem>
 #include <iomanip>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -40,6 +45,9 @@ constexpr UINT message_progress = WM_APP + 2;
 constexpr UINT message_live_preview = WM_APP + 3;
 constexpr UINT message_audio_preview = WM_APP + 4;
 constexpr UINT message_live_session = WM_APP + 5;
+constexpr UINT message_project_autosave = WM_APP + 6;
+
+class ProjectAutosaver;
 
 enum class LiveEditKind { Add, Update, Delete, Fingering };
 
@@ -64,6 +72,7 @@ struct AppState {
     EventRegistrationToken navigation_token{};
     EventRegistrationToken message_token{};
     std::jthread worker;
+    std::unique_ptr<ProjectAutosaver> autosaver;
     std::mutex live_command_mutex;
     std::deque<LiveEditCommand> live_commands;
     std::mutex live_message_mutex;
@@ -73,6 +82,10 @@ struct AppState {
     bool active_asio{};
     bool close_when_done{};
     bool shutting_down{};
+    bool review_audio_open{};
+    bool live_audio_asset_written{};
+    std::filesystem::path project_path;
+    std::optional<transcribe::ProjectDocument> project;
     std::vector<transcribe::FingeringCorrection> manual_fingering_corrections;
     std::optional<transcribe::gui::Request> last_request;
     std::optional<transcribe::gui::Result> last_result;
@@ -142,7 +155,29 @@ struct CompletionMessage {
     std::size_t withheld_conflicts{};
     std::optional<transcribe::live::ScoreProposal> score_proposal;
     std::optional<transcribe::live::ProposalReview> proposal_review;
+    bool project_save{};
+    bool project_open{};
+    bool project_recovery{};
+    bool score_only_copy{};
+    bool has_project{};
+    std::filesystem::path project_path;
+    transcribe::ProjectDocument project;
+    std::uint64_t edit_generation{};
+    std::string project_warning;
 };
+
+struct AutosaveCompletion {
+    bool success{};
+    std::string error;
+    std::uint64_t revision{};
+    std::uint64_t edit_generation{};
+    std::wstring summary;
+};
+
+std::wstring project_summary(const transcribe::ProjectDocument& project);
+std::wstring project_summary_json(
+    const transcribe::ProjectDocument& project,
+    const std::filesystem::path& path);
 
 template <typename Interface>
 class RefCountedHandler : public Interface {
@@ -337,6 +372,117 @@ void post_json(AppState& state, const std::wstring& json) {
     }
 }
 
+std::filesystem::path project_autosave_directory() {
+    std::array<wchar_t, 32768> local_app_data{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"LOCALAPPDATA", local_app_data.data(),
+        static_cast<DWORD>(local_app_data.size()));
+    if (length == 0 || length >= local_app_data.size()) {
+        throw std::runtime_error("The LOCALAPPDATA folder could not be located.");
+    }
+    const auto directory =
+        std::filesystem::path(local_app_data.data()) /
+        L"Transcribe" / L"Projects" / L"Autosave";
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+        throw std::filesystem::filesystem_error(
+            "Could not create the project autosave folder.", directory, error);
+    }
+    return directory;
+}
+
+std::filesystem::path project_autosave_path() {
+    return project_autosave_directory() / L"recovery.transcriber";
+}
+
+class ProjectAutosaver {
+public:
+    ProjectAutosaver(HWND window, std::filesystem::path path)
+        : window_(window), path_(std::move(path)),
+          worker_([this](std::stop_token stop) { run(stop); }) {}
+
+    ~ProjectAutosaver() {
+        worker_.request_stop();
+        condition_.notify_all();
+        if (worker_.joinable()) worker_.join();
+    }
+
+    void submit(transcribe::ProjectDocument project,
+                std::uint64_t edit_generation) {
+        {
+            std::lock_guard lock(mutex_);
+            pending_ = Task{std::move(project), false, edit_generation};
+        }
+        condition_.notify_one();
+    }
+
+    void clear() {
+        {
+            std::lock_guard lock(mutex_);
+            pending_ = Task{std::nullopt, true, 0};
+        }
+        condition_.notify_one();
+    }
+
+    const std::filesystem::path& path() const noexcept { return path_; }
+
+private:
+    struct Task {
+        std::optional<transcribe::ProjectDocument> project;
+        bool remove{};
+        std::uint64_t edit_generation{};
+    };
+
+    void run(std::stop_token stop) {
+        for (;;) {
+            std::optional<Task> task;
+            {
+                std::unique_lock lock(mutex_);
+                condition_.wait(lock, stop, [this] { return pending_.has_value(); });
+                if (!pending_ && stop.stop_requested()) return;
+                task = std::move(pending_);
+                pending_.reset();
+            }
+            if (!task) continue;
+            auto result = std::make_unique<AutosaveCompletion>();
+            result->edit_generation = task->edit_generation;
+            try {
+                if (task->remove) {
+                    std::error_code error;
+                    std::filesystem::remove(path_, error);
+                    if (error) {
+                        throw std::filesystem::filesystem_error(
+                            "Could not clear the project recovery file.", path_, error);
+                    }
+                } else if (task->project) {
+                    result->revision = task->project->score.revision;
+                    transcribe::save_project_file_atomic(path_, *task->project);
+                    result->summary = project_summary(*task->project);
+                }
+                result->success = true;
+            } catch (const std::exception& error) {
+                result->error = error.what();
+            }
+            if (PostMessageW(window_, message_project_autosave, 0,
+                             reinterpret_cast<LPARAM>(result.get()))) {
+                result.release();
+            }
+            if (stop.stop_requested()) {
+                std::lock_guard lock(mutex_);
+                if (!pending_) return;
+            }
+        }
+    }
+
+    HWND window_{};
+    std::filesystem::path path_;
+    std::mutex mutex_;
+    std::condition_variable_any condition_;
+    std::optional<Task> pending_;
+    std::jthread worker_;
+};
+
 void post_error(AppState& state, std::string_view message) {
     post_json(state, L"{\"type\":\"error\",\"message\":\"" +
                          json_escape(from_utf8_lossy(message)) + L"\"}");
@@ -388,6 +534,8 @@ std::wstring notes_json(const std::vector<transcribe::Note>& notes, double offse
              << note.start_seconds + offset
              << L",\"duration\":" << note.duration_seconds
              << L",\"confidence\":" << note.confidence
+             << L",\"calibrated_confidence\":null"
+             << L",\"raw_strength\":" << note.confidence
              << L",\"amplitude\":" << note.amplitude << L'}';
     }
     json << L']';
@@ -425,7 +573,8 @@ std::wstring live_notes_json(
                     transcribe::midi_note_name(note.midi_pitch))) << L'"'
              << L",\"start\":" << std::fixed << std::setprecision(6) << start
              << L",\"duration\":" << std::max(0.001, end - start)
-             << L",\"confidence\":null,\"amplitude\":null,\"raw_strength\":"
+             << L",\"confidence\":null,\"calibrated_confidence\":null"
+             << L",\"amplitude\":null,\"raw_strength\":"
              << note.raw_strength << L",\"state\":\"" << lifecycle_name(note.state)
              << L"\",\"uncertain\":" << (note.onset_truncated ? L"true" : L"false")
              << L",\"user_authored\":"
@@ -620,6 +769,9 @@ std::wstring score_notes_json(const transcribe::ScoreDocument& score) {
              << L",\"confidence\":";
         if (note.calibrated_confidence) json << *note.calibrated_confidence;
         else json << L"null";
+        json << L",\"calibrated_confidence\":";
+        if (note.calibrated_confidence) json << *note.calibrated_confidence;
+        else json << L"null";
         json << L",\"amplitude\":";
         if (note.intensity_rms) json << *note.intensity_rms;
         else json << L"null";
@@ -646,7 +798,37 @@ std::wstring score_notes_json(const transcribe::ScoreDocument& score) {
              << L"\",\"raw_evidence_count\":" << note.raw_evidence.size()
              << L",\"raw_evidence_truncated\":"
              << (note.raw_evidence.size() > 64 ? L"true" : L"false")
-             << L",\"raw_evidence\":[";
+             << L",\"pitch_alternatives\":[";
+        const int detected_pitch = source_event
+            ? static_cast<int>(std::lround(source_event->midi_pitch))
+            : note.sounding_midi_pitch;
+        std::map<int, double> alternative_values;
+        for (const auto& evidence : note.raw_evidence) {
+            if (evidence.midi_pitch == detected_pitch ||
+                !evidence.raw_model_value) continue;
+            const auto found = alternative_values.find(evidence.midi_pitch);
+            if (found == alternative_values.end() ||
+                *evidence.raw_model_value > found->second) {
+                alternative_values[evidence.midi_pitch] =
+                    *evidence.raw_model_value;
+            }
+        }
+        std::vector<std::pair<int, double>> alternatives(
+            alternative_values.begin(), alternative_values.end());
+        std::stable_sort(alternatives.begin(), alternatives.end(),
+            [](const auto& left, const auto& right) {
+                if (left.second != right.second) return left.second > right.second;
+                return left.first < right.first;
+            });
+        if (alternatives.size() > 8) alternatives.resize(8);
+        for (std::size_t alternative_index = 0;
+             alternative_index < alternatives.size(); ++alternative_index) {
+            if (alternative_index) json << L',';
+            const auto [midi, value] = alternatives[alternative_index];
+            json << L"{\"midi\":" << midi << L",\"raw_value\":" << value
+                 << L",\"semantics\":\"raw activation; not a probability\"}";
+        }
+        json << L"],\"raw_evidence\":[";
         const std::size_t evidence_samples =
             std::min<std::size_t>(64, note.raw_evidence.size());
         for (std::size_t sample = 0; sample < evidence_samples; ++sample) {
@@ -666,11 +848,140 @@ std::wstring score_notes_json(const transcribe::ScoreDocument& score) {
             json << L",\"raw_model_value\":";
             if (evidence.raw_model_value) json << *evidence.raw_model_value;
             else json << L"null";
-            json << L",\"raw_midi_pitch\":" << evidence.raw_midi_pitch << L'}';
+            json << L",\"raw_midi_pitch\":" << evidence.raw_midi_pitch
+                 << L",\"strength_semantics\":\""
+                 << json_escape(from_utf8(evidence_semantics_name(
+                        evidence.strength_semantics)))
+                 << L"\",\"raw_value_semantics\":\""
+                 << json_escape(from_utf8(evidence_semantics_name(
+                        evidence.raw_value_semantics)))
+                 << L"\",\"spectral_peak_fraction\":";
+            if (evidence.spectral_peak_fraction) {
+                json << *evidence.spectral_peak_fraction;
+            } else {
+                json << L"null";
+            }
+            json << L'}';
         }
         json << L"]}";
     }
     json << L']';
+    return json.str();
+}
+
+std::wstring review_dimension_name(transcribe::ReviewDimension dimension) {
+    switch (dimension) {
+    case transcribe::ReviewDimension::Pitch: return L"pitch";
+    case transcribe::ReviewDimension::Onset: return L"onset";
+    case transcribe::ReviewDimension::Offset: return L"offset";
+    case transcribe::ReviewDimension::Fingering: return L"fingering";
+    case transcribe::ReviewDimension::Rhythm: return L"rhythm";
+    case transcribe::ReviewDimension::Distribution: return L"distribution";
+    }
+    return L"unknown";
+}
+
+std::wstring review_uncertainty_name(transcribe::ReviewUncertainty uncertainty) {
+    switch (uncertainty) {
+    case transcribe::ReviewUncertainty::NotAssessed: return L"not-assessed";
+    case transcribe::ReviewUncertainty::NoConflictObserved: return L"no-conflict-observed";
+    case transcribe::ReviewUncertainty::Ambiguous: return L"ambiguous";
+    }
+    return L"not-assessed";
+}
+
+std::wstring review_suggestion_name(transcribe::ReviewSuggestionKind kind) {
+    switch (kind) {
+    case transcribe::ReviewSuggestionKind::AlternativePitch: return L"alternative-pitch";
+    case transcribe::ReviewSuggestionKind::IsolatedOctave: return L"isolated-octave";
+    case transcribe::ReviewSuggestionKind::SplitRepeatedNote: return L"split-repeated-note";
+    }
+    return L"unknown";
+}
+
+std::wstring score_review_json(const transcribe::ScoreDocument& score) {
+    const auto review = transcribe::review_score(score);
+    std::wostringstream json;
+    json << L"{\"out_of_distribution_assessed\":false,\"calibrated_notes\":"
+         << review.calibrated_notes << L",\"notes_without_evidence\":"
+         << review.notes_without_evidence << L",\"limitation\":\""
+         << json_escape(from_utf8(review.calibration_limitation))
+         << L"\",\"decisions\":[";
+    for (std::size_t index = 0; index < score.review_decisions.size(); ++index) {
+        if (index) json << L',';
+        const auto& decision = score.review_decisions[index];
+        json << L"{\"suggestion_id\":\""
+             << json_escape(from_utf8(decision.suggestion_id))
+             << L"\",\"note_id\":\""
+             << json_escape(from_utf8(decision.note_id))
+             << L"\",\"outcome\":\""
+             << (decision.outcome == transcribe::ReviewDecisionOutcome::Accepted
+                     ? L"accepted" : L"rejected")
+             << L"\"}";
+    }
+    json << L"],\"notes\":[";
+    for (std::size_t note_index = 0; note_index < review.notes.size(); ++note_index) {
+        if (note_index) json << L',';
+        const auto& note = review.notes[note_index];
+        json << L"{\"note_id\":\"" << json_escape(from_utf8(note.note_id))
+             << L"\",\"evidence_samples\":" << note.raw_evidence_samples
+             << L",\"calibrated_confidence_available\":"
+             << (note.calibrated_confidence_available ? L"true" : L"false")
+             << L",\"assessments\":[";
+        for (std::size_t index = 0; index < note.assessments.size(); ++index) {
+            if (index) json << L',';
+            const auto& assessment = note.assessments[index];
+            json << L"{\"dimension\":\""
+                 << review_dimension_name(assessment.dimension)
+                 << L"\",\"state\":\""
+                 << review_uncertainty_name(assessment.uncertainty)
+                 << L"\",\"explanation\":\""
+                 << json_escape(from_utf8(assessment.explanation)) << L"\"}";
+        }
+        json << L"],\"findings\":[";
+        for (std::size_t index = 0; index < note.findings.size(); ++index) {
+            if (index) json << L',';
+            const auto& finding = note.findings[index];
+            json << L"{\"id\":\"" << json_escape(from_utf8(finding.id))
+                 << L"\",\"category\":\""
+                 << json_escape(from_utf8(finding.category))
+                 << L"\",\"explanation\":\""
+                 << json_escape(from_utf8(finding.explanation))
+                 << L"\",\"ranking_score\":" << finding.ranking_score << L'}';
+        }
+        json << L"],\"suggestions\":[";
+        std::size_t suggestion_count = 0;
+        for (const auto& suggestion : note.suggestions) {
+            const bool already_decided = std::any_of(
+                score.review_decisions.begin(), score.review_decisions.end(),
+                [&](const auto& decision) {
+                    return decision.suggestion_id == suggestion.id;
+                });
+            if (already_decided) continue;
+            if (suggestion_count++) json << L',';
+            json << L"{\"id\":\"" << json_escape(from_utf8(suggestion.id))
+                 << L"\",\"kind\":\"" << review_suggestion_name(suggestion.kind)
+                 << L"\",\"suggested_midi_pitch\":";
+            if (suggestion.suggested_midi_pitch) {
+                json << *suggestion.suggested_midi_pitch;
+            } else {
+                json << L"null";
+            }
+            json << L",\"split_time_seconds\":";
+            if (suggestion.split_time_seconds) {
+                json << *suggestion.split_time_seconds;
+            } else {
+                json << L"null";
+            }
+            json << L",\"ranking_score\":" << suggestion.ranking_score
+                 << L",\"ranking_basis\":\""
+                 << json_escape(from_utf8(suggestion.ranking_basis))
+                 << L"\",\"explanation\":\""
+                 << json_escape(from_utf8(suggestion.explanation)) << L"\"}";
+        }
+        json << L"]}";
+    }
+    json << L"]}";
     return json.str();
 }
 
@@ -866,6 +1177,21 @@ std::wstring result_json(const CompletionMessage& completion) {
          << (completion.live_capture ? L"true" : L"false")
          << L",\"backend_id\":\""
          << json_escape(from_utf8(completion.live_backend_id)) << L"\"";
+    if (completion.request.retain_review_evidence) {
+        json << L",\"review\":" << score_review_json(completion.result.score)
+             << L",\"review_evidence_truncated\":"
+             << (completion.result.review_evidence_truncated ? L"true" : L"false");
+    }
+    if (completion.has_project) {
+        json << L",\"project\":" <<
+            project_summary_json(completion.project, completion.project_path)
+             << L",\"project_opened\":"
+             << (completion.project_open ? L"true" : L"false");
+    }
+    if (!completion.project_warning.empty()) {
+        json << L",\"project_warning\":\""
+             << json_escape(from_utf8_lossy(completion.project_warning)) << L"\"";
+    }
 #ifdef TRANSCRIBE_ENABLE_VEROVIO
     if (!completion.proposal_only) {
         json << L",\"musicxml\":\""
@@ -982,6 +1308,8 @@ std::filesystem::path webview_user_data_directory() {
 }
 
 void initialize_webview(AppState& state) {
+    state.autosaver = std::make_unique<ProjectAutosaver>(
+        state.window, project_autosave_path());
     using CreateEnvironmentFunction =
         decltype(&CreateCoreWebView2EnvironmentWithOptions);
     const auto create_environment = reinterpret_cast<CreateEnvironmentFunction>(
@@ -1072,10 +1400,385 @@ void set_browser_field(AppState& state, const char* name, const std::wstring& va
                          L"\",\"value\":\"" + json_escape(value) + L"\"}");
 }
 
+std::string path_utf8(const std::filesystem::path& path) {
+    return to_utf8(path.wstring());
+}
+
+void set_project_audio_reference(
+    transcribe::ProjectDocument& project,
+    const std::filesystem::path& source_path,
+    const std::filesystem::path& project_path) {
+    if (source_path.empty()) {
+        project.audio.policy = transcribe::ProjectAudioPolicy::ScoreOnly;
+        project.audio.reference_path.clear();
+        project.audio.relative_to_project = false;
+        return;
+    }
+    project.audio.policy = transcribe::ProjectAudioPolicy::ExternalReference;
+    std::error_code error;
+    auto absolute_source = std::filesystem::absolute(source_path, error);
+    if (error) absolute_source = source_path;
+    if (project_path.empty()) {
+        project.audio.reference_path = path_utf8(absolute_source);
+        project.audio.relative_to_project = false;
+        return;
+    }
+    const auto project_directory = project_path.has_parent_path()
+        ? project_path.parent_path() : std::filesystem::current_path();
+    auto relative = std::filesystem::relative(
+        absolute_source, project_directory, error);
+    if (!error && !relative.empty() && *relative.begin() != L"..") {
+        project.audio.reference_path = path_utf8(relative);
+        project.audio.relative_to_project = true;
+    } else {
+        project.audio.reference_path = path_utf8(absolute_source);
+        project.audio.relative_to_project = false;
+    }
+}
+
+std::string instrument_prior_name(transcribe::InstrumentPrior prior) {
+    switch (prior) {
+    case transcribe::InstrumentPrior::Guitar: return "guitar";
+    case transcribe::InstrumentPrior::Piano: return "piano";
+    case transcribe::InstrumentPrior::Voice: return "voice";
+    case transcribe::InstrumentPrior::None: return "auto";
+    }
+    return "auto";
+}
+
+void update_export_status(transcribe::ProjectDocument& project,
+                          std::string format,
+                          const std::filesystem::path& path,
+                          bool success, std::string error = {}) {
+    if (path.empty()) return;
+    const auto found = std::find_if(project.exports.begin(), project.exports.end(),
+        [&](const auto& item) { return item.format == format; });
+    const transcribe::ProjectExportStatus status{
+        std::move(format), path_utf8(path), project.score.revision,
+        success, std::move(error)};
+    if (found == project.exports.end()) {
+        project.exports.push_back(status);
+    } else {
+        *found = status;
+    }
+}
+
+void queue_project_autosave(AppState& state,
+                            const transcribe::ProjectDocument& project,
+                            std::uint64_t edit_generation) {
+    if (!state.autosaver) {
+        throw std::runtime_error("Project autosave is not available.");
+    }
+    auto snapshot = project;
+    const auto source_project_path = state.project_path.empty()
+        ? state.autosaver->path() : state.project_path;
+    auto audio_path = transcribe::resolve_project_audio_path(
+        snapshot, source_project_path);
+    if (state.last_request && !state.last_request->input_path.empty()) {
+        std::error_code error;
+        if (audio_path.empty() ||
+            !std::filesystem::is_regular_file(audio_path, error) || error) {
+            audio_path = state.last_request->input_path;
+        }
+    }
+    if (!audio_path.empty()) {
+        set_project_audio_reference(
+            snapshot, audio_path, state.autosaver->path());
+    }
+    state.autosaver->submit(std::move(snapshot), edit_generation);
+}
+
+transcribe::ProjectDocument make_project_document(
+    const transcribe::gui::Request& request,
+    const transcribe::gui::Result& result,
+    const transcribe::AudioBuffer* live_audio,
+    std::string& audio_warning) {
+    transcribe::ProjectDocument project;
+    project.id = result.score.id + "-project";
+    project.title = request.use_asio || request.input_path.empty()
+        ? "Live recording" : path_utf8(request.input_path.filename());
+    if (project.title.empty()) project.title = "Untitled project";
+    project.score = result.score;
+    project.audio.sample_rate = result.audio_sample_rate;
+    project.audio.channels = result.audio_channels;
+    project.audio.frame_count = result.audio_frame_count;
+    if (request.use_asio && live_audio != nullptr &&
+        !live_audio->samples.empty()) {
+        try {
+            const auto directory = project_autosave_directory();
+            const auto asset_directory = directory / L"assets";
+            std::error_code error;
+            std::filesystem::create_directories(asset_directory, error);
+            if (error) {
+                throw std::filesystem::filesystem_error(
+                    "Could not create the recovery audio folder.",
+                    asset_directory, error);
+            }
+            const auto asset_name = from_utf8(project.id) + L".wav";
+            transcribe::write_audio_wav_atomic(
+                asset_directory / asset_name, *live_audio);
+            project.audio.policy = transcribe::ProjectAudioPolicy::ExternalReference;
+            project.audio.reference_path =
+                "assets/" + path_utf8(std::filesystem::path(asset_name));
+            project.audio.relative_to_project = true;
+            project.audio.sample_rate = live_audio->sample_rate;
+            project.audio.channels = 1;
+            project.audio.frame_count = live_audio->samples.size();
+        } catch (const std::exception& error) {
+            project.audio.policy = transcribe::ProjectAudioPolicy::ScoreOnly;
+            project.audio.reference_path.clear();
+            project.audio.relative_to_project = false;
+            audio_warning = std::string(
+                "Live score saved without its audio asset: ") + error.what();
+        }
+    } else if (!request.use_asio && !request.input_path.empty()) {
+        set_project_audio_reference(project, request.input_path, {});
+    }
+
+    if (request.model_path.empty()) {
+        project.analysis.backend_identifier = request.use_asio
+            ? "builtin:" + request.live_backend : "builtin:yin";
+        project.analysis.model_identifier = project.analysis.backend_identifier;
+    } else {
+        project.analysis.backend_identifier = "onnx-runtime";
+        project.analysis.model_identifier =
+            path_utf8(request.model_path.filename());
+        project.analysis.model_reference = path_utf8(request.model_path);
+    }
+    project.analysis.instrument_prior =
+        instrument_prior_name(request.instrument);
+    project.analysis.live_backend = request.live_backend;
+    project.analysis.tempo_automatic = request.tempo_automatic;
+    project.analysis.meter_automatic = request.meter_automatic;
+    project.analysis.key_automatic = request.key_automatic;
+    project.analysis.polyphonic = request.polyphonic;
+    project.analysis.fast_preview = request.fast_preview;
+    project.analysis.preserve_expressive_timing =
+        request.preserve_expressive_timing;
+    project.analysis.latency_ms = request.realtime_options.latency_ms;
+    update_export_status(project, "musicxml", request.musicxml_path, true);
+    update_export_status(project, "tablature", request.tab_path, true);
+    update_export_status(project, "midi", request.midi_path, true);
+    transcribe::validate_project_document(project);
+    return project;
+}
+
+std::wstring project_summary(const transcribe::ProjectDocument& project) {
+    std::wostringstream summary;
+    summary << L"Duration: ";
+    if (project.audio.sample_rate > 0 && project.audio.frame_count > 0) {
+        summary << std::fixed << std::setprecision(2)
+                << static_cast<double>(project.audio.frame_count) /
+                       project.audio.sample_rate
+                << L" s";
+    } else {
+        summary << L"unknown";
+    }
+    summary << L"\nInstrument: "
+            << from_utf8(project.score.instrument.name.empty()
+                             ? project.analysis.instrument_prior
+                             : project.score.instrument.name)
+            << L"\nTuning (MIDI): ";
+    for (std::size_t index = 0;
+         index < project.score.instrument.tuning.size(); ++index) {
+        if (index) summary << L", ";
+        summary << project.score.instrument.tuning[index];
+    }
+    summary << L" · capo " << project.score.instrument.capo_fret
+            << L"\nBackend: "
+            << from_utf8(project.analysis.backend_identifier)
+            << L"\nModel: "
+            << from_utf8(project.analysis.model_identifier)
+            << L"\nScore revision: " << project.score.revision
+            << L"\nAudio policy: "
+            << (project.audio.policy ==
+                        transcribe::ProjectAudioPolicy::ExternalReference
+                    ? L"external reference (local)" : L"score only")
+            << L"\nExports:";
+    if (project.exports.empty()) summary << L" none";
+    for (const auto& item : project.exports) {
+        summary << L"\n  " << from_utf8(item.format) << L": "
+                << (item.success ? L"available" : L"failed")
+                << (item.score_revision == project.score.revision
+                        ? L" · current" : L" · stale")
+                << L" · " << from_utf8(item.path);
+        if (!item.error.empty()) {
+            summary << L" · " << from_utf8_lossy(item.error);
+        }
+    }
+    return summary.str();
+}
+
+std::wstring project_summary_json(const transcribe::ProjectDocument& project,
+                                  const std::filesystem::path& path) {
+    std::wstring tuning_preset = L"custom";
+    const auto& tuning = project.score.instrument.tuning;
+    static const std::array<std::pair<std::wstring_view, std::array<int, 6>>, 5>
+        known_tunings{{
+            {L"standard", {64, 59, 55, 50, 45, 40}},
+            {L"drop-d", {64, 59, 55, 50, 45, 38}},
+            {L"dadgad", {62, 57, 55, 50, 45, 38}},
+            {L"open-d", {62, 57, 54, 50, 45, 38}},
+            {L"open-g", {62, 59, 55, 50, 43, 38}},
+        }};
+    if (tuning.size() == 6) {
+        for (const auto& [name, pitches] : known_tunings) {
+            if (std::equal(tuning.begin(), tuning.end(), pitches.begin())) {
+                tuning_preset = std::wstring(name);
+                break;
+            }
+        }
+    }
+
+    std::wostringstream json;
+    json << L"{\"project_path\":\"" << json_escape(path.wstring())
+         << L"\",\"title\":\"" << json_escape(from_utf8(project.title))
+         << L"\",\"score_revision\":" << project.score.revision
+         << L",\"summary\":\"" << json_escape(project_summary(project))
+         << L"\",\"audio_path\":\"";
+    const auto audio_path = transcribe::resolve_project_audio_path(project, path);
+    json << json_escape(audio_path.wstring()) << L"\",\"settings\":{"
+         << L"\"tempo_automatic\":"
+         << (project.analysis.tempo_automatic ? L"true" : L"false")
+         << L",\"meter_automatic\":"
+         << (project.analysis.meter_automatic ? L"true" : L"false")
+         << L",\"key_automatic\":"
+         << (project.analysis.key_automatic ? L"true" : L"false")
+         << L",\"tempo_bpm\":" << project.score.metadata.tempo_bpm
+         << L",\"meter_numerator\":" << project.score.metadata.time_numerator
+         << L",\"meter_denominator\":" << project.score.metadata.time_denominator
+         << L",\"key_fifths\":" << project.score.metadata.key_fifths
+         << L",\"minor_key\":"
+         << (project.score.metadata.minor_key ? L"true" : L"false")
+         << L",\"pickup_quarters\":" << project.score.pickup_quarters
+         << L",\"written_transposition\":"
+         << project.score.instrument.written_transposition_semitones
+         << L",\"tuning_preset\":\"" << tuning_preset
+         << L"\",\"tuning\":[";
+    for (std::size_t index = 0; index < tuning.size(); ++index) {
+        if (index) json << L',';
+        json << tuning[index];
+    }
+    json << L"],\"capo_fret\":" << project.score.instrument.capo_fret
+         << L",\"instrument_prior\":\""
+         << json_escape(from_utf8(project.analysis.instrument_prior))
+         << L"\",\"model_path\":\""
+         << json_escape(from_utf8(project.analysis.model_reference))
+         << L"\",\"live_backend\":\""
+         << json_escape(from_utf8(project.analysis.live_backend))
+         << L"\",\"polyphonic\":"
+         << (project.analysis.polyphonic ? L"true" : L"false")
+         << L",\"fast_preview\":"
+         << (project.analysis.fast_preview ? L"true" : L"false")
+         << L",\"preserve_timing\":"
+         << (project.analysis.preserve_expressive_timing ? L"true" : L"false")
+         << L",\"latency_ms\":" << project.analysis.latency_ms << L"}"
+         << L",\"exports\":{";
+    bool first = true;
+    for (const auto& status : project.exports) {
+        if (status.format != "musicxml" && status.format != "tablature" &&
+            status.format != "midi") {
+            continue;
+        }
+        if (!first) json << L',';
+        first = false;
+        const auto field_name = status.format == "tablature"
+            ? L"tab" : from_utf8(status.format);
+        json << L'"' << field_name << L"\":\""
+             << json_escape(from_utf8(status.path)) << L'"';
+    }
+    json << L"}}";
+    return json.str();
+}
+
+std::filesystem::path project_path_from_utf8(std::string_view value) {
+    return std::filesystem::path(from_utf8(value));
+}
+
+transcribe::gui::Request request_for_project(
+    const transcribe::ProjectDocument& project,
+    const std::filesystem::path& project_path) {
+    transcribe::gui::Request request;
+    request.input_path =
+        transcribe::resolve_project_audio_path(project, project_path);
+    request.model_path =
+        project_path_from_utf8(project.analysis.model_reference);
+    request.instrument = instrument_prior(project.analysis.instrument_prior);
+    request.tempo_automatic = project.analysis.tempo_automatic;
+    request.meter_automatic = project.analysis.meter_automatic;
+    request.key_automatic = project.analysis.key_automatic;
+    request.polyphonic = project.analysis.polyphonic;
+    request.fast_preview = project.analysis.fast_preview;
+    request.live_backend = project.analysis.live_backend;
+    request.preserve_expressive_timing =
+        project.analysis.preserve_expressive_timing;
+    request.realtime_options.latency_ms = project.analysis.latency_ms;
+    request.guitar_tab_options.capo_fret = project.score.instrument.capo_fret;
+    if (project.score.instrument.tuning.size() == 6) {
+        std::copy(project.score.instrument.tuning.begin(),
+                  project.score.instrument.tuning.end(),
+                  request.guitar_tab_options.tuning.begin());
+    }
+    for (std::size_t index = 0; index < project.score.notes.size(); ++index) {
+        const auto& note = project.score.notes[index];
+        const auto tab = std::find_if(project.score.tab_notes.begin(),
+            project.score.tab_notes.end(), [&](const auto& candidate) {
+                return candidate.notation_note_id == note.id;
+            });
+        if (tab != project.score.tab_notes.end() && tab->manually_corrected &&
+            tab->string_number && tab->fret) {
+            request.guitar_tab_options.position_overrides.push_back({
+                index, *tab->string_number, *tab->fret, true});
+        }
+    }
+    request.retain_review_evidence = std::any_of(
+        project.score.source_events.begin(), project.score.source_events.end(),
+        [](const auto& event) { return !event.evidence.empty(); });
+
+    const auto output_for = [&](std::string_view format) {
+        const auto found = std::find_if(project.exports.begin(), project.exports.end(),
+            [&](const auto& item) { return item.format == format; });
+        return found == project.exports.end()
+            ? std::filesystem::path{} : project_path_from_utf8(found->path);
+    };
+    request.musicxml_path = output_for("musicxml");
+    request.tab_path = output_for("tablature");
+    request.midi_path = output_for("midi");
+    const auto base = project_path.empty()
+        ? std::filesystem::current_path() / from_utf8(project.title)
+        : project_path.parent_path() / project_path.stem();
+    if (request.musicxml_path.empty()) {
+        request.musicxml_path = base;
+        request.musicxml_path.replace_extension(L".musicxml");
+    }
+    if (request.tab_path.empty()) {
+        request.tab_path = base;
+        request.tab_path.replace_extension(L".tab.txt");
+    }
+    return request;
+}
+
+transcribe::gui::Result result_for_project(
+    const transcribe::ProjectDocument& project,
+    const transcribe::gui::Request& request) {
+    transcribe::gui::Result result;
+    result.score = project.score;
+    result.metadata = project.score.metadata;
+    result.notes = transcribe::score_notes(project.score);
+    result.audio_sample_rate = project.audio.sample_rate;
+    result.audio_channels = project.audio.channels;
+    result.audio_frame_count = project.audio.frame_count;
+    result.fingering = transcribe::assign_guitar_tab_fingerings(
+        result.notes, request.guitar_tab_options);
+    return result;
+}
+
 void browse_for_path(AppState& state, const std::string& field_name,
                      const std::wstring& current_value) {
     if (field_name != "input" && field_name != "model" &&
-        field_name != "musicxml" && field_name != "tab" && field_name != "midi") {
+        field_name != "musicxml" && field_name != "tab" && field_name != "midi" &&
+        field_name != "project-open" && field_name != "project-save" &&
+        field_name != "project-copy") {
         throw std::invalid_argument("Unknown file picker field.");
     }
 
@@ -1084,7 +1787,8 @@ void browse_for_path(AppState& state, const std::string& field_name,
         std::copy(current_value.begin(), current_value.end(), filename.begin());
     }
     const bool save = field_name == "musicxml" || field_name == "tab" ||
-                      field_name == "midi";
+                      field_name == "midi" || field_name == "project-save" ||
+                      field_name == "project-copy";
     const wchar_t* filter = nullptr;
     const wchar_t* extension = nullptr;
     if (field_name == "input") {
@@ -1101,9 +1805,14 @@ void browse_for_path(AppState& state, const std::string& field_name,
     } else if (field_name == "tab") {
         filter = L"Text files (*.txt)\0*.txt\0All files (*.*)\0*.*\0\0";
         extension = L"txt";
-    } else {
+    } else if (field_name == "midi") {
         filter = L"MIDI files (*.mid)\0*.mid\0All files (*.*)\0*.*\0\0";
         extension = L"mid";
+    } else if (field_name == "project-open") {
+        filter = L"Transcriber projects (*.transcriber;*.json)\0*.transcriber;*.json\0All files (*.*)\0*.*\0\0";
+    } else {
+        filter = L"Transcriber project (*.transcriber)\0*.transcriber\0All files (*.*)\0*.*\0\0";
+        extension = L"transcriber";
     }
 
     OPENFILENAMEW dialog{};
@@ -1164,11 +1873,15 @@ transcribe::gui::Result build_live_result(
             event.evidence.push_back({
                 original->second.onset_seconds(), original->second.midi_pitch,
                 original->second.raw_strength, 0.0, std::nullopt,
-                std::nullopt, original->second.midi_pitch});
+                std::nullopt, original->second.midi_pitch,
+                transcribe::EvidenceSemantics::Unspecified,
+                transcribe::EvidenceSemantics::Unspecified, std::nullopt});
         } else {
             event.evidence.push_back({
                 event.onset_seconds, note.midi_pitch, note.raw_strength, 0.0,
-                std::nullopt, std::nullopt, note.midi_pitch});
+                std::nullopt, std::nullopt, note.midi_pitch,
+                transcribe::EvidenceSemantics::Unspecified,
+                transcribe::EvidenceSemantics::Unspecified, std::nullopt});
         }
         events.push_back(std::move(event));
     }
@@ -1197,6 +1910,8 @@ transcribe::gui::Result build_live_result(
         interpretation, 0, "live-capture", result.metadata,
         request.guitar_tab_options);
     result.score.source_sample_rate = sample_rate;
+    result.audio_sample_rate = sample_rate;
+    result.audio_frame_count = recording_frames;
     for (auto& note : result.score.notes) {
         if (note.source_event_ids.size() != 1) continue;
         const auto& source_id = note.source_event_ids.front();
@@ -1561,8 +2276,11 @@ void start_transcription(AppState& state,
 
     transcribe::gui::Request request;
     request.use_asio = field(fields, "mode") == "asio";
+    request.retain_review_evidence =
+        !request.use_asio && field(fields, "review_mode") == "1";
     request.input_path = from_utf8(field(fields, "input"));
-    request.proposal_only = state.last_result.has_value();
+    request.proposal_only = state.last_result.has_value() &&
+        !state.last_result->score.notes.empty();
     request.model_path = from_utf8(field(fields, "model"));
     request.musicxml_path = from_utf8(field(fields, "musicxml"));
     request.tab_path = from_utf8(field(fields, "tab"));
@@ -1570,7 +2288,15 @@ void start_transcription(AppState& state,
     request.polyphonic = field(fields, "polyphonic") == "1";
     request.fast_preview = field(fields, "quality") == "fast";
     request.instrument = instrument_prior(field(fields, "instrument"));
-    request.guitar_tab_options.tuning = guitar_tuning(field(fields, "tuning"));
+    const auto tuning_text = field(fields, "tuning");
+    if (tuning_text == "custom" && state.project &&
+        state.project->score.instrument.tuning.size() == 6) {
+        std::copy(state.project->score.instrument.tuning.begin(),
+                  state.project->score.instrument.tuning.end(),
+                  request.guitar_tab_options.tuning.begin());
+    } else {
+        request.guitar_tab_options.tuning = guitar_tuning(tuning_text);
+    }
     request.guitar_tab_options.manual_corrections =
         state.manual_fingering_corrections;
     request.preserve_expressive_timing = field(fields, "preserve_timing") == "1";
@@ -1578,6 +2304,7 @@ void start_transcription(AppState& state,
     if (request.live_backend.empty()) request.live_backend = "yin";
 
     const auto tempo_text = field(fields, "tempo");
+    request.tempo_automatic = tempo_text.empty() || tempo_text == "auto";
     if (!tempo_text.empty() && tempo_text != "auto") {
         const double tempo = parse_number(tempo_text, "tempo");
         if (tempo < 40.0 || tempo > 240.0) {
@@ -1586,6 +2313,7 @@ void start_transcription(AppState& state,
         request.interpretation_options.tempo_bpm = tempo;
     }
     const auto key_text = field(fields, "key_fifths");
+    request.key_automatic = key_text.empty() || key_text == "auto";
     if (!key_text.empty() && key_text != "auto") {
         std::size_t consumed = 0;
         const int fifths = std::stoi(key_text, &consumed);
@@ -1596,6 +2324,7 @@ void start_transcription(AppState& state,
         request.interpretation_options.minor_key = field(fields, "minor") == "1";
     }
     const auto meter_text = field(fields, "meter");
+    request.meter_automatic = meter_text.empty() || meter_text == "auto";
     if (!meter_text.empty() && meter_text != "auto") {
         static constexpr std::array<std::array<int, 2>, 11> supported_meters{{
             {2, 4}, {3, 4}, {4, 4}, {5, 4}, {2, 8}, {3, 8},
@@ -1791,6 +2520,14 @@ void start_transcription(AppState& state,
                         audio_preview_callback);
                 }
                 completion->success = true;
+                if (!request.proposal_only) {
+                    completion->project = make_project_document(
+                        request, completion->result,
+                        completion->live_capture
+                            ? &completion->live_recording : nullptr,
+                        completion->project_warning);
+                    completion->has_project = true;
+                }
             } catch (const std::exception& error) {
                 completion->error = error.what();
             }
@@ -1816,6 +2553,130 @@ double parse_number(std::string_view text, const char* description) {
         throw std::invalid_argument(std::string("Invalid ") + description + ".");
     }
     return value;
+}
+
+void start_project_open(AppState& state, std::filesystem::path path) {
+    if (state.busy) {
+        throw std::runtime_error("Wait for the current operation to finish.");
+    }
+    if (path.empty()) {
+        throw std::invalid_argument("Choose a project file to open.");
+    }
+    state.busy = true;
+    post_json(state, L"{\"type\":\"progress\",\"progress\":0,"
+                      L"\"status\":\"Opening project\"}");
+    try {
+        state.worker = std::jthread(
+            [&state, path = std::move(path)](std::stop_token) {
+                auto completion = std::make_unique<CompletionMessage>();
+                completion->project_open = true;
+                completion->project_path = path;
+                try {
+                    const auto autosave = project_autosave_path();
+                    const bool is_recovery =
+                        std::filesystem::absolute(path).lexically_normal() ==
+                        std::filesystem::absolute(autosave).lexically_normal();
+                    completion->project = transcribe::load_project_file(path);
+                    completion->has_project = true;
+                    auto request = request_for_project(completion->project, path);
+                    auto result = result_for_project(completion->project, request);
+                    completion->request = std::move(request);
+                    completion->result = std::move(result);
+                    const auto audio_path =
+                        transcribe::resolve_project_audio_path(
+                            completion->project, path);
+                    if (!audio_path.empty()) {
+                        std::error_code error;
+                        if (!std::filesystem::is_regular_file(audio_path, error) ||
+                            error) {
+                            completion->project_warning =
+                                "The referenced source audio is unavailable. "
+                                "The score and its evidence were opened without audio.";
+                        }
+                    }
+                    if (is_recovery) {
+                        completion->project_recovery = true;
+                        completion->project_path =
+                            completion->project.last_saved_path.empty()
+                                ? std::filesystem::path{}
+                                : project_path_from_utf8(
+                                      completion->project.last_saved_path);
+                        if (!audio_path.empty()) {
+                            completion->project.audio.reference_path =
+                                path_utf8(audio_path);
+                            completion->project.audio.relative_to_project = false;
+                        }
+                    } else {
+                        completion->project.last_saved_path = path_utf8(path);
+                    }
+                    completion->success = true;
+                } catch (const std::exception& error) {
+                    completion->error = error.what();
+                }
+                if (PostMessageW(state.window, message_complete, 0,
+                                 reinterpret_cast<LPARAM>(completion.get()))) {
+                    completion.release();
+                }
+            });
+    } catch (...) {
+        state.busy = false;
+        throw;
+    }
+}
+
+void create_new_project(AppState& state) {
+    if (state.busy) {
+        throw std::runtime_error("Wait for the current operation to finish.");
+    }
+    GUID guid{};
+    const auto guid_result = CoCreateGuid(&guid);
+    if (FAILED(guid_result)) {
+        throw std::system_error(static_cast<int>(guid_result),
+                                std::system_category(),
+                                "Could not create a project identity");
+    }
+    std::array<wchar_t, 40> guid_text{};
+    if (StringFromGUID2(guid, guid_text.data(),
+                        static_cast<int>(guid_text.size())) == 0) {
+        throw std::runtime_error("Could not format a new project identity.");
+    }
+    std::wstring project_id = L"project-";
+    project_id.append(guid_text.data());
+    std::erase(project_id, L'{');
+    std::erase(project_id, L'}');
+
+    transcribe::ProjectDocument project;
+    project.id = to_utf8(project_id);
+    project.title = "Untitled project";
+    project.score = transcribe::make_empty_score_document(
+        "score-" + project.id);
+    transcribe::gui::Request request;
+    transcribe::gui::Result result;
+    result.score = project.score;
+    result.metadata = project.score.metadata;
+    result.notes = transcribe::score_notes(project.score);
+    result.fingering = transcribe::assign_guitar_tab_fingerings(
+        result.notes, request.guitar_tab_options);
+
+    state.project_path.clear();
+    state.project = project;
+    state.last_request = request;
+    state.last_result = result;
+    state.proposal_request.reset();
+    state.proposal_result.reset();
+    state.live_document.reset();
+    state.live_recording = {};
+    state.live_backend_id.clear();
+    state.manual_fingering_corrections.clear();
+    state.pre_refinement_result.reset();
+    state.pre_refinement_document.reset();
+    if (state.autosaver) state.autosaver->submit(project, 0);
+
+    post_json(state, L"{\"type\":\"project-reset\",\"project\":" +
+        project_summary_json(project, {}) + L",\"notes\":" +
+        score_notes_json(project.score) + L",\"metadata\":" +
+        score_metadata_json(project.score) + L",\"fingering\":" +
+        fingering_json(result.fingering) + L"}");
 }
 
 struct EditedScoreNote {
@@ -1877,6 +2738,49 @@ std::vector<EditedScoreNote> parse_edited_notes(std::string_view encoded) {
     return notes;
 }
 
+std::vector<transcribe::RecordReviewDecision> parse_review_decisions(
+    std::string_view encoded) {
+    std::vector<transcribe::RecordReviewDecision> decisions;
+    std::unordered_set<std::string> suggestion_ids;
+    while (!encoded.empty()) {
+        const auto end = encoded.find(';');
+        const auto record = encoded.substr(0, end);
+        const auto first = record.find(',');
+        const auto second = first == std::string_view::npos
+            ? first : record.find(',', first + 1);
+        if (first == std::string_view::npos ||
+            second == std::string_view::npos ||
+            record.find(',', second + 1) != std::string_view::npos) {
+            throw std::invalid_argument("A review decision is malformed.");
+        }
+        std::string suggestion_id(record.substr(0, first));
+        std::string note_id(record.substr(first + 1, second - first - 1));
+        const auto outcome = record.substr(second + 1);
+        if (suggestion_id.empty() || note_id.empty() ||
+            suggestion_id.size() > 256 || note_id.size() > 256 ||
+            !suggestion_ids.insert(suggestion_id).second ||
+            (outcome != "accepted" && outcome != "rejected")) {
+            throw std::invalid_argument("A review decision has invalid or duplicate values.");
+        }
+        decisions.push_back({
+            std::move(suggestion_id), std::move(note_id),
+            outcome == "accepted"
+                ? transcribe::ReviewDecisionOutcome::Accepted
+                : transcribe::ReviewDecisionOutcome::Rejected,
+            outcome == "accepted" ? "Accepted review suggestion"
+                                  : "Dismissed review suggestion"});
+        if (decisions.size() > 10000) {
+            throw std::length_error("Too many review decisions in one edit.");
+        }
+        if (end == std::string_view::npos) {
+            encoded = {};
+        } else {
+            encoded.remove_prefix(end + 1);
+        }
+    }
+    return decisions;
+}
+
 std::vector<transcribe::GuitarTabPosition> parse_tab_positions(
     std::string_view encoded) {
     std::vector<transcribe::GuitarTabPosition> positions;
@@ -1917,9 +2821,12 @@ std::vector<transcribe::GuitarTabPosition> parse_tab_positions(
     return positions;
 }
 
+enum class ScoreWriteMode { Export, SaveProject, SaveCopy, Autosave };
+
 void export_edited_score(
     AppState& state,
-    const std::unordered_map<std::string, std::string>& fields) {
+    const std::unordered_map<std::string, std::string>& fields,
+    ScoreWriteMode mode) {
     if (state.busy) {
         throw std::runtime_error("Wait for the current operation to finish.");
     }
@@ -1928,12 +2835,73 @@ void export_edited_score(
     }
 
     auto request = *state.last_request;
-    const auto musicxml_path = field(fields, "musicxml");
-    const auto tab_path = field(fields, "tab");
-    const auto midi_path = field(fields, "midi");
-    if (!musicxml_path.empty()) request.musicxml_path = from_utf8(musicxml_path);
-    if (!tab_path.empty()) request.tab_path = from_utf8(tab_path);
-    if (!midi_path.empty()) request.midi_path = from_utf8(midi_path);
+    if (fields.contains("model")) {
+        request.model_path = from_utf8(field(fields, "model"));
+    }
+    if (fields.contains("instrument")) {
+        request.instrument = instrument_prior(field(fields, "instrument"));
+    }
+    if (fields.contains("quality")) {
+        const auto quality = field(fields, "quality");
+        if (quality != "fast" && quality != "quality") {
+            throw std::invalid_argument("Choose a supported analysis quality mode.");
+        }
+        request.fast_preview = quality == "fast";
+    }
+    if (fields.contains("live_backend")) {
+        const auto backend = field(fields, "live_backend");
+        if (backend != "yin" && backend != "spectral" && backend != "onnx") {
+            throw std::invalid_argument("Choose a supported live inference backend.");
+        }
+        request.live_backend = backend;
+    }
+    if (fields.contains("polyphonic")) {
+        request.polyphonic = field(fields, "polyphonic") == "1";
+    }
+    if (fields.contains("preserve_timing")) {
+        request.preserve_expressive_timing =
+            field(fields, "preserve_timing") == "1";
+    }
+    if (fields.contains("latency_ms")) {
+        const double latency = parse_number(
+            field(fields, "latency_ms"), "analysis latency");
+        if (latency < 20.0 || latency > 50.0) {
+            throw std::invalid_argument(
+                "Realtime analysis latency must be between 20 and 50 milliseconds.");
+        }
+        request.realtime_options.latency_ms = latency;
+    }
+    std::filesystem::path project_destination;
+    if (mode == ScoreWriteMode::Export) {
+        const auto musicxml_path = field(fields, "musicxml");
+        const auto tab_path = field(fields, "tab");
+        const auto midi_path = field(fields, "midi");
+        if (!musicxml_path.empty()) request.musicxml_path = from_utf8(musicxml_path);
+        if (!tab_path.empty()) request.tab_path = from_utf8(tab_path);
+        if (!midi_path.empty()) request.midi_path = from_utf8(midi_path);
+    } else if (mode == ScoreWriteMode::SaveProject) {
+        const auto requested_path = field(fields, "project_path");
+        project_destination = requested_path.empty()
+            ? state.project_path : std::filesystem::path(from_utf8(requested_path));
+        if (project_destination.empty()) {
+            throw std::invalid_argument("Choose a project file path before saving.");
+        }
+    } else if (mode == ScoreWriteMode::SaveCopy) {
+        project_destination =
+            std::filesystem::path(from_utf8(field(fields, "project_path")));
+        if (project_destination.empty()) {
+            throw std::invalid_argument("Choose a path for the score-only project copy.");
+        }
+    }
+    std::uint64_t edit_generation = 0;
+    const auto generation_text = field(fields, "generation");
+    if (!generation_text.empty()) {
+        std::size_t generation_characters = 0;
+        edit_generation = std::stoull(generation_text, &generation_characters);
+        if (generation_characters != generation_text.size()) {
+            throw std::invalid_argument("Project edit generation is invalid.");
+        }
+    }
     const auto revision_text = field(fields, "base_revision");
     std::size_t revision_characters = 0;
     const auto base_revision = std::stoull(revision_text, &revision_characters);
@@ -1953,6 +2921,10 @@ void export_edited_score(
     transaction.reason = "Apply notation editor changes";
     transaction.command_id = source_score.id + "-edit-" +
                              std::to_string(base_revision + 1);
+    for (auto& decision : parse_review_decisions(
+             field(fields, "review_decisions"))) {
+        transaction.commands.emplace_back(std::move(decision));
+    }
 
     auto metadata = source_score.metadata;
     const auto tempo = parse_number(field(fields, "tempo"), "tempo");
@@ -2009,7 +2981,7 @@ void export_edited_score(
         }
     }
     const auto tuning_text = field(fields, "tuning");
-    if (!tuning_text.empty()) {
+    if (!tuning_text.empty() && tuning_text != "custom") {
         request.guitar_tab_options.tuning = guitar_tuning(tuning_text);
     }
     const auto capo_text = field(fields, "capo");
@@ -2168,15 +3140,114 @@ void export_edited_score(
     request.guitar_tab_options.manual_corrections = saved_corrections;
     result.score.source_id = source_score.source_id;
 
+    std::string project_creation_warning;
+    transcribe::ProjectDocument project = state.project
+        ? *state.project
+        : make_project_document(request, *state.last_result, nullptr,
+                                project_creation_warning);
+    project.score = result.score;
+    project.audio.sample_rate = result.audio_sample_rate;
+    project.audio.channels = result.audio_channels;
+    project.audio.frame_count = result.audio_frame_count;
+    project.analysis.backend_identifier = request.model_path.empty()
+        ? (result.score.source_id == "live-capture"
+               ? "builtin:" + request.live_backend : "builtin:yin")
+        : "onnx-runtime";
+    project.analysis.model_identifier = request.model_path.empty()
+        ? project.analysis.backend_identifier
+        : path_utf8(request.model_path.filename());
+    project.analysis.model_reference = path_utf8(request.model_path);
+    project.analysis.instrument_prior = instrument_prior_name(request.instrument);
+    project.analysis.live_backend = request.live_backend;
+    if (fields.contains("tempo_auto")) {
+        request.tempo_automatic = field(fields, "tempo_auto") == "1";
+    }
+    if (fields.contains("meter_auto")) {
+        request.meter_automatic = field(fields, "meter_auto") == "1";
+    }
+    if (fields.contains("key_auto")) {
+        request.key_automatic = field(fields, "key_auto") == "1";
+    }
+    project.analysis.tempo_automatic = request.tempo_automatic;
+    project.analysis.meter_automatic = request.meter_automatic;
+    project.analysis.key_automatic = request.key_automatic;
+    project.analysis.polyphonic = request.polyphonic;
+    project.analysis.fast_preview = request.fast_preview;
+    project.analysis.preserve_expressive_timing =
+        request.preserve_expressive_timing;
+    project.analysis.latency_ms = request.realtime_options.latency_ms;
+
+    if (mode == ScoreWriteMode::Autosave) {
+        transcribe::validate_project_document(project);
+        state.last_result = result;
+        state.last_request = request;
+        state.project = project;
+        queue_project_autosave(state, project, edit_generation);
+        post_json(state, L"{\"type\":\"project-autosaving\","
+            L"\"score_revision\":" + std::to_wstring(result.score.revision) +
+            L",\"generation\":" + std::to_wstring(edit_generation) + L"}");
+        return;
+    }
+
+    if (mode == ScoreWriteMode::SaveProject ||
+        mode == ScoreWriteMode::SaveCopy) {
+        const bool score_only = mode == ScoreWriteMode::SaveCopy;
+        const auto current_audio_path = transcribe::resolve_project_audio_path(
+            project, state.project_path.empty()
+                ? (state.autosaver ? state.autosaver->path()
+                                   : std::filesystem::path{})
+                : state.project_path);
+        if (score_only) {
+            project.audio.policy = transcribe::ProjectAudioPolicy::ScoreOnly;
+            project.audio.reference_path.clear();
+            project.audio.relative_to_project = false;
+        } else if (request.use_asio && !state.live_recording.samples.empty()) {
+            project.audio.policy =
+                transcribe::ProjectAudioPolicy::ExternalReference;
+            project.audio.reference_path = path_utf8(
+                project_destination.stem().wstring() + L".audio.wav");
+            project.audio.relative_to_project = true;
+        } else if (!request.input_path.empty()) {
+            set_project_audio_reference(
+                project, request.input_path, project_destination);
+        } else if (!current_audio_path.empty()) {
+            set_project_audio_reference(
+                project, current_audio_path, project_destination);
+        } else {
+            project.audio.policy = transcribe::ProjectAudioPolicy::ScoreOnly;
+            project.audio.reference_path.clear();
+            project.audio.relative_to_project = false;
+        }
+        project.title = path_utf8(project_destination.stem());
+        if (project.title.empty()) project.title = "Transcriber project";
+        project.last_saved_path = path_utf8(project_destination);
+        transcribe::validate_project_document(project);
+    }
+
+    if (mode == ScoreWriteMode::Export) {
+        update_export_status(project, "musicxml", request.musicxml_path, true);
+        update_export_status(project, "tablature", request.tab_path, true);
+        update_export_status(project, "midi", request.midi_path, true);
+    }
+    transcribe::validate_project_document(project);
+
     state.busy = true;
-    post_json(state, L"{\"type\":\"progress\",\"progress\":0,\"status\":\"Exporting edited score\"}");
+    post_json(state, mode == ScoreWriteMode::Export
+        ? L"{\"type\":\"progress\",\"progress\":0,\"status\":\"Exporting edited score\"}"
+        : L"{\"type\":\"progress\",\"progress\":0,\"status\":\"Saving project\"}");
     try {
         state.worker = std::jthread(
             [&state, request = std::move(request), result = std::move(result),
-             saved_corrections = std::move(saved_corrections)](std::stop_token) mutable {
+             project = std::move(project), project_destination,
+             saved_corrections = std::move(saved_corrections),
+             mode, edit_generation](std::stop_token) mutable {
                 auto message = std::make_unique<CompletionMessage>();
                 message->export_only = true;
+                message->project_save = mode == ScoreWriteMode::SaveProject;
+                message->score_only_copy = mode == ScoreWriteMode::SaveCopy;
+                message->edit_generation = edit_generation;
                 message->request = request;
+                message->project_path = project_destination;
                 const auto report_export_progress = [&state](int percent,
                                                              const wchar_t* status) {
                     auto progress = std::make_unique<ProgressMessage>();
@@ -2187,32 +3258,76 @@ void export_edited_score(
                         progress.release();
                     }
                 };
+                std::string current_format;
+                std::filesystem::path current_output;
                 try {
-                    report_export_progress(20, L"Writing MusicXML");
+                    if (mode == ScoreWriteMode::SaveProject ||
+                        mode == ScoreWriteMode::SaveCopy) {
+                        if (mode == ScoreWriteMode::SaveProject &&
+                            request.use_asio &&
+                            !state.live_recording.samples.empty()) {
+                            auto audio_path = project_destination.parent_path() /
+                                (project_destination.stem().wstring() +
+                                 L".audio.wav");
+                            if (audio_path.parent_path().empty()) {
+                                audio_path = std::filesystem::current_path() /
+                                    audio_path.filename();
+                            }
+                            report_export_progress(25, L"Saving linked audio");
+                            transcribe::write_audio_wav_atomic(
+                                audio_path, state.live_recording);
+                        }
+                        report_export_progress(70, L"Saving project");
+                        transcribe::save_project_file_atomic(
+                            project_destination, project);
+                    } else {
+                        current_format = "musicxml";
+                        current_output = request.musicxml_path;
+                        report_export_progress(20, L"Writing MusicXML");
 #ifdef TRANSCRIBE_ENABLE_VEROVIO
-                    transcribe::write_musicxml(
-                        request.musicxml_path, result.score,
-                        request.preserve_expressive_timing,
-                        &result.musicxml_source);
+                        transcribe::write_musicxml(
+                            request.musicxml_path, result.score,
+                            request.preserve_expressive_timing,
+                            &result.musicxml_source);
 #else
-                    transcribe::write_musicxml(
-                        request.musicxml_path, result.score,
-                        request.preserve_expressive_timing);
+                        transcribe::write_musicxml(
+                            request.musicxml_path, result.score,
+                            request.preserve_expressive_timing);
 #endif
-                    report_export_progress(55, L"Writing guitar tablature");
-                    transcribe::write_guitar_tab(
-                        request.tab_path, result.score, request.guitar_tab_options);
-                    if (!request.midi_path.empty()) {
-                        report_export_progress(80, L"Writing MIDI");
-                        transcribe::write_midi(request.midi_path, result.score);
+                        update_export_status(
+                            project, current_format, current_output, true);
+                        current_format = "tablature";
+                        current_output = request.tab_path;
+                        report_export_progress(55, L"Writing guitar tablature");
+                        transcribe::write_guitar_tab(
+                            request.tab_path, result.score,
+                            request.guitar_tab_options);
+                        update_export_status(
+                            project, current_format, current_output, true);
+                        if (!request.midi_path.empty()) {
+                            current_format = "midi";
+                            current_output = request.midi_path;
+                            report_export_progress(80, L"Writing MIDI");
+                            transcribe::write_midi(request.midi_path, result.score);
+                            update_export_status(
+                                project, current_format, current_output, true);
+                        }
+                        report_export_progress(100, L"Export complete");
                     }
-                    report_export_progress(100, L"Export complete");
                     message->request.guitar_tab_options.manual_corrections =
                         std::move(saved_corrections);
                     message->result = std::move(result);
+                    message->project = std::move(project);
+                    message->has_project = true;
                     message->success = true;
                 } catch (const std::exception& error) {
                     message->error = error.what();
+                    if (!current_format.empty()) {
+                        update_export_status(project, current_format,
+                                             current_output, false, error.what());
+                        message->project = std::move(project);
+                        message->has_project = true;
+                    }
                 }
                 if (PostMessageW(state.window, message_complete, 0,
                                  reinterpret_cast<LPARAM>(message.get()))) {
@@ -2285,6 +3400,11 @@ void accept_proposal(AppState& state) {
                         report_progress(80, L"Writing accepted MIDI");
                         transcribe::write_midi(request.midi_path, result.score);
                     }
+                    message->project = make_project_document(
+                        request, result,
+                        live_capture ? &live_recording : nullptr,
+                        message->project_warning);
+                    message->has_project = true;
                     report_progress(100, L"Proposal accepted and exported");
                     message->result = std::move(result);
                     message->success = true;
@@ -2625,10 +3745,12 @@ void handle_web_message(AppState& state, const std::string& message) {
     }
     const auto separator = message.find('|');
     const std::string action = message.substr(0, separator);
-    static constexpr std::array<std::string_view, 14> allowed_actions{
+    static constexpr std::array<std::string_view, 21> allowed_actions{
         "ready", "browse", "transcribe", "export-edits", "play-original",
         "stop-playback", "cancel", "open-output", "accept-proposal", "live-edit",
-        "refine-live", "apply-refinement", "discard-refinement", "undo-refinement"};
+        "refine-live", "apply-refinement", "discard-refinement", "undo-refinement",
+        "audition-event", "new-project", "open-project", "save-project",
+        "save-score-copy", "autosave-project", "discard-recovery"};
     if (std::find(allowed_actions.begin(), allowed_actions.end(), action) ==
         allowed_actions.end()) {
         throw std::invalid_argument("The interface requested an unsupported operation.");
@@ -2667,6 +3789,13 @@ void handle_web_message(AppState& state, const std::string& message) {
                              std::wstring(ffmpeg_enabled ? L"true" : L"false") +
                              L",\"verovio\":" +
                              std::wstring(verovio_enabled ? L"true" : L"false") + L"}");
+        const auto recovery_path = project_autosave_path();
+        std::error_code recovery_error;
+        if (std::filesystem::is_regular_file(recovery_path, recovery_error) &&
+            !recovery_error) {
+            post_json(state, L"{\"type\":\"recovery-available\",\"path\":\"" +
+                json_escape(recovery_path.wstring()) + L"\"}");
+        }
 #ifdef TRANSCRIBE_ENABLE_ASIO
         post_json(state, asio_devices_json());
 #endif
@@ -2674,9 +3803,31 @@ void handle_web_message(AppState& state, const std::string& message) {
         const std::string field_name = field(fields, "field");
         browse_for_path(state, field_name, from_utf8(field(fields, "current")));
     } else if (action == "transcribe") {
+        PlaySoundW(nullptr, nullptr, 0);
+        if (state.review_audio_open) {
+            (void)mciSendStringW(L"stop transcriber_review_audio", nullptr, 0, nullptr);
+            (void)mciSendStringW(L"close transcriber_review_audio", nullptr, 0, nullptr);
+            state.review_audio_open = false;
+        }
         start_transcription(state, fields);
     } else if (action == "export-edits") {
-        export_edited_score(state, fields);
+        export_edited_score(state, fields, ScoreWriteMode::Export);
+    } else if (action == "new-project") {
+        create_new_project(state);
+    } else if (action == "open-project") {
+        start_project_open(
+            state, std::filesystem::path(from_utf8(field(fields, "path"))));
+    } else if (action == "save-project") {
+        export_edited_score(state, fields, ScoreWriteMode::SaveProject);
+    } else if (action == "save-score-copy") {
+        export_edited_score(state, fields, ScoreWriteMode::SaveCopy);
+    } else if (action == "autosave-project") {
+        export_edited_score(state, fields, ScoreWriteMode::Autosave);
+    } else if (action == "discard-recovery") {
+        if (state.autosaver) {
+            state.autosaver->clear();
+        }
+        post_json(state, L"{\"type\":\"recovery-discarded\"}");
     } else if (action == "accept-proposal") {
         accept_proposal(state);
     } else if (action == "live-edit") {
@@ -2733,6 +3884,64 @@ void handle_web_message(AppState& state, const std::string& message) {
         discard_live_refinement(state);
     } else if (action == "undo-refinement") {
         undo_live_refinement(state);
+    } else if (action == "audition-event") {
+        if (!state.last_request || state.last_request->use_asio ||
+            state.last_request->input_path.empty()) {
+            throw std::runtime_error(
+                "Event audition is available after transcribing a file.");
+        }
+        auto extension = state.last_request->input_path.extension().wstring();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+            [](wchar_t character) {
+                return static_cast<wchar_t>(std::towlower(character));
+            });
+        if (extension != L".wav") {
+            throw std::runtime_error("Event audition currently supports WAV files.");
+        }
+        const double start = parse_number(field(fields, "start"), "audition start");
+        const double end = parse_number(field(fields, "end"), "audition end");
+        if (start < 0.0 || end <= start || end > 3600.0 ||
+            end - start > 600.0) {
+            throw std::invalid_argument("The requested WAV audition region is invalid.");
+        }
+        PlaySoundW(nullptr, nullptr, 0);
+        if (state.review_audio_open) {
+            (void)mciSendStringW(L"stop transcriber_review_audio", nullptr, 0, nullptr);
+            const auto close_error = mciSendStringW(
+                L"close transcriber_review_audio", nullptr, 0, nullptr);
+            state.review_audio_open = false;
+            if (close_error != 0) {
+                throw std::runtime_error("Windows could not close the previous audio audition.");
+            }
+        }
+        const auto file_path = state.last_request->input_path.wstring();
+        const std::wstring open_command =
+            L"open \"" + file_path + L"\" type waveaudio alias transcriber_review_audio";
+        auto error = mciSendStringW(open_command.c_str(), nullptr, 0, nullptr);
+        if (error != 0) {
+            throw std::runtime_error(
+                "Windows could not open the WAV for event audition (MCI error " +
+                std::to_string(error) + ").");
+        }
+        state.review_audio_open = true;
+        error = mciSendStringW(
+            L"set transcriber_review_audio time format milliseconds",
+            nullptr, 0, nullptr);
+        const auto start_ms = std::llround(start * 1000.0);
+        const auto end_ms = std::llround(end * 1000.0);
+        const std::wstring play_command =
+            L"play transcriber_review_audio from " + std::to_wstring(start_ms) +
+            L" to " + std::to_wstring(end_ms);
+        if (error == 0) {
+            error = mciSendStringW(play_command.c_str(), nullptr, 0, nullptr);
+        }
+        if (error != 0) {
+            (void)mciSendStringW(L"close transcriber_review_audio", nullptr, 0, nullptr);
+            state.review_audio_open = false;
+            throw std::runtime_error(
+                "Windows could not play the requested WAV region (MCI error " +
+                std::to_string(error) + ").");
+        }
     } else if (action == "play-original") {
         if (!state.last_request || state.last_request->use_asio ||
             state.last_request->input_path.empty()) {
@@ -2746,12 +3955,27 @@ void handle_web_message(AppState& state, const std::string& message) {
         if (extension != L".wav") {
             throw std::runtime_error("Original-audio playback currently supports WAV files.");
         }
+        if (state.review_audio_open) {
+            (void)mciSendStringW(L"stop transcriber_review_audio", nullptr, 0, nullptr);
+            (void)mciSendStringW(L"close transcriber_review_audio", nullptr, 0, nullptr);
+            state.review_audio_open = false;
+        }
         if (!PlaySoundW(state.last_request->input_path.c_str(), nullptr,
                         SND_ASYNC | SND_FILENAME | SND_NODEFAULT)) {
             throw std::runtime_error("Windows could not play the selected WAV file.");
         }
     } else if (action == "stop-playback") {
         PlaySoundW(nullptr, nullptr, 0);
+        if (state.review_audio_open) {
+            const auto stop_error = mciSendStringW(
+                L"stop transcriber_review_audio", nullptr, 0, nullptr);
+            const auto close_error = mciSendStringW(
+                L"close transcriber_review_audio", nullptr, 0, nullptr);
+            state.review_audio_open = false;
+            if (stop_error != 0 || close_error != 0) {
+                throw std::runtime_error("Windows could not stop the WAV audition.");
+            }
+        }
     } else if (action == "cancel") {
         if (state.busy && state.active_asio && state.worker.joinable()) {
             state.worker.request_stop();
@@ -3016,6 +4240,22 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                               preview->offset, preview->replace, preview->preview));
         return 0;
     }
+    case message_project_autosave: {
+        std::unique_ptr<AutosaveCompletion> result(
+            reinterpret_cast<AutosaveCompletion*>(lparam));
+        if (result->success) {
+            post_json(*state, L"{\"type\":\"project-autosaved\","
+                L"\"score_revision\":" + std::to_wstring(result->revision) +
+                L",\"generation\":" +
+                std::to_wstring(result->edit_generation) +
+                L",\"summary\":\"" + json_escape(result->summary) + L"\"}");
+        } else {
+            post_json(*state, L"{\"type\":\"project-autosave-error\","
+                L"\"message\":\"" +
+                json_escape(from_utf8_lossy(result->error)) + L"\"}");
+        }
+        return 0;
+    }
     case message_complete: {
         std::unique_ptr<CompletionMessage> completion(
             reinterpret_cast<CompletionMessage*>(lparam));
@@ -3024,7 +4264,27 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         state->busy = false;
         state->active_asio = false;
-        if (completion->refinement_proposal) {
+        if (completion->project_open) {
+            if (completion->success) {
+                state->project = completion->project;
+                state->project_path = completion->project_path;
+                state->last_request = completion->request;
+                state->last_result = completion->result;
+                state->manual_fingering_corrections =
+                    completion->request.guitar_tab_options.manual_corrections;
+                state->proposal_request.reset();
+                state->proposal_result.reset();
+                state->live_document.reset();
+                state->live_recording = {};
+                state->live_backend_id.clear();
+                state->pre_refinement_result.reset();
+                state->pre_refinement_document.reset();
+                if (!completion->project_recovery && state->autosaver) {
+                    state->autosaver->clear();
+                }
+            }
+            post_json(*state, result_json(*completion));
+        } else if (completion->refinement_proposal) {
             if (completion->success && completion->score_proposal &&
                 completion->proposal_review) {
                 state->pending_live_proposal =
@@ -3072,6 +4332,31 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 state->last_request = completion->request;
                 state->manual_fingering_corrections =
                     completion->request.guitar_tab_options.manual_corrections;
+                if (completion->has_project) {
+                    if (completion->project_save) {
+                        state->project = completion->project;
+                        state->project_path = completion->project_path;
+                        if (state->autosaver) state->autosaver->clear();
+                    } else if (completion->score_only_copy) {
+                        if (state->project) {
+                            state->project->score = completion->result.score;
+                        } else {
+                            state->project = completion->project;
+                        }
+                    } else {
+                        state->project = completion->project;
+                    }
+                    if (!completion->project_save && state->autosaver &&
+                        state->project) {
+                        try {
+                            queue_project_autosave(
+                                *state, *state->project,
+                                completion->edit_generation);
+                        } catch (const std::exception& error) {
+                            post_error(*state, error.what());
+                        }
+                    }
+                }
                 if (completion->live_capture) {
                     state->live_document = std::move(completion->live_document);
                     state->live_recording = std::move(completion->live_recording);
@@ -3124,6 +4409,22 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                     L",\"can_undo_refinement\":" +
                     std::wstring(state->pre_refinement_result
                                      ? L"true" : L"false");
+                export_message += L",\"project_saved\":" +
+                    std::wstring(completion->project_save ? L"true" : L"false") +
+                    L",\"score_only_copy\":" +
+                    std::wstring(completion->score_only_copy ? L"true" : L"false");
+                if (completion->project_save || completion->score_only_copy) {
+                    export_message += L",\"project_path\":\"" +
+                        json_escape(completion->project_path.wstring()) + L"\"";
+                }
+                if (state->project) {
+                    export_message += L",\"project\":" +
+                        project_summary_json(*state->project, state->project_path);
+                }
+                if (completion->request.retain_review_evidence) {
+                    export_message += L",\"review\":" +
+                       score_review_json(completion->result.score);
+                }
 #ifdef TRANSCRIBE_ENABLE_VEROVIO
                 export_message += L",\"musicxml\":\"" +
                     json_escape(from_utf8(completion->result.musicxml_source)) + L"\"";
@@ -3152,7 +4453,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             }
         } else {
             if (completion->success) {
-                if (state->last_result) {
+                if (state->last_result &&
+                    !state->last_result->score.notes.empty()) {
                     completion->proposal_only = true;
                     completion->accepted_revision =
                         state->last_result->score.revision;
@@ -3173,6 +4475,18 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 } else {
                     state->last_request = completion->request;
                     state->last_result = completion->result;
+                    if (completion->has_project) {
+                        state->project = completion->project;
+                        state->project_path = completion->project_path;
+                        if (state->autosaver) {
+                            try {
+                                queue_project_autosave(
+                                    *state, *state->project, 0);
+                            } catch (const std::exception& error) {
+                                post_error(*state, error.what());
+                            }
+                        }
+                    }
                     if (completion->live_capture) {
                         state->live_document =
                             std::move(completion->live_document);
@@ -3235,6 +4549,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_DESTROY:
         state->shutting_down = true;
         PlaySoundW(nullptr, nullptr, 0);
+        if (state->review_audio_open) {
+            (void)mciSendStringW(L"stop transcriber_review_audio", nullptr, 0, nullptr);
+            (void)mciSendStringW(L"close transcriber_review_audio", nullptr, 0, nullptr);
+            state->review_audio_open = false;
+        }
         if (state->worker.joinable()) {
             state->worker.request_stop();
             state->worker.join();

@@ -565,7 +565,8 @@ std::vector<Note> transcribe_spectral_polyphonic(
         if (options.evidence_callback) {
             options.evidence_callback({frames, static_cast<double>(window_size) / sample_rate,
                 static_cast<double>(hop_size) / sample_rate, "spectral", "normalized-salience",
-                peak_fractions, raw_salience[pitch], static_cast<int>(pitch + first_pitch)});
+                peak_fractions, raw_salience[pitch], static_cast<int>(pitch + first_pitch),
+                EvidenceSemantics::RelativeActivation, EvidenceSemantics::RawActivation});
         }
         auto detected = notes_from_frames(frames, duration_seconds, onsets,
                                           options.minimum_confidence);
@@ -979,7 +980,9 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
             raw_activations[pitch].resize(expected_frames);
             options.evidence_callback({frames, 0.0, frame_step, "basic-pitch",
                                        "selected-note-head-activation", {}, raw_activations[pitch],
-                                       static_cast<int>(pitch) + 28});
+                                       static_cast<int>(pitch) + 28,
+                                       EvidenceSemantics::RelativeActivation,
+                                       EvidenceSemantics::RawActivation});
         }
         auto detected = notes_from_frames(frames, duration_seconds, onsets,
                                           options.minimum_confidence);
@@ -1962,7 +1965,8 @@ std::vector<Note> transcribe_monophonic(const AudioBuffer& audio,
     if (options.evidence_callback) {
         options.evidence_callback({frames, static_cast<double>(selected_window) / selected_sample_rate,
             static_cast<double>(selected_hop) / selected_sample_rate, "yin",
-            "one-minus-cmnd-and-voicing-heuristic", {}, {}, -1});
+            "one-minus-cmnd-and-voicing-heuristic", {}, {}, -1,
+            EvidenceSemantics::HeuristicScore, EvidenceSemantics::Unspecified});
     }
     const double duration_seconds =
         static_cast<double>(audio.samples.size()) / audio.sample_rate;
@@ -2019,6 +2023,19 @@ StreamingResult transcribe_wav_streaming(const std::filesystem::path& path,
                             total_frames;
                     last_progress = std::max(last_progress, std::min(1.0, stream_position));
                     user_progress(last_progress);
+                };
+        }
+        const auto user_evidence = options.analysis.evidence_callback;
+        if (user_evidence) {
+            analysis.evidence_callback =
+                [&, user_evidence](const FrameEvidenceTrack& track) {
+                    auto absolute_track = track;
+                    const double time_offset =
+                        static_cast<double>(chunk_start_frame) / sample_rate;
+                    for (auto& frame : absolute_track.frames) {
+                        frame.time_seconds += time_offset;
+                    }
+                    user_evidence(absolute_track);
                 };
         }
 
@@ -2272,7 +2289,9 @@ std::vector<Note> infer_onnx_session(const AudioBuffer& audio,
                                        options.minimum_confidence);
         if (options.evidence_callback) {
             options.evidence_callback({frames, 0.0, frame_step_seconds, "onnx-generic",
-                                       "selected-normalized-activation", {}, raw_selected, -1});
+                                       "selected-normalized-activation", {}, raw_selected, -1,
+                                       EvidenceSemantics::RelativeActivation,
+                                       EvidenceSemantics::RawActivation});
         }
         if (options.progress_callback) {
             options.progress_callback(1.0);
@@ -2318,7 +2337,9 @@ std::vector<Note> infer_onnx_session(const AudioBuffer& audio,
             }
             options.evidence_callback({frames, 0.0, frame_step_seconds, "onnx-generic",
                                        "selected-normalized-activation", {}, raw,
-                                       static_cast<int>(pitch) + 28});
+                                       static_cast<int>(pitch) + 28,
+                                       EvidenceSemantics::RelativeActivation,
+                                       EvidenceSemantics::RawActivation});
         }
         auto detected = notes_from_frames(frames, duration_seconds, onsets,
                                           options.minimum_confidence);

@@ -22,6 +22,13 @@
   let hasLiveRecording = false;
   let hasPendingRefinement = false;
   let hasUnexportedEdits = false;
+  let projectDirty = false;
+  let currentProjectPath = "";
+  let activeProjectTitle = "";
+  let projectSummaryText = "No project is open.";
+  let pendingSaveAsScoreOnly = false;
+  let autosaveTimer = 0;
+  let projectEditGeneration = 0;
   let captureActive = false;
   let asioDevices = [];
   let savedAudioDeviceId = "";
@@ -32,6 +39,14 @@
     if (window.chrome && window.chrome.webview) {
       window.chrome.webview.postMessage(`${action}|${new URLSearchParams(values).toString()}`);
     }
+  }
+
+  function updateReviewModeState() {
+    const enabled = mode === "file" && $("review-mode").checked;
+    $("review-mode").disabled = $("transcribe-button").disabled || mode !== "file";
+    window.dispatchEvent(new CustomEvent("transcribe:review-enabled", {
+      detail: { enabled },
+    }));
   }
 
   function setStatus(text, percent) {
@@ -81,10 +96,139 @@
   }
 
   function updateProjectTitle() {
+    if (activeProjectTitle) {
+      $("project-title").textContent =
+        `${activeProjectTitle}${projectDirty ? " *" : ""}`;
+      return;
+    }
     const path = inputs.input.value.trim();
     $("project-title").textContent = mode === "asio"
       ? "Live ASIO capture"
       : path ? path.split(/[\\/]/).pop() : "Untitled session";
+  }
+
+  function acceptProjectInfo(project) {
+    if (!project) return;
+    currentProjectPath = project.project_path || "";
+    activeProjectTitle = project.title || "Untitled project";
+    updateProjectSummary(project);
+    if (Object.hasOwn(project, "audio_path")) {
+      inputs.input.value = project.audio_path || "";
+      if (inputs.input.value) selectMode("file");
+    }
+    if (project.exports) {
+      if (project.exports.musicxml) inputs.musicxml.value = project.exports.musicxml;
+      if (project.exports.tab) inputs.tab.value = project.exports.tab;
+      if (project.exports.midi) inputs.midi.value = project.exports.midi;
+    }
+    const settings = project.settings || {};
+    if (Object.hasOwn(settings, "tempo_automatic")) {
+      $("tempo-auto").checked = Boolean(settings.tempo_automatic);
+    }
+    if (Number.isFinite(Number(settings.tempo_bpm))) {
+      $("tempo-control").value = String(Math.round(Number(settings.tempo_bpm)));
+    }
+    if (Object.hasOwn(settings, "meter_automatic")) {
+      $("meter-control").value = settings.meter_automatic
+        ? "auto"
+        : `${settings.meter_numerator}/${settings.meter_denominator}`;
+    }
+    if (Object.hasOwn(settings, "key_automatic")) {
+      $("key-control").value = settings.key_automatic
+        ? "auto" : String(settings.key_fifths);
+    }
+    if (Object.hasOwn(settings, "minor_key")) {
+      $("minor-control").checked = Boolean(settings.minor_key);
+    }
+    if (Number.isFinite(Number(settings.pickup_quarters))) {
+      $("pickup-control").value = String(settings.pickup_quarters);
+    }
+    if (Number.isFinite(Number(settings.written_transposition))) {
+      $("written-transposition-control").value =
+        String(settings.written_transposition);
+    }
+    if (settings.tuning_preset) {
+      $("guitar-tuning").value = settings.tuning_preset;
+    }
+    if (Number.isFinite(Number(settings.capo_fret))) {
+      $("capo-fret").value = String(settings.capo_fret);
+    }
+    if (settings.instrument_prior) {
+      $("instrument-prior").value = settings.instrument_prior;
+    }
+    if (Object.hasOwn(settings, "model_path")) inputs.model.value = settings.model_path;
+    if (settings.live_backend) $("live-backend").value = settings.live_backend;
+    if (Object.hasOwn(settings, "polyphonic")) {
+      $("polyphonic").checked = Boolean(settings.polyphonic);
+    }
+    if (Object.hasOwn(settings, "fast_preview")) {
+      $("quality-mode").value = settings.fast_preview ? "fast" : "quality";
+    }
+    if (Object.hasOwn(settings, "preserve_timing")) {
+      $("preserve-timing").checked = Boolean(settings.preserve_timing);
+    }
+    if (Number.isFinite(Number(settings.latency_ms))) {
+      $("latency-ms").value = String(settings.latency_ms);
+    }
+    window.dispatchEvent(new CustomEvent("transcribe:project-active", {
+      detail: { active: true },
+    }));
+    window.dispatchEvent(new CustomEvent("transcribe:project-settings", {
+      detail: settings,
+    }));
+    projectDirty = false;
+    updateTempoControlState();
+    updateAnalysisControlState();
+    updateModelStatus();
+    savePaths();
+    updateProjectTitle();
+  }
+
+  function updateProjectSummary(project) {
+    projectSummaryText = project?.summary || "Project summary is unavailable.";
+    $("project-summary-details").textContent = projectSummaryText;
+  }
+
+  function requestSaveProject(scoreOnly = false) {
+    if (!activeProjectTitle) {
+      showError("Create or open a project before saving score edits.");
+      return;
+    }
+    pendingSaveAsScoreOnly = scoreOnly;
+    if (scoreOnly || !currentProjectPath) {
+      send("browse", {
+        field: scoreOnly ? "project-copy" : "project-save",
+        current: currentProjectPath,
+      });
+      return;
+    }
+    window.dispatchEvent(new CustomEvent("transcribe:project-save", {
+      detail: { path: currentProjectPath, scoreOnly: false },
+    }));
+  }
+
+  function openProjectPicker() {
+    if (!confirmDiscardCurrentProject("open another project")) return;
+    send("browse", { field: "project-open", current: currentProjectPath });
+  }
+
+  function scheduleProjectAutosave() {
+    if (!hasAcceptedScore || !activeProjectTitle) return;
+    projectEditGeneration += 1;
+    window.clearTimeout(autosaveTimer);
+    autosaveTimer = window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("transcribe:project-autosave", {
+        detail: { generation: projectEditGeneration },
+      }));
+    }, 700);
+  }
+
+  function confirmDiscardCurrentProject(operation) {
+    if (!projectDirty && !hasUnexportedEdits) return true;
+    return window.confirm(
+      `The current project has changes that may not be in its named project file. ` +
+      `Autosave recovery is enabled. Continue to ${operation}?`
+    );
   }
 
   function updateInputLevel(waveform, replace) {
@@ -146,6 +290,7 @@
       $(id).disabled = busy;
     });
     updateTempoControlState();
+    updateReviewModeState();
     $("guitar-tuning").disabled = busy;
     $("capo-fret").disabled = busy;
     $("tab-alternatives").disabled = busy;
@@ -160,6 +305,10 @@
     $("apply-refinement").disabled = busy || !hasPendingRefinement;
     $("discard-refinement").disabled = busy || !hasPendingRefinement;
     $("undo-refinement").disabled = busy || hasUnexportedEdits;
+    ["new-project", "open-project", "save-project", "save-score-copy",
+      "project-summary-button"].forEach((id) => {
+      $(id).disabled = busy;
+    });
     window.dispatchEvent(new CustomEvent("transcribe:busy", {
       detail: { busy, preserveScore, liveCapture: captureActive },
     }));
@@ -255,6 +404,7 @@
       if (saved.capoFret !== undefined) $("capo-fret").value = saved.capoFret;
       if (saved.alternatives !== undefined) $("tab-alternatives").value = saved.alternatives;
       $("preserve-timing").checked = Boolean(saved.preserveTiming);
+      $("review-mode").checked = Boolean(saved.reviewMode);
       if (saved.instrument) $("instrument-prior").value = saved.instrument;
       if (saved.quality) $("quality-mode").value = saved.quality;
       if (saved.tempo) $("tempo-control").value = saved.tempo;
@@ -293,6 +443,7 @@
       capoFret: $("capo-fret").value,
       alternatives: $("tab-alternatives").value,
       preserveTiming: $("preserve-timing").checked,
+      reviewMode: $("review-mode").checked,
       instrument: $("instrument-prior").value,
       quality: $("quality-mode").value,
       tempo: $("tempo-control").value,
@@ -324,6 +475,7 @@
     $("record-button").classList.toggle("active", mode === "asio");
     updateProjectTitle();
     updateModelStatus();
+    updateReviewModeState();
     savePaths();
   }
 
@@ -514,6 +666,17 @@
     $("discard-refinement").disabled = false;
   }
 
+  function notifyReview(message) {
+    window.dispatchEvent(new CustomEvent("transcribe:review", {
+      detail: {
+        enabled: Boolean($("review-mode").checked &&
+          document.querySelector(".segment.selected")?.dataset.mode === "file"),
+        report: message.review || null,
+        evidenceTruncated: Boolean(message.review_evidence_truncated),
+      },
+    }));
+  }
+
   function handleMessage(event) {
     const message = event.data || {};
     if (message.type === "asio-devices") {
@@ -543,6 +706,22 @@
       return;
     }
     if (message.type === "field") {
+      if (message.field === "project-open") {
+        if (message.value) send("open-project", { path: message.value });
+        return;
+      }
+      if (message.field === "project-save" ||
+          message.field === "project-copy") {
+        const scoreOnly = message.field === "project-copy" ||
+          pendingSaveAsScoreOnly;
+        pendingSaveAsScoreOnly = false;
+        if (!message.value) return;
+        window.dispatchEvent(new CustomEvent(
+          scoreOnly ? "transcribe:project-copy" : "transcribe:project-save",
+          { detail: { path: message.value, scoreOnly } },
+        ));
+        return;
+      }
       const input = inputs[message.field];
       if (input) {
         input.value = message.value;
@@ -560,8 +739,63 @@
       }
       return;
     }
+    if (message.type === "recovery-available") {
+      if (window.confirm(
+        "A recoverable project autosave was found. Open it now? Choosing No discards that recovery copy."
+      )) {
+        send("open-project", { path: message.path });
+      } else {
+        send("discard-recovery");
+      }
+      return;
+    }
+    if (message.type === "recovery-discarded") {
+      setStatus("Autosave recovery copy discarded", 0);
+      return;
+    }
+    if (message.type === "project-autosaving") {
+      window.dispatchEvent(new CustomEvent("transcribe:project-autosaving", {
+        detail: message,
+      }));
+      setStatus("Saving an autosave recovery copy", 0);
+      return;
+    }
+    if (message.type === "project-autosaved") {
+      setStatus("Autosave recovery copy saved", 100);
+      return;
+    }
+    if (message.type === "project-autosave-error") {
+      showError(`Project autosave failed: ${message.message || "Unknown error"}`);
+      return;
+    }
+    if (message.type === "project-reset") {
+      hasAcceptedScore = true;
+      hasPendingProposal = false;
+      hasLiveRecording = false;
+      hasPendingRefinement = false;
+      hasUnexportedEdits = false;
+      projectDirty = false;
+      recentEvents = [];
+      acceptProjectInfo(message.project);
+      renderNotes(Array.isArray(message.notes) ? message.notes : [], true);
+      window.dispatchEvent(new CustomEvent("transcribe:fingering", {
+        detail: message.fingering,
+      }));
+      window.dispatchEvent(new CustomEvent("transcribe:metadata", {
+        detail: message.metadata,
+      }));
+      window.dispatchEvent(new CustomEvent("transcribe:accepted-score", {
+        detail: message,
+      }));
+      setCaptureState("Empty project");
+      setStatus("New project created", 100);
+      return;
+    }
     if (message.type === "progress") {
       const capture = (message.status || "").toLowerCase().includes("captur");
+      if ((message.status || "").toLowerCase().includes("opening project")) {
+        setBusy(true, true, false);
+      }
       setCaptureState(capture ? "Capturing" : "Processing", capture ? "active" : "busy");
       $("preview-badge").textContent = "ANALYZING";
       $("preview-badge").className = "preview-badge active";
@@ -659,6 +893,7 @@
       window.dispatchEvent(new CustomEvent("transcribe:proposal", {
         detail: message,
       }));
+      notifyReview(message);
       return;
     }
     if (message.type === "complete") {
@@ -669,6 +904,7 @@
         hasPendingProposal = false;
         hasUnexportedEdits = false;
         hasLiveRecording = Boolean(message.live_capture);
+        if (message.project) acceptProjectInfo(message.project);
         $("refinement-panel").classList.toggle("hidden", !hasLiveRecording);
         $("refine-live").disabled = !hasLiveRecording;
         $("undo-refinement").hidden = true;
@@ -678,7 +914,9 @@
         $("tempo-value").textContent = message.metadata.tempo_inferred
           ? `${message.metadata.tempo.toFixed(0)} bpm` : "—";
         $("key-value").textContent = message.metadata.key || "—";
-        $("result-message").textContent = message.summary;
+        $("result-message").textContent = message.project_opened && message.project
+          ? `Opened ${message.project.title}. ${message.project.summary}`
+          : message.summary;
         $("result-message").className = "result-message";
         renderNotes(message.notes, true);
         window.dispatchEvent(new CustomEvent("transcribe:fingering", {
@@ -688,8 +926,12 @@
         window.dispatchEvent(new CustomEvent("transcribe:accepted-score", {
           detail: message,
         }));
-        setStatus("Transcription complete", 100);
-        setCaptureState("Score ready");
+        if (message.project_warning) {
+          $("result-message").textContent += `\n${message.project_warning}`;
+        }
+        notifyReview(message);
+        setStatus(message.project_opened ? "Project opened" : "Transcription complete", 100);
+        setCaptureState(message.project_opened ? "Project ready" : "Score ready");
       } else {
         showError(message.error || "Transcription failed.");
         setCaptureState("Transcription failed", "error");
@@ -712,6 +954,7 @@
         window.dispatchEvent(new CustomEvent("transcribe:accepted-score", {
           detail: message,
         }));
+        if (message.review) notifyReview(message);
         if (message.refinement_applied || message.refinement_undo) {
           hasLiveRecording = true;
           $("refinement-panel").classList.remove("hidden");
@@ -734,6 +977,15 @@
         $("result-message").className = "result-message error";
       }
       if (message.success) $("accept-proposal").hidden = true;
+      if (message.success && message.project) {
+        if (message.project_saved) {
+          acceptProjectInfo(message.project);
+        } else {
+          updateProjectSummary(message.project);
+          projectDirty = true;
+          updateProjectTitle();
+        }
+      }
       window.dispatchEvent(new CustomEvent("transcribe:edited-export", { detail: message }));
       return;
     }
@@ -752,6 +1004,24 @@
       const field = button.dataset.field;
       send("browse", { field, current: inputs[field].value });
     });
+  });
+  $("new-project").addEventListener("click", () => {
+    if (confirmDiscardCurrentProject("create a new project")) send("new-project");
+  });
+  $("open-project").addEventListener("click", openProjectPicker);
+  $("save-project").addEventListener("click", () => requestSaveProject(false));
+  $("save-score-copy").addEventListener("click", () => requestSaveProject(true));
+  window.addEventListener("transcribe:save-request", () => requestSaveProject(false));
+  $("project-summary-button").addEventListener("click", () => {
+    $("project-summary-dialog").showModal();
+  });
+  $("close-project-summary").addEventListener("click", () => {
+    $("project-summary-dialog").close();
+  });
+  $("project-summary-dialog").addEventListener("click", (event) => {
+    if (event.target === $("project-summary-dialog")) {
+      $("project-summary-dialog").close();
+    }
   });
   $("drop-browse").addEventListener("click", () => send("browse", { field: "input", current: inputs.input.value }));
   $("record-button").addEventListener("click", () => {
@@ -834,6 +1104,7 @@
       musicxml: inputs.musicxml.value,
       tab: inputs.tab.value,
       midi: inputs.midi.value,
+      review_mode: mode === "file" && $("review-mode").checked ? "1" : "0",
     });
   });
   $("cancel-button").addEventListener("click", () => send("cancel"));
@@ -891,6 +1162,11 @@
     $("undo-refinement").title = hasUnexportedEdits
       ? "Export or discard edits before undoing refinement"
       : "Restore the score from before offline refinement";
+    if (hasAcceptedScore) {
+      projectDirty = true;
+      updateProjectTitle();
+      scheduleProjectAutosave();
+    }
   });
   $("open-folder-button").addEventListener("click", () => send("open-output", { path: inputs.musicxml.value }));
   $("drop-zone").addEventListener("keydown", (event) => {
@@ -920,6 +1196,10 @@
   $("capo-fret").addEventListener("change", savePaths);
   $("tab-alternatives").addEventListener("change", savePaths);
   $("preserve-timing").addEventListener("change", savePaths);
+  $("review-mode").addEventListener("change", () => {
+    savePaths();
+    updateReviewModeState();
+  });
   $("instrument-prior").addEventListener("change", savePaths);
   $("quality-mode").addEventListener("change", savePaths);
   $("tempo-auto").addEventListener("change", () => {
@@ -942,6 +1222,7 @@
   window.addEventListener("resize", drawRoll);
   window.addEventListener("DOMContentLoaded", () => {
     loadSavedPaths();
+    updateReviewModeState();
     updateProjectTitle();
     if (window.chrome && window.chrome.webview) {
       window.chrome.webview.addEventListener("message", handleMessage);

@@ -32,6 +32,15 @@ def main():
 
     required_ids = {
         "workspace",
+        "project-title",
+        "new-project",
+        "open-project",
+        "save-project",
+        "save-score-copy",
+        "project-summary-button",
+        "project-summary-dialog",
+        "project-summary-details",
+        "close-project-summary",
         "source-panel",
         "inspector-panel",
         "source-resizer",
@@ -81,6 +90,13 @@ def main():
         "fingering-alternatives",
         "fingering-note",
         "confidence-heatmap",
+        "review-mode",
+        "review-card",
+        "review-status",
+        "review-limitation",
+        "review-queue",
+        "review-items",
+        "audition-event",
         "live-events",
         "tempo-control",
         "key-control",
@@ -116,6 +132,7 @@ def main():
     editor = javascript[2].read_text(encoding="utf-8")
     webview_backend = (ui_directory.parent / "src" / "gui_webview.cpp").read_text(encoding="utf-8")
     transcription_backend = (ui_directory.parent / "src" / "gui_transcription.cpp").read_text(encoding="utf-8")
+    review_backend = (ui_directory.parent / "src" / "review.cpp").read_text(encoding="utf-8")
     require("transcribe:notes" in app and "transcribe:notes" in editor,
             "Live note events are not connected to the score editor")
     require("transcribe:audio-preview" in app and "transcribe:audio-preview" in editor,
@@ -173,6 +190,25 @@ def main():
             "conflicts_with_manual_edit" in webview_backend and
             "completion->refinement_applied" in webview_backend,
             "Manual refinement conflicts are not reviewed before application")
+    require("review-mode" in app and "review_mode" in app and
+            "retain_review_evidence" in transcription_backend and
+            "transcribe:review" in app and "transcribe:review" in editor and
+            "prioritizedReviewNotes" in editor and "chooseNote(entry.index)" in editor,
+            "Optional review mode is not connected to evidence retention and inspector data")
+    require("ranking_basis" in webview_backend and
+            "RecordReviewDecision" in webview_backend and
+            "review_decisions" in editor and "review_decisions" in webview_backend,
+            "Review outcomes are not recorded through canonical score revisions")
+    require("audition-event" in editor and "audition-event" in webview_backend and
+            "mciSendStringW" in webview_backend,
+            "Event-local audio audition is not connected to the WAV backend")
+    require("not a probability" in editor and
+            "No representative held-out labelled calibration dataset is configured" in review_backend,
+            "Review UI does not distinguish raw ranking evidence from calibrated probabilities")
+    require("Number.isFinite(note.calibrated_confidence)" in editor and
+            "calibrated_confidence\\\":null" in webview_backend and
+            "Calibrated correctness estimate" in editor,
+            "Uncalibrated legacy detector scores are displayed as correctness probabilities")
     require("source_event_ids" in webview_backend and
             'note.source_event_ids?.includes(selectedId)' in editor and
             'note.id = source_id' not in webview_backend and
@@ -184,6 +220,15 @@ def main():
     require("unsupported operation" in
             (ui_directory.parent / "src" / "gui_webview.cpp").read_text(encoding="utf-8"),
             "WebView2 bridge does not reject unknown commands")
+    require(all(action in app and action in editor for action in (
+                "transcribe:project-active", "transcribe:project-settings",
+                "transcribe:project-save", "transcribe:project-copy",
+                "transcribe:project-autosave")),
+            "Project settings, save, or autosave are not connected to the score editor")
+    require(all(action in webview_backend for action in (
+                "start_project_open", "save_project_file_atomic",
+                "recovery-available", "project-autosave-error")),
+            "Project loading, atomic saves, recovery, or error reporting is missing")
 
     node = shutil.which("node")
     if node:

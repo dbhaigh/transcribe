@@ -8,6 +8,14 @@ The worktree was clean at the start. This phase changes documentation only;
 it does not implement fixes, replace the architecture, or retune the model.
 The implementation sequence is in [the roadmap](roadmap.md).
 
+This is a point-in-time audit of that baseline, not a current inventory of
+later implementation or CI changes. Release and workflow status is summarized
+in [the release checklist](release-checklist.md) and the current
+[README](../README.md); audit findings remain evidence about the named source
+baseline unless explicitly updated in a later change.
+The project MIT license and WebView2-only graphical frontend were added after
+this baseline audit.
+
 This is an engineering/correctness audit, not a claim of commercial AMT
 quality, a penetration test, or a legal opinion.
 
