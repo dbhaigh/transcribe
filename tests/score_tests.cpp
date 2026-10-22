@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -44,6 +45,92 @@ std::string musicxml_note_id(const std::string& note_id, bool tablature = false)
 
 } // namespace
 
+TEST_CASE("recording samples seconds and musical quarters round trip across tempo changes", "[score][timeline]") {
+    auto score = sample_score();
+    score.source_sample_rate = 48000;
+    score.tempo_map = {{0, 2, 0, 120, 1, false}, {2, 8, 4, 60, 1, false}};
+    for (const double seconds : {0., .125, 1.999, 2., 2.001, 3., 8., 7200.}) {
+        const auto quarters = transcribe::score_position_quarters(score, seconds);
+        REQUIRE(transcribe::score_position_seconds(score, quarters) == Catch::Approx(seconds).margin(1e-10));
+        const auto frame = transcribe::recording_sample_position(seconds, score.source_sample_rate);
+        REQUIRE(transcribe::recording_sample_seconds(frame, score.source_sample_rate) ==
+                Catch::Approx(seconds).margin(1. / 96000));
+    }
+    REQUIRE(transcribe::score_position_quarters(score, 3) == Catch::Approx(5));
+    REQUIRE(transcribe::recording_sample_position(.5 / 48000, 48000) == 1);
+    REQUIRE_THROWS_AS(transcribe::recording_sample_seconds(1, 0), std::invalid_argument);
+    REQUIRE_THROWS_AS(transcribe::recording_sample_position(-1, 48000), std::invalid_argument);
+    REQUIRE_THROWS_AS(transcribe::recording_sample_position(1e30, 48000), std::overflow_error);
+    REQUIRE_THROWS_AS(transcribe::recording_sample_position(std::numeric_limits<double>::quiet_NaN(), 48000),
+                      std::invalid_argument);
+    const auto restored = transcribe::deserialize_score_document(transcribe::serialize_score_document(score));
+    REQUIRE(transcribe::score_position_seconds(restored, 5) == Catch::Approx(3));
+    score.tempo_map[1].start_quarters = 5;
+    REQUIRE_THROWS_AS(transcribe::validate_score_document(score), std::invalid_argument);
+}
+
+TEST_CASE("repeated score undo redo preserves complete reusable snapshots", "[score][editing]") {
+    auto original = sample_score();
+    transcribe::ScoreEditor editor(original);
+    transcribe::ScoreTransaction transaction;
+    transaction.base_revision = original.revision;
+    transaction.commands = {
+        transcribe::ChangeScorePitch{original.notes[0].id, 61},
+        transcribe::ChangeScoreFingering{original.notes[0].id, 2, 2},
+        transcribe::ChangeScoreDuration{original.notes[0].id, 1.25},
+        transcribe::DeleteScoreElement{original.notes[1].id}};
+    editor.apply(transaction);
+    for (int cycle = 0; cycle < 4; ++cycle) {
+        editor.undo(editor.document().revision);
+        REQUIRE(editor.document().id == original.id);
+        REQUIRE(editor.document().notes.size() == 2);
+        REQUIRE(editor.document().notes[0].sounding_midi_pitch == 60);
+        REQUIRE_FALSE(editor.document().tab_notes[0].string_number);
+        REQUIRE(editor.document().notes[0].measured_onset_seconds == original.notes[0].measured_onset_seconds);
+        editor.redo(editor.document().revision);
+        REQUIRE(editor.document().notes.size() == 1);
+        REQUIRE(editor.document().notes[0].sounding_midi_pitch == 61);
+        REQUIRE(editor.document().notes[0].duration_quarters == Catch::Approx(1.25));
+        REQUIRE(editor.document().tab_notes[0].string_number == 2);
+        REQUIRE(editor.document().tab_notes[0].fret == 2);
+        const auto serialized = transcribe::serialize_score_document(editor.document());
+        REQUIRE(transcribe::serialize_score_document(transcribe::deserialize_score_document(serialized)) == serialized);
+    }
+    editor.undo(editor.document().revision);
+    transaction.base_revision = editor.document().revision;
+    transaction.commands = {transcribe::ChangeScorePitch{original.notes[0].id, 62}};
+    editor.apply(transaction);
+    REQUIRE_THROWS_AS(editor.redo(editor.document().revision), std::logic_error);
+}
+
+TEST_CASE("canonical fingering edits preserve pitch and reject duration-induced string collisions",
+          "[score][fingering]") {
+    auto score = sample_score();
+    transcribe::ScoreEditor editor(score);
+    const auto first = score.notes[0].id, second = score.notes[1].id;
+    transcribe::ScoreTransaction assign;
+    assign.base_revision = editor.document().revision;
+    assign.commands = {transcribe::ChangeScoreFingering{first, 3, 5},
+                       transcribe::ChangeScoreFingering{second, 3, 9}};
+    REQUIRE_NOTHROW(editor.apply(assign));
+    REQUIRE(editor.document().notes[0].sounding_midi_pitch == 60);
+    REQUIRE(editor.document().notes[1].sounding_midi_pitch == 64);
+    transcribe::ScoreTransaction extend;
+    extend.base_revision = editor.document().revision;
+    extend.commands = {transcribe::ChangeScoreDuration{first, 3}};
+    REQUIRE_THROWS_AS(editor.apply(extend), std::invalid_argument);
+    REQUIRE(editor.document().revision == assign.base_revision + 1);
+    transcribe::ScoreTransaction pitch;
+    pitch.base_revision = editor.document().revision;
+    pitch.commands = {transcribe::ChangeScorePitch{first, 61}};
+    REQUIRE_NOTHROW(editor.apply(pitch));
+    const auto tab = std::find_if(editor.document().tab_notes.begin(), editor.document().tab_notes.end(),
+        [&](const auto& item) { return item.notation_note_id == first; });
+    REQUIRE_FALSE(tab->string_number);
+    REQUIRE_FALSE(tab->fret);
+    REQUIRE(editor.document().notes[0].written_midi_pitch == 61);
+}
+
 TEST_CASE("canonical score project round trips source evidence and notation relationships",
           "[score][serialization]") {
     auto original = sample_score();
@@ -72,6 +159,25 @@ TEST_CASE("canonical score project round trips source evidence and notation rela
             Catch::Approx(1.0));
     REQUIRE(transcribe::score_position_quarters(restored, 1.0) ==
             Catch::Approx(2.0));
+}
+
+TEST_CASE("optional onset and note state evidence round trips without inventing probabilities",
+          "[score][serialization]") {
+    auto original = sample_score();
+    REQUIRE_FALSE(original.notes.front().raw_evidence.empty());
+    auto& evidence = original.notes.front().raw_evidence.front();
+    evidence.onset_strength = .72;
+    evidence.note_state = .63;
+    evidence.fractional_midi = 60.15;
+    const auto restored = transcribe::deserialize_score_document(
+        transcribe::serialize_score_document(original));
+    const auto& copy = restored.notes.front().raw_evidence.front();
+    REQUIRE(copy.onset_strength == evidence.onset_strength);
+    REQUIRE(copy.note_state == evidence.note_state);
+    REQUIRE(copy.fractional_midi == evidence.fractional_midi);
+    REQUIRE_FALSE(restored.notes.front().calibrated_confidence);
+    evidence.onset_strength = std::numeric_limits<double>::quiet_NaN();
+    REQUIRE_THROWS(transcribe::validate_score_document(original));
 }
 
 TEST_CASE("legacy note confidence remains available without becoming calibrated",
@@ -427,6 +533,55 @@ TEST_CASE("MusicXML score IDs survive bar-crossing tie fragments",
             std::string::npos);
     std::error_code error;
     std::filesystem::remove(xml_path, error);
+}
+
+TEST_CASE("MusicXML rejects contradictory beat grouping before creating output",
+          "[score][export][musicxml]") {
+    auto interpretation = transcribe::to_score_interpretation(sample_score());
+    interpretation.hypotheses.front().meter.grouping = {3};
+    const auto path = std::filesystem::temp_directory_path() /
+        ("transcriber-invalid-grouping-" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+         ".musicxml");
+    REQUIRE_THROWS_AS(transcribe::write_musicxml(path, interpretation),
+                      std::invalid_argument);
+    REQUIRE_FALSE(std::filesystem::exists(path));
+    interpretation.hypotheses.front().meter.grouping = {0, 4};
+    REQUIRE_THROWS_AS(transcribe::write_musicxml(path, interpretation),
+                      std::invalid_argument);
+    REQUIRE_FALSE(std::filesystem::exists(path));
+}
+
+TEST_CASE("extended guitar configuration and physical neck bounds survive score round trips",
+          "[score][guitar][editing]") {
+    auto score = sample_score();
+    score.instrument.tuning = {64, 59, 55, 50, 45, 40, 35};
+    score.instrument.capo_fret = 2;
+    score.instrument.physical_fret_count = 12;
+    for (auto& tab : score.tab_notes) {
+        tab.string_number.reset();
+        tab.fret.reset();
+    }
+    const auto encoded = transcribe::serialize_score_document(score);
+    const auto restored = transcribe::deserialize_score_document(encoded);
+    REQUIRE(restored.instrument.tuning.size() == 7);
+    REQUIRE(restored.instrument.physical_fret_count == 12);
+    transcribe::ScoreEditor editor(restored);
+    transcribe::ScoreTransaction transaction;
+    transaction.base_revision = restored.revision;
+    transaction.commands = {transcribe::ChangeScoreFingering{restored.notes[0].id, 7, 23}};
+    REQUIRE_THROWS_AS(editor.apply(transaction), std::invalid_argument);
+    REQUIRE(transcribe::serialize_score_document(editor.document()) == encoded);
+    transaction.commands = {transcribe::ChangeScoreFingering{restored.notes[0].id, 3, 3}};
+    editor.apply(transaction); // G3 + capo 2 + fret 3 = C4.
+    REQUIRE(editor.document().notes[0].sounding_midi_pitch == 60);
+    editor.undo(editor.document().revision);
+    REQUIRE_FALSE(editor.document().tab_notes[0].string_number);
+    auto legacy = encoded;
+    const auto at = legacy.find(",\"physical_fret_count\":12");
+    REQUIRE(at != std::string::npos);
+    legacy.erase(at, std::string(",\"physical_fret_count\":12").size());
+    REQUIRE_FALSE(transcribe::deserialize_score_document(legacy).instrument.physical_fret_count);
 }
 
 TEST_CASE("ASCII tablature export uses assignments from the canonical score revision",

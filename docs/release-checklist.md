@@ -5,9 +5,17 @@ CI run, build artifacts, benchmark reports, and any approved exceptions in the
 release notes. A local compile is not evidence that an artifact was tested on a
 clean machine.
 
+The latest [local reliability matrix](reliability.md#executed-local-release-readiness-matrix)
+records executed builds/tests, explicit skips, the FFmpeg dependency failure
+and remaining platform/hardware sign-off blockers. It does not substitute for
+CI or clean-machine qualification.
+The automated [release evidence report](release-evidence.md) combines CTest,
+per-fixture quality gates, quality/performance reports, provenance, and manual
+acceptance. A CI-generated `pending` report is not a release sign-off.
+
 ## Current repository facts
 
-- Project version is 0.1.5; the CLI release banner is generated from the CMake
+- Project version is 0.1.6; the CLI release banner is generated from the CMake
   project version.
 - The default C++20 build is dependency-light and reads WAV audio. FFmpeg,
   ONNX Runtime, Windows ASIO capture, WebView2, and Verovio are optional.
@@ -71,8 +79,9 @@ clean machine.
   passed for the relevant artifacts. Mark ASIO, GPU, and other untested
   configurations as unqualified.
 - [ ] Review Catch2, CLI/export, UI asset, project serialization, and synthetic
-  evaluation CTest results. Record skipped tests with the reason; an absent
-  real recording or audio device is not a pass.
+  evaluation CTest results and all three v1 per-fixture regression gates.
+  Record skipped tests with the reason; an absent real recording or audio
+  device is not a pass.
 - [ ] Extract each release archive into a clean directory/environment and run
   its package smoke test. Verify executables, sample fixtures, model files,
   runtime DLL/shared libraries, UI assets, and third-party notices.
@@ -80,6 +89,12 @@ clean machine.
   WebView2 Runtime setup path, missing-runtime message, file transcription,
   editing, save/reopen, and exports. The automated payload smoke is not a
   substitute for this manual GUI test.
+- [ ] Record manual acceptance for live input/recording, real-time notation,
+  tablature synchronization, editing and undo/redo, playback-cursor
+  synchronization, and export round trips. Exercise the UI while audio is
+  arriving, then pause/stop/retranscribe; confirm canceled/stale jobs do not
+  overwrite edits. Save the signed result using the schema in
+  [Release evidence](release-evidence.md).
 - [ ] Test optional-feature runtime dependencies on a machine without
   development tools or developer `PATH` entries. Record any packages users
   must install separately and verify failures are actionable.
@@ -106,9 +121,11 @@ clean machine.
   model/provider, sample rate, and settings. Report frame and note-event
   metrics separately.
 - [ ] Run cold and warm Release benchmarks using the documented protocol.
-  Compare against maintained measured baselines with explicit tolerances;
-  do not gate releases on a single noisy timing sample or claim unmeasured
-  speedups.
+  Compare against a maintained baseline only when hardware, build
+  configuration, provider, model, input, and measurement protocol match.
+  Keep shared-runner timings descriptive; do not gate releases on one noisy
+  timing sample or claim unmeasured speedups. Review p50/p95/p99 sample
+  counts and memory limitations.
 - [ ] Verify project schema/version and migration behavior, and include a
   backup warning for manual application replacement. Document unsupported
   future project formats and lossy export conversions.

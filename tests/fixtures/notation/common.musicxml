@@ -11,6 +11,7 @@
         <clef><sign>G</sign><line>2</line></clef>
       </attributes>
       <direction><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>96</per-minute></metronome></direction-type><sound tempo="96"/></direction>
+      <barline location="left"><repeat direction="forward"/></barline>
       <note id="common-c4"><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>
       <note id="common-d4"><pitch><step>D</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>
       <note id="common-rest"><rest/><duration>4</duration><voice>1</voice><type>quarter</type></note>
@@ -20,6 +21,7 @@
       <note id="common-f4"><pitch><step>F</step><octave>4</octave></pitch><duration>6</duration><voice>1</voice><type>quarter</type><dot/></note>
       <note id="common-g4"><pitch><step>G</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>eighth</type></note>
       <note id="common-a4"><pitch><step>A</step><octave>4</octave></pitch><duration>8</duration><voice>1</voice><type>half</type></note>
+      <barline location="right"><repeat direction="backward"/></barline>
     </measure>
   </part>
 </score-partwise>

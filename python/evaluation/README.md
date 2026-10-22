@@ -1,5 +1,32 @@
 # Measured evaluation records
 
+## Current reproducible evaluation workflow
+
+The framework command, scoring definitions, v2 deterministic cases, and
+performer-grouped GuitarSet split policy are documented in
+[evaluation.md](../../docs/evaluation.md). A suite report compares YIN,
+built-in spectral analysis, and every discovered compatible ONNX model on
+identical inputs, retaining per-scenario, per-register and per-clip results
+in JSON and Markdown. It includes p90/p95/p99 timings and peak resident memory
+where supported.
+The [polyphonic evaluation](../../docs/polyphonic.md) adds corpus v3 while
+preserving v1/v2 inputs, and records paired frame/event metrics on a
+performer-separated GuitarSet subset. Synthetic harmonic-competition gains
+did not translate into a real-guitar improvement; that alternative stays opt-in.
+
+No stable v2/v3 performance or quality baseline is claimed by this framework
+change. The CTest v2/v3 suites are one-repetition correctness smokes only; do
+not use them as accuracy or timing thresholds. Historical v1 waveforms and
+their `183c7f68643d6ac54a1b15a26af195e16590f115c5194f25c139366844f6fca9`
+corpus identity remain unchanged. CI now gates the three stable v1 engine
+configurations (YIN streaming, spectral full-buffer, and YIN realtime) with
+per-fixture metrics and boundary-error checks. The gate explicitly maps the
+historical schema-v1 snapshots to current schema-v2 reports and rejects
+changed inputs, settings, tolerances, models, or fixture sets. It does not
+compare whole schemas or let aggregate gains conceal a fixture regression.
+The thresholds and release-report workflow are documented in
+[Release evidence](../../docs/release-evidence.md).
+
 ## Synthetic corpus v1
 
 These snapshots measure the **existing engine**, not accuracy improvements:
@@ -61,13 +88,28 @@ python .\python\evaluate.py `
   --runner .\build-evaluation\transcriber-evaluate.exe `
   --build-info .\build-evaluation\evaluation-build-Release.json `
   --backend yin --mode streaming --repetitions 3 --warmups 1 `
-  --compare .\python\evaluation\synthetic-v1-windows-clang23-yin-streaming.json `
-  --max-event-f1-drop 0.01 `
-  --output-json .\build-evaluation\evaluation\candidate.json `
-  --output-text .\build-evaluation\evaluation\candidate.txt
+  --output-json .\build-evaluation\evaluation\current-schema-baseline.json `
+  --output-markdown .\build-evaluation\evaluation\current-schema-baseline.md
 ```
 
-Change backend/mode and baseline filename together for the other snapshots.
+The stored records below use the previous report schema and are historical
+measurements, not directly consumable by the current `--compare` command.
+Create a fresh baseline with the current evaluator and matching corpus,
+backend, mode, model, tolerances and timing protocol; then compare a candidate:
+
+```powershell
+python .\python\evaluate.py `
+  --runner .\build-evaluation\transcriber-evaluate.exe `
+  --build-info .\build-evaluation\evaluation-build-Release.json `
+  --backend yin --mode streaming --repetitions 3 --warmups 1 `
+  --compare .\build-evaluation\evaluation\current-schema-baseline.json `
+  --max-event-f1-drop 0.01 `
+  --output-json .\build-evaluation\evaluation\candidate.json `
+  --output-markdown .\build-evaluation\evaluation\candidate.md
+```
+
+Change backend/mode and the current-schema baseline filename together for
+other comparisons.
 Comparisons reject different corpus hashes, configurations, models, metric
 tolerances or timing protocols. Toolchain/binary/environment differences are
 reported, not hidden. Cross-platform synthesis can differ at PCM rounding
@@ -78,10 +120,26 @@ and passed a zero-drop gate. Timing varied, as expected.
 The snapshots were refreshed after fixing equal-onset chord pitch matching
 and generating CLI metadata without requiring tests. All three refreshed
 runs also passed zero-drop gates against their previous snapshots, with
-unchanged event/frame metrics. Metadata changes are disclosed by the
-comparison's build-identity flag.
+unchanged event/frame metrics under the historical evaluator. The current
+schema additionally reports per-clip deltas and fails the optional gate if
+any individual clip exceeds it, even when aggregate F1 does not.
 
-## Validation performed
+## Framework implementation validation
+
+- LLVM-MinGW Clang 23.1.1 Release build succeeded. Full CTest: **129 passed,
+  1 skipped** of 130 registered; the skip is `real_audio_smoke`, which needs
+  an external recording. The evaluation framework tests and the 22-clip v2
+  quality-suite smoke both passed.
+- An ONNX-enabled Release runner was rebuilt and evaluated all 22 v2 clips
+  with YIN, spectral and bundled Basic Pitch CPU. With one measured run and
+  no warmup, strict event F1 was 0.4658, 0.2649 and 0.5060, respectively.
+  This is a smoke measurement, not a stable baseline or regression threshold;
+  the JSON/Markdown run report records detailed metrics, timings and memory.
+- Synthetic v1 retained its prior corpus digest. GuitarSet archives and other
+  external recordings were not run; the performer split policy is unit-tested
+  but no real-audio held-out accuracy is claimed.
+
+## Earlier baseline validation (before the framework update)
 
 - Default Release: **40 passed, 1 skipped** across 41 registered CTests.
   The skipped test needs an external real-audio clip.
@@ -97,7 +155,7 @@ comparison's build-identity flag.
   report/comparison contracts and failure propagation. Archive/provenance
   tests use tiny local fixtures with test-only pinned checksums and mocked
   legacy inference; they are not real-dataset accuracy measurements.
-  The Python suite contains 13 tests; all run through CTest with matching
+  The Python suite at that revision contained 13 tests; all ran through CTest with matching
   build paths, while standalone execution intentionally skips three integrations.
 - Python syntax checks passed. Catch2 emits Clang `__COUNTER__` extension
   warnings; the builds were not warning-free.
@@ -172,3 +230,9 @@ GuitarSet v1.1.0 is CC BY 4.0; see the
 for attribution, archive identities and commands. Possible Basic Pitch
 training-data overlap remains unresolved. Neither that historical guitar-only
 result nor synthetic scores establish independent held-out generalization.
+
+For new GuitarSet measurements, `--dataset-split` uses fixed performer groups:
+00–03 train, 04 validation and 05 test (60 recordings per performer). It is a
+protocol split, not proof that an existing model has not trained on a test
+performer. The historical 360-recording report above remains an all-recordings
+result and is not retroactively represented as a held-out test result.

@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#staff-view">Skip to score editor</a>
   <div class="app-shell">
     <header class="topbar">
       <a class="brand" href="#" aria-label="Transcriber Studio home">
@@ -22,6 +23,9 @@
         <span id="model-status" class="model-status">Connecting to analysis engine…</span>
       </div>
       <nav class="workspace-actions" aria-label="Workspace options">
+        <output id="save-state" class="save-state" aria-live="polite">No unsaved edits</output>
+        <button id="help-button" class="icon-button" type="button"
+                aria-haspopup="dialog" aria-keyshortcuts="F1" title="Help and keyboard shortcuts (F1)">Help</button>
         <button id="toggle-source" class="icon-button" type="button"
                 aria-label="Collapse source panel" aria-expanded="true" title="Collapse source panel">Source</button>
         <button id="toggle-inspector" class="icon-button" type="button"
@@ -42,6 +46,10 @@
                 title="Save the accepted score and project settings">Save</button>
         <button id="save-score-copy" class="button button-quiet" type="button"
                 title="Export a score-only project without an audio reference">Score copy</button>
+        <button id="save-portable-project" class="button button-quiet" type="button"
+                title="Explicitly copy the recording beside a new project; move both files together">Save with audio</button>
+        <button id="relink-project-audio" class="button button-quiet" type="button"
+                title="Locate a missing original recording without replacing or analyzing the score">Locate audio</button>
         <button id="project-summary-button" class="button button-quiet" type="button"
                 title="View project recording, model, score revision, and export status">Summary</button>
       </div>
@@ -55,6 +63,9 @@
           <span class="play-icon" aria-hidden="true">▶</span><span>Transcribe</span>
         </button>
         <button id="cancel-button" class="button button-stop hidden" type="button">Stop capture</button>
+        <button id="pause-analysis" class="button button-secondary hidden" type="button"
+                aria-pressed="false" title="Pause live analysis; recording continues">Pause analysis</button>
+        <output id="recording-timer" aria-label="Recording elapsed time">00:00.0</output>
       </div>
 
       <div class="transport-cluster transport-playback" aria-label="Playback">
@@ -137,6 +148,37 @@
             <span>Drop audio here, or <button type="button" class="text-button" id="drop-browse">browse</button></span>
           </div>
           <p id="file-help" class="field-hint">WAV is built in; other formats depend on FFmpeg support.</p>
+          <details id="isolation-settings">
+            <summary>Optional instrument isolation (local, offline)</summary>
+            <label class="check-row" for="isolation-enabled">
+              <input id="isolation-enabled" type="checkbox">Use a separately prepared target stem
+            </label>
+            <label class="field-label" for="isolated-path">Aligned isolated WAV</label>
+            <div class="path-row">
+              <input id="isolated-path" autocomplete="off" spellcheck="false"
+                     aria-describedby="isolation-help" placeholder="No model downloads; choose a local stem">
+              <button class="button button-secondary browse-button" type="button"
+                      data-field="isolated" aria-label="Browse for isolated audio">Browse</button>
+            </div>
+            <label class="field-label" for="isolation-preview-start">Audition position (seconds)</label>
+            <input id="isolation-preview-start" type="number" min="0" step="1" value="0">
+            <div class="path-row">
+              <button id="preview-mixture" class="button button-secondary" type="button">Listen to mixture</button>
+              <button id="preview-isolated" class="button button-secondary" type="button">Listen to isolated audio</button>
+              <button id="stop-isolation-preview" class="button button-quiet" type="button">Stop audition</button>
+            </div>
+            <label class="check-row" for="isolation-reviewed">
+              <input id="isolation-reviewed" type="checkbox">I reviewed the target and its zero-offset alignment
+            </label>
+            <label class="check-row" for="preprocessing-fallback">
+              <input id="preprocessing-fallback" type="checkbox">Use mixture with a warning if the stem is unavailable
+            </label>
+            <p id="isolation-help" class="field-hint">Choose Guitar, Bass, Piano or Voice below.
+              Stems must keep the original WAV sample rate, frame count and sample-zero origin.
+              Listen at several positions: source identity may change and artifacts can reduce note accuracy.
+              Disable this option to retain the lightweight original-audio path.
+              The timeline shows analyzed audio; original playback remains the mixture. No weights are bundled.</p>
+          </details>
         </div>
 
         <div id="asio-source" class="source-fields hidden">
@@ -175,18 +217,26 @@
           </div>
           <div class="clip-state"><span class="clip-indicator" aria-hidden="true"></span>
             <span id="clipping-warning" role="status">No clipping reported</span></div>
-          <div class="visual-panel">
-            <div class="visual-label"><span>WAVEFORM</span><span>Amplitude</span></div>
-            <canvas id="waveform" aria-label="Audio waveform preview"></canvas>
+        </section>
+
+        <section class="quick-setup" aria-labelledby="quick-setup-heading">
+          <h2 id="quick-setup-heading">Transcription setup</h2>
+          <div class="guitar-options analysis-options">
+            <div><label class="field-label" for="instrument-prior">Instrument</label>
+              <select id="instrument-prior">
+                <option value="auto">No instrument prior</option><option value="guitar">Guitar</option>
+                <option value="bass">Bass</option><option value="piano">Piano</option><option value="voice">Voice</option>
+              </select>
+            </div>
+            <div><label class="field-label" for="quality-mode">Analysis mode</label>
+              <select id="quality-mode"><option value="quality">Full analysis</option><option value="fast">Fast preview</option></select>
+            </div>
           </div>
-          <div class="visual-panel">
-            <div class="visual-label"><span>SPECTROGRAM</span><span>Frequency</span></div>
-            <canvas id="spectrogram" aria-label="Audio spectrogram preview"></canvas>
-          </div>
+          <p id="analysis-explanation" class="field-hint">Instrument settings are priors, not source separation.</p>
         </section>
 
         <details class="setup-details">
-          <summary>Analysis and instrument settings</summary>
+          <summary>Advanced analysis and notation</summary>
           <div class="setup-fields">
             <label class="field-label" for="model-path">ONNX model <span class="optional">OPTIONAL</span></label>
             <div class="path-row">
@@ -206,21 +256,14 @@
               <span class="check-custom" aria-hidden="true"></span>
               <span>Polyphonic model inference</span>
             </label>
-            <div class="guitar-options analysis-options">
-              <div><label class="field-label" for="instrument-prior">Instrument</label>
-                <select id="instrument-prior">
-                  <option value="auto">Auto</option><option value="guitar">Guitar</option>
-                  <option value="piano">Piano</option><option value="voice">Voice</option>
-                </select>
-              </div>
-              <div><label class="field-label" for="quality-mode">Analysis</label>
-                <select id="quality-mode"><option value="quality">High quality</option><option value="fast">Fast preview</option></select>
-              </div>
-            </div>
             <label class="check-row review-mode-control" for="review-mode">
               <input id="review-mode" type="checkbox">
               <span class="check-custom" aria-hidden="true"></span>
               <span>Evidence review <span class="optional">OFFLINE</span></span>
+            </label>
+            <label class="check-row" for="bounded-inference">
+              <input id="bounded-inference" type="checkbox">
+              Bounded neural windows (WAV + Basic Pitch only; may change boundary notes)
             </label>
             <p class="field-hint">
               Retain bounded raw detector evidence, inspect heuristic flags, and audition note regions.
@@ -267,8 +310,18 @@
             <label class="check-row" for="preserve-timing">
               <input id="preserve-timing" type="checkbox">
               <span class="check-custom" aria-hidden="true"></span>
-              <span>Preserve expressive timing in MusicXML</span>
+              <span>Annotate expressive onset residuals in MusicXML</span>
             </label>
+            <label class="field-label" for="quantization-mode">Rhythm interpretation</label>
+            <select id="quantization-mode">
+              <option value="legacy">Legacy quantization</option>
+              <option value="evidence">Evidence-aware quantization</option>
+              <option value="expressive">Preserve measured timing</option>
+            </select>
+            <label class="field-label" for="quantization-strength">Quantization strength (0-1)</label>
+            <input id="quantization-strength" type="number" min="0" max="1" step="0.05" value="1">
+            <label class="field-label" for="rhythm-evidence">Minimum rhythm evidence (heuristic, 0-1)</label>
+            <input id="rhythm-evidence" type="number" min="0" max="1" step="0.05" value="0.65">
           </div>
         </details>
 
@@ -319,7 +372,35 @@
           </div>
         </div>
 
+        <section id="journey-guide" class="journey-guide" aria-labelledby="journey-heading">
+          <div class="section-heading"><h2 id="journey-heading">Your first transcription</h2>
+            <button id="hide-guide" class="button button-quiet" type="button" title="Show this guide again from Help">Hide guide</button></div>
+          <ol class="journey-steps" aria-label="Transcription steps">
+            <li id="journey-open"><b>1. Open</b> a recording</li>
+            <li id="journey-setup"><b>2. Choose</b> instrument and analysis mode</li>
+            <li id="journey-analyze"><b>3. Analyze</b> with Transcribe</li>
+            <li id="journey-review"><b>4. Review</b> notes, then save or export</li>
+          </ol>
+          <p id="journey-next" class="field-hint">Use Open audio to choose a recording. No model download is required.</p>
+        </section>
+        <section id="activity-panel" class="activity-panel" data-state="empty" aria-labelledby="activity-heading">
+          <h2 id="activity-heading">Ready for a recording</h2>
+          <p id="activity-detail">Open audio, choose your setup, then select Transcribe.</p>
+        </section>
+
         <div class="score-controls">
+          <div class="score-zoom" role="group" aria-label="Shared timeline viewport">
+            <button id="timeline-prev" type="button" aria-label="Earlier timeline">‹</button>
+            <button id="timeline-zoom-in" type="button" aria-label="Zoom timeline in">+</button>
+            <button id="timeline-fit" type="button">Full take</button>
+            <button id="timeline-zoom-out" type="button" aria-label="Zoom timeline out">−</button>
+            <button id="timeline-next" type="button" aria-label="Later timeline">›</button>
+          </div>
+          <label class="timeline-scroll-label" for="timeline-scroll">Timeline position
+            <input id="timeline-scroll" type="range" min="0" max="0" step="0.01" value="0"
+                   aria-label="Horizontal timeline position in seconds" disabled>
+          </label>
+          <output id="timeline-window" aria-live="polite">Full take</output>
           <label class="check-row follow-control" for="follow-playhead">
             <input id="follow-playhead" type="checkbox" checked>
             <span class="check-custom" aria-hidden="true"></span><span>Follow playhead</span>
@@ -331,12 +412,26 @@
           </div>
           <span id="selection-label" aria-live="polite">No selection</span>
         </div>
+        <div class="note-legend" aria-label="Note state legend">
+          <span class="provisional">Provisional · dashed</span>
+          <span class="finalized">Finalized · solid</span>
+          <span class="manual">Manual edit · gold</span>
+          <span class="uncertain">Uncertain · coral</span>
+        </div>
 
         <section class="timeline-panel" aria-label="Transcription timeline">
+          <div class="visual-panel">
+            <div class="visual-label"><span>WAVEFORM</span><span>Peak envelope · normalized amplitude</span></div>
+            <canvas id="waveform" aria-label="Audio waveform preview"></canvas>
+          </div>
+          <div class="visual-panel">
+            <div class="visual-label"><span>SPECTROGRAM</span><span>Log frequency · relative energy · sample seconds</span></div>
+            <canvas id="spectrogram" aria-label="Audio spectrogram preview"></canvas>
+          </div>
           <div class="timeline-title"><span>NOTE TIMELINE</span><span id="roll-duration">Select a note to inspect or edit</span></div>
           <div class="piano-roll-wrap">
             <div class="roll-labels"><span id="pitch-high">—</span><span>Pitch</span><span id="pitch-low">—</span></div>
-            <canvas id="piano-roll" aria-label="Transcribed notes plotted by time and pitch"></canvas>
+            <canvas id="piano-roll" tabindex="0" aria-label="Note timeline. Left and right select notes; up and down edit pitch."></canvas>
             <div class="roll-time"><span>0s</span><span id="roll-end">—</span></div>
             <div id="empty-roll" class="empty-roll">
               <strong>No score yet</strong>
@@ -350,22 +445,28 @@
         <section class="notation-panel standard-panel">
           <div class="notation-heading">
             <div><span class="section-kicker">STANDARD NOTATION</span>
-              <span id="score-hint">Editable score canvas · select a note to inspect</span></div>
+              <span id="score-hint">Editable timing sketch · select a note to inspect</span></div>
             <div id="engraving-controls" class="engraving-controls">
-              <span id="engraving-status">Editable canvas view</span>
+              <label for="engraving-layout">Page</label>
+              <select id="engraving-layout" aria-label="Engraved score page layout" disabled>
+                <option value="a4">A4</option>
+                <option value="letter">US Letter</option>
+                <option value="compact">Compact</option>
+              </select>
+              <span id="engraving-status">Timeline preview · enable optional Verovio for engraved pages</span>
               <span id="engraving-license" class="engraving-license">Verovio 6.3.0 · LGPL-3.0-or-later</span>
             </div>
           </div>
           <div id="engraving-host" class="engraving-host hidden"
                aria-label="Engraved notation for the accepted score"></div>
-          <canvas id="staff-view" aria-label="Editable treble clef notation"></canvas>
+          <canvas id="staff-view" tabindex="0" aria-label="Editable treble clef notation. Double click to insert; arrows edit pitch; Delete removes selection."></canvas>
         </section>
 
         <section class="notation-panel tab-panel" aria-label="Synchronized guitar tablature">
           <div class="notation-heading"><div><span class="section-kicker">GUITAR TABLATURE</span>
             <span id="tab-hint">Tuning and capo follow export settings</span></div>
             <span id="tab-tuning-label">Standard E</span></div>
-          <canvas id="tab-view" aria-label="Editable guitar tablature"></canvas>
+          <canvas id="tab-view" tabindex="0" aria-label="Editable guitar tablature. Left and right select notes; up and down edit pitch."></canvas>
         </section>
       </section>
 
@@ -386,6 +487,7 @@
         <dl class="evidence-grid">
           <div><dt>Measured onset</dt><dd id="detected-onset">—</dd></div>
           <div><dt>Measured offset</dt><dd id="detected-offset">—</dd></div>
+          <div><dt>Score duration</dt><dd id="detected-duration">—</dd></div>
           <div><dt>Calibrated correctness</dt><dd id="detected-confidence">—</dd></div>
           <div><dt>Raw evidence</dt><dd id="detected-evidence">—</dd></div>
         </dl>
@@ -434,16 +536,24 @@
             <label>Start (s) <input id="edit-start" type="number" min="0" step="0.01" disabled></label>
             <label>Duration (s) <input id="edit-duration" type="number" min="0.05" step="0.01" disabled></label>
             <label>String <select id="edit-string" disabled></select></label>
-            <label>Fret <input id="edit-fret" type="number" min="0" max="24" disabled></label>
+            <label>Fret <input id="edit-fret" type="number" min="0" max="36" disabled></label>
             <button id="apply-note-edit" class="button button-small" type="button" disabled>Apply edit</button>
             <button id="delete-note" class="button button-small button-quiet" type="button" disabled>Delete</button>
+            <button id="split-note" class="button button-small" type="button" disabled
+                    title="Split at midpoint; preserves the original measured evidence">Split in half</button>
+            <button id="merge-note" class="button button-small" type="button" disabled
+                    title="Merge the next same-pitch note; extends duration across the gap">Merge next same pitch</button>
           </div>
           <span id="edit-instructions" class="field-hint">Click a note to edit it.</span>
         </details>
 
         <section class="event-log">
           <div class="notes-heading"><span>NOTE EVENTS</span><span>LIVE</span></div>
-          <div id="live-events" class="live-events" aria-live="polite">No live events.</div>
+          <div id="live-events" class="live-events" aria-label="Recent live note events">No live events.</div>
+          <details class="setup-details">
+            <summary>Live latency and queue diagnostics</summary>
+            <p id="live-diagnostics" class="context-help">Diagnostics appear during capture.</p>
+          </details>
           <div id="note-list" class="note-list"><div class="empty-notes">No note events yet.</div></div>
         </section>
         <div id="result-message" class="result-message hidden" role="status"></div>
@@ -483,12 +593,13 @@
         <span id="status-capture">Ready</span><span class="status-divider">·</span>
         <span id="status-text" role="status" aria-live="polite">Open a recording or start a capture</span>
       </div>
-      <div class="status-progress" aria-label="Analysis progress">
-        <div class="progress-track"><div id="progress-bar"></div></div>
-        <span id="progress-value">0%</span>
+      <div class="status-progress" aria-label="Current phase progress">
+        <div id="phase-progress" class="progress-track" role="progressbar" aria-label="Current processing phase"
+             aria-valuemin="0" aria-valuemax="100"><div id="progress-bar"></div></div>
+        <span id="progress-value">—</span>
       </div>
       <span class="status-metric">Latency <b id="latency-value">—</b></span>
-      <button id="open-folder-button" class="status-link" type="button" title="Open the output folder">Output folder</button>
+      <button id="status-output-folder" class="status-link" type="button" title="Open the output folder">Output folder</button>
     </footer>
   </div>
   <dialog id="project-summary-dialog" class="project-dialog" aria-labelledby="project-summary-heading">
@@ -498,7 +609,37 @@
               aria-label="Close project summary">Close</button>
     </div>
     <pre id="project-summary-details">No project is open.</pre>
+    <label for="project-annotation">Project notes (saved with the project)</label>
+    <textarea id="project-annotation" rows="5" maxlength="4096"
+              aria-label="Project annotations" placeholder="Editing decisions, performance notes, or recording provenance"></textarea>
   </dialog>
+  <dialog id="help-dialog" class="project-dialog" aria-labelledby="help-heading">
+    <div class="project-dialog-heading"><h2 id="help-heading">Workstation guide</h2>
+      <button id="close-help" class="button button-secondary" type="button" autofocus>Close</button></div>
+    <p>Open audio, choose an instrument prior and analysis mode, then Transcribe.
+      Review the score before exporting. Full analysis is not a guarantee of accuracy.
+      Advanced settings explain model, rhythm and guitar choices.</p>
+    <dl class="shortcut-list">
+      <div><dt>O</dt><dd>Open audio</dd></div>
+      <div><dt>Space</dt><dd>Play / pause synthesized score</dd></div>
+      <div><dt>Left / Right</dt><dd>Select previous / next note (no selection: move by measure)</dd></div>
+      <div><dt>Up / Down</dt><dd>Change selected pitch by one semitone</dd></div>
+      <div><dt>Delete</dt><dd>Delete selected note</dd></div>
+      <div><dt>Ctrl+Z / Ctrl+Shift+Z</dt><dd>Undo / redo (Ctrl+Y also redoes)</dd></div>
+      <div><dt>Ctrl+S</dt><dd>Save project</dd></div>
+      <div><dt>+ / − / 0</dt><dd>Timeline zoom in / out / full take</dd></div>
+      <div><dt>Page Up / Page Down</dt><dd>Scroll earlier / later in the timeline</dd></div>
+      <div><dt>Escape / F1</dt><dd>Close dialog / open help</dd></div>
+    </dl>
+    <p>Shortcuts do not override text fields, focused controls or dialogs. Tab moves
+      between controls; focused sliders use arrow keys. Double-click the staff to
+      insert. Drag notes to adjust pitch/onset; use the inspector for exact values.</p>
+    <p>Stop capture finalizes recording. Pause analysis keeps recording audio.
+      Cancel analysis waits for the current cooperative processing boundary.
+      Progress is reported for the current phase, not an estimated completion time.</p>
+    <button id="show-guide" class="button button-secondary" type="button">Show first-run guide</button>
+  </dialog>
+  <script src="timeline.js"></script>
   <script src="workspace.js"></script>
   <script src="app.js"></script>
   <script src="editor.js"></script>

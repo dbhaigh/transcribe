@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -76,10 +77,11 @@ int main(int argc, char** argv) {
         if (argc != 8 && argc != 10) {
             throw std::invalid_argument(
                 "Usage: transcriber-performance input.wav output.json yin|spectral "
-                "full|streaming|model serial|parallel repetitions chunk-seconds [model.onnx|- cpu|cuda|directml|rocm]");
+                "full|streaming|model|bounded|cached serial|parallel repetitions chunk-seconds [model.onnx|- cpu|cuda|directml|rocm]");
         }
         const std::string backend = argv[3], mode = argv[4], scheduling = argv[5];
         const std::string repetitions_text = argv[6], chunk_text = argv[7];
+        const bool owned_model = mode == "model" || mode == "bounded" || mode == "cached";
         std::size_t consumed = 0;
         const int repetitions = std::stoi(repetitions_text, &consumed);
         if (consumed != repetitions_text.size() || repetitions < 2 || repetitions > 100) {
@@ -88,18 +90,27 @@ int main(int argc, char** argv) {
         const double chunk = std::stod(chunk_text, &consumed);
         if (consumed != chunk_text.size() || !std::isfinite(chunk) ||
             chunk < 1 || chunk > 300 ||
-            (backend != "yin" && backend != "spectral" && !(backend == "onnx" && mode == "model")) ||
-            (mode != "full" && mode != "streaming" && mode != "model") ||
-            ((mode == "model") != (argc == 10)) ||
+            (backend != "yin" && backend != "spectral" && !(backend == "onnx" && owned_model)) ||
+            (mode != "full" && mode != "streaming" && !owned_model) ||
+            (owned_model != (argc == 10)) ||
             (scheduling != "serial" && scheduling != "parallel")) {
             throw std::invalid_argument("Invalid performance configuration");
         }
         // Full-buffer decode is outside analysis timing; streaming includes decode.
         transcribe::AudioBuffer audio;
-        if (mode != "streaming") audio = transcribe::read_wav(argv[1]);
+        const auto startup = Clock::now();
+        int warmups = 0;
+        if (const char* value = std::getenv("TRANSCRIBE_PERFORMANCE_WARMUPS")) {
+            const std::string text(value);
+            warmups = std::stoi(text, &consumed);
+            if (consumed != text.size() || warmups < 0 || warmups > 100) {
+                throw std::invalid_argument("TRANSCRIBE_PERFORMANCE_WARMUPS must be 0-100");
+            }
+        }
+        if (mode != "streaming" && mode != "bounded") audio = transcribe::read_wav(argv[1]);
         std::unique_ptr<transcribe::ModelBackend> instance;
         transcribe::OnnxExecutionProvider provider = transcribe::OnnxExecutionProvider::Cpu;
-        if (mode == "model") {
+        if (owned_model) {
             const std::string name = argv[9];
             if (name == "cuda") provider = transcribe::OnnxExecutionProvider::Cuda;
             else if (name == "directml") provider = transcribe::OnnxExecutionProvider::DirectML;
@@ -119,16 +130,28 @@ int main(int argc, char** argv) {
                 throw std::runtime_error(failure->message);
             }
             instance = std::move(std::get<std::unique_ptr<transcribe::ModelBackend>>(created));
-            const auto loaded = instance->load({provider, 0, false});
+            const auto loaded = instance->load({provider, 0, false,
+                mode == "cached" ? 16 * 1024 * 1024u : 0u});
             if (const auto* failure = std::get_if<transcribe::InferenceError>(&loaded)) {
                 throw std::runtime_error(failure->message);
             }
         }
         std::ofstream output(argv[2], std::ios::binary);
         if (!output) throw std::runtime_error("Cannot create performance report");
-        output << std::setprecision(17) << "{\"runs\":[";
-        std::vector<transcribe::Note> first_notes;
-        for (int iteration = 0; iteration < repetitions; ++iteration) {
+        struct Measurement {
+            double wall_seconds{};
+            double cpu_seconds{};
+            double audio_seconds{};
+            double first_window_seconds{};
+            std::size_t buffered_audio_bytes{};
+            std::size_t processed_windows{};
+            bool result_cache_hit{};
+            std::size_t peak_memory_bytes{};
+            transcribe::AnalysisTimings stages;
+            std::vector<transcribe::Note> notes;
+        };
+        const auto measure = [&]() {
+            Measurement measurement;
             transcribe::AnalysisTimings stages;
             transcribe::AnalysisOptions options;
             options.polyphonic = backend == "spectral";
@@ -143,64 +166,139 @@ int main(int argc, char** argv) {
             const double cpu_start = cpu_seconds();
             const auto start = Clock::now();
             std::vector<transcribe::Note> notes;
-            double duration = 0;
             if (instance) {
-                if (backend == "onnx" && audio.samples.empty()) {
-                    duration = 0; // Same explicit empty-input skip as the quality evaluator.
+                if (backend == "onnx" && mode != "bounded" && audio.samples.empty()) {
+                    measurement.audio_seconds = 0;
                 } else {
                     transcribe::InferenceRequest request;
                     request.analysis = options;
                     request.onnx.polyphonic = true;
                     request.onnx.independent_probabilities = true;
                     request.onnx.execution_provider = provider;
-                    auto result = instance->infer(audio, request);
-                    if (const auto* failure = std::get_if<transcribe::InferenceError>(&result)) {
-                        throw std::runtime_error(failure->message);
+                    request.reuse_cached_result = mode == "cached";
+                    if (mode == "cached") request.analysis.timing_callback = {};
+                    if (mode == "bounded") {
+                        transcribe::FileInferenceOptions file;
+                        file.chunk_seconds = chunk;
+                        auto result = transcribe::infer_wav_file(*instance, argv[1], request, file);
+                        if (const auto* failure = std::get_if<transcribe::InferenceError>(&result)) {
+                            throw std::runtime_error(failure->message);
+                        }
+                        auto& value = std::get<transcribe::FileInferenceResult>(result);
+                        measurement.notes = std::move(value.notes);
+                        measurement.audio_seconds =
+                            static_cast<double>(value.source_frames) / value.sample_rate;
+                        measurement.buffered_audio_bytes = value.peak_buffered_audio_bytes;
+                        measurement.processed_windows = value.processed_windows;
+                        measurement.first_window_seconds = value.first_window_seconds;
+                    } else {
+                        auto result = instance->infer(audio, request);
+                        if (const auto* failure = std::get_if<transcribe::InferenceError>(&result)) {
+                            throw std::runtime_error(failure->message);
+                        }
+                        measurement.notes =
+                            std::move(std::get<transcribe::InferenceOutput>(result).notes);
+                        measurement.audio_seconds =
+                            static_cast<double>(audio.samples.size()) / audio.sample_rate;
                     }
-                    notes = std::move(std::get<transcribe::InferenceOutput>(result).notes);
-                    duration = static_cast<double>(audio.samples.size()) / audio.sample_rate;
                 }
             } else if (mode == "streaming") {
                 transcribe::StreamingOptions streaming;
                 streaming.analysis = options;
                 streaming.chunk_seconds = chunk;
                 const auto result = transcribe::transcribe_wav_streaming(argv[1], streaming);
-                notes = result.notes;
-                duration = result.duration_seconds;
+                measurement.notes = result.notes;
+                measurement.audio_seconds = result.duration_seconds;
             } else {
-                notes = transcribe::transcribe_monophonic(audio, options);
-                duration = static_cast<double>(audio.samples.size()) / audio.sample_rate;
+                measurement.notes = transcribe::transcribe_monophonic(audio, options);
+                measurement.audio_seconds =
+                    static_cast<double>(audio.samples.size()) / audio.sample_rate;
             }
-            const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-            const double cpu = cpu_seconds() - cpu_start;
-            if (iteration == 0) first_notes = notes;
-            else {
-                if (notes.size() != first_notes.size()) throw std::runtime_error("Warm notes differ");
-                for (std::size_t i = 0; i < notes.size(); ++i) {
-                    const auto& a = notes[i];
-                    const auto& b = first_notes[i];
-                    if (a.midi_pitch != b.midi_pitch || a.start_seconds != b.start_seconds ||
-                        a.duration_seconds != b.duration_seconds || a.confidence != b.confidence) {
-                        throw std::runtime_error("Warm notes differ");
-                    }
+            measurement.wall_seconds =
+                std::chrono::duration<double>(Clock::now() - start).count();
+            measurement.cpu_seconds = cpu_seconds() - cpu_start;
+            measurement.result_cache_hit =
+                instance && instance->resources().result_cache_hit;
+            measurement.peak_memory_bytes = peak_resident_bytes();
+            measurement.stages = stages;
+            return measurement;
+        };
+        const auto same_notes = [](const auto& left, const auto& right) {
+            if (left.size() != right.size()) return false;
+            for (std::size_t i = 0; i < left.size(); ++i) {
+                const auto& a = left[i];
+                const auto& b = right[i];
+                if (a.midi_pitch != b.midi_pitch || a.start_seconds != b.start_seconds ||
+                    a.duration_seconds != b.duration_seconds || a.confidence != b.confidence) {
+                    return false;
                 }
             }
-            if (iteration) output << ',';
-            output << "{\"wall_seconds\":" << elapsed << ",\"cpu_seconds\":" << cpu
+            return true;
+        };
+        const double startup_seconds =
+            std::chrono::duration<double>(Clock::now() - startup).count();
+        const auto cold = measure();
+        for (int i = 0; i < warmups; ++i) {
+            const auto warmup = measure();
+            if (!same_notes(cold.notes, warmup.notes)) {
+                throw std::runtime_error("Warmup notes differ from cold result");
+            }
+        }
+        std::vector<Measurement> warm_runs;
+        warm_runs.reserve(static_cast<std::size_t>(repetitions));
+        for (int i = 0; i < repetitions; ++i) {
+            warm_runs.push_back(measure());
+            if (!same_notes(cold.notes, warm_runs.back().notes)) {
+                throw std::runtime_error("Warm notes differ from cold result");
+            }
+        }
+        const auto write_measurement = [&](const Measurement& measurement) {
+            output << "{\"wall_seconds\":" << measurement.wall_seconds
+                   << ",\"cpu_seconds\":" << measurement.cpu_seconds
                    << ",\"cpu_core_equivalents\":";
-            if (elapsed > 0) output << cpu / elapsed;
-            else output << "null";
-            output << ",\"audio_seconds\":" << duration
-                   << ",\"peak_resident_bytes\":" << peak_resident_bytes()
-                   << ",\"stages\":{\"preprocessing_seconds\":" << stages.preprocessing_seconds
-                   << ",\"onset_fft_seconds\":" << stages.onset_fft_seconds
-                   << ",\"resampling_seconds\":" << stages.resampling_seconds
-                   << ",\"pitch_analysis_seconds\":" << stages.pitch_analysis_seconds
-                   << ",\"spectrogram_cache_hit\":" << (stages.spectrogram_cache_hit ? "true" : "false")
-                   << "}}";
+            if (measurement.wall_seconds > 0) {
+                output << measurement.cpu_seconds / measurement.wall_seconds;
+            } else {
+                output << "null";
+            }
+            output << ",\"audio_seconds\":" << measurement.audio_seconds
+                   << ",\"realtime_factor\":";
+            if (measurement.audio_seconds > 0) {
+                output << measurement.wall_seconds / measurement.audio_seconds;
+            } else {
+                output << "null";
+            }
+            output << ",\"audio_seconds_per_second\":";
+            if (measurement.wall_seconds > 0) {
+                output << measurement.audio_seconds / measurement.wall_seconds;
+            } else {
+                output << "null";
+            }
+            output << ",\"peak_buffered_audio_bytes\":" << measurement.buffered_audio_bytes
+                   << ",\"processed_windows\":" << measurement.processed_windows
+                   << ",\"first_window_seconds\":" << measurement.first_window_seconds
+                   << ",\"result_cache_hit\":" << (measurement.result_cache_hit ? "true" : "false")
+                   << ",\"peak_resident_bytes\":" << measurement.peak_memory_bytes
+                   << ",\"stages\":{\"preprocessing_seconds\":"
+                   << measurement.stages.preprocessing_seconds
+                   << ",\"onset_fft_seconds\":" << measurement.stages.onset_fft_seconds
+                   << ",\"resampling_seconds\":" << measurement.stages.resampling_seconds
+                   << ",\"pitch_analysis_seconds\":"
+                   << measurement.stages.pitch_analysis_seconds
+                   << ",\"spectrogram_cache_hit\":"
+                   << (measurement.stages.spectrogram_cache_hit ? "true" : "false") << "}}";
+        };
+        output << std::setprecision(17) << "{\"startup_seconds\":"
+               << startup_seconds
+               << ",\"warmup_runs\":" << warmups << ",\"cold_run\":";
+        write_measurement(cold);
+        output << ",\"runs\":[";
+        for (std::size_t i = 0; i < warm_runs.size(); ++i) {
+            if (i) output << ',';
+            write_measurement(warm_runs[i]);
         }
         output << "],\"notes\":";
-        write_notes(output, first_notes);
+        write_notes(output, cold.notes);
         if (instance) {
             const auto resources = instance->resources();
             const auto& metadata = instance->metadata();

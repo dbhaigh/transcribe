@@ -1,6 +1,8 @@
 """Smoke-test an extracted CPack artifact without using the build tree."""
 
 import argparse
+import hashlib
+import json
 import os
 import shutil
 import stat
@@ -149,6 +151,8 @@ def main():
             require(ui_index.parent.name.casefold() == "ui", "UI assets were not installed beside the GUI")
             require(gui.parent == ui_index.parent.parent,
                     "WebView2 UI assets are not located beside the GUI executable")
+            for name in ("app.js", "editor.js", "timeline.js", "notation.js", "styles.css"):
+                require((ui_index.parent / name).is_file(), f"Missing packaged UI dependency: {name}")
 
         if args.expect_verovio:
             module = require_named(root, "verovio-module.mjs", "the Verovio WebAssembly module")
@@ -164,6 +168,12 @@ def main():
         model = None
         if args.expect_model:
             model = require_named(root, "basic_pitch.onnx", "the bundled Basic Pitch model")
+            provenance_path = require_named(root, "basic_pitch.provenance.json", "model provenance")
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            require(hashlib.sha256(model.read_bytes()).hexdigest() == provenance["sha256"],
+                    "Packaged model checksum differs from its provenance")
+            require(model.stat().st_size == provenance["size_bytes"],
+                    "Packaged model size differs from its pinned provenance")
             require_named(root, "LICENSE-basic-pitch.txt", "the Basic Pitch model license")
             if os.name == "nt":
                 runtime = require_named(root, "onnxruntime.dll", "the ONNX Runtime DLL")
@@ -207,6 +217,7 @@ def main():
                     executable, audio, "--quiet", "--polyphonic",
                     "--provider", "cpu", "--model", model,
                     "--json", output / "onnx-notes.json",
+                    "--musicxml", output / "onnx.musicxml", "--tab", output / "onnx.tab",
                 ], executable.parent, environment, timeout=180)
                 require((output / "onnx-notes.json").is_file(),
                         "Packaged ONNX inference did not produce JSON output")
@@ -222,6 +233,7 @@ def main():
                 run([
                     executable, compressed, "--quiet",
                     "--musicxml", output / "ffmpeg.musicxml",
+                    "--tab", output / "ffmpeg.tab",
                 ], executable.parent, environment)
                 require((output / "ffmpeg.musicxml").is_file(),
                         "Packaged FFmpeg-enabled CLI did not decode the FLAC fixture")

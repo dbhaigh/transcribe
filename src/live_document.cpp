@@ -214,6 +214,7 @@ void TranscriptionDocument::apply(const LiveEvent& event) {
         record(*target, RevisionOrigin::Live, event.note, "live event after manual edit", true);
         return;
     }
+    if (event.note.revision <= target->current.revision || target->current.finalized) return;
     target->current = event.note;
     if (event.kind == LiveEventKind::NoteRetracted) target->current.state = EventLifecycle::Rejected;
     record(*target, RevisionOrigin::Live, target->current,
@@ -238,8 +239,7 @@ void TranscriptionDocument::resync(const std::vector<LiveNote>& snapshot) {
             record(records_.back(), RevisionOrigin::Resync, note, "snapshot resync");
         } else if (target->manual) {
             record(*target, RevisionOrigin::Resync, note, "snapshot after manual edit", true);
-        } else if (target->current.revision != note.revision ||
-                   target->current.state != note.state) {
+        } else if (!target->current.finalized && target->current.revision < note.revision) {
             target->current = note;
             record(*target, RevisionOrigin::Resync, note, "snapshot resync");
         }

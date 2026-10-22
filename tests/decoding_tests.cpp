@@ -117,6 +117,205 @@ TEST_CASE("temporal hysteresis gaps duration and overlap have explicit semantics
     REQUIRE(decode(audio, {track()}, options).events.empty());
 }
 
+TEST_CASE("pitch stability retains vibrato evidence without hiding sustained pitch changes",
+          "[decoding]") {
+    auto f = track();
+    for (std::size_t i = 0; i < f.frames.size(); ++i) {
+        const double pitch = 69 + .65 * std::sin(i * .7);
+        f.frames[i].fractional_midi = pitch;
+        f.frames[i].midi_pitch = static_cast<int>(std::lround(pitch));
+    }
+    const auto stable = transcribe::stabilize_pitch_activity(f, {});
+    REQUIRE(std::all_of(stable.begin(), stable.end(), [](int pitch) { return pitch == 69; }));
+    transcribe::TemporalDecodingOptions options;
+    options.refine_with_audio = false;
+    const auto result = decode(tone(22050), {f}, options);
+    REQUIRE(result.events.size() == 1);
+    REQUIRE(result.events.front().evidence[2].fractional_midi == f.frames[2].fractional_midi);
+    REQUIRE(result.events.front().evidence[2].midi_pitch == f.frames[2].midi_pitch);
+    for (std::size_t i = 10; i < f.frames.size(); ++i) {
+        f.frames[i].midi_pitch = 70;
+        f.frames[i].fractional_midi = 70;
+    }
+    REQUIRE(decode(tone(22050), {f}, options).events.size() == 2);
+    options.pitch_stability_seconds = 0;
+    const auto original = transcribe::stabilize_pitch_activity(f, options);
+    REQUIRE(original[2] == f.frames[2].midi_pitch);
+}
+
+TEST_CASE("state hysteresis releases at last supported frame and can bridge a brief dropout",
+          "[decoding]") {
+    auto f = track();
+    f.method = "model-test";
+    f.raw_midi_pitch = 69;
+    f.note_states.assign(f.frames.size(), .6);
+    for (auto& frame : f.frames) frame.midi_pitch = -1;
+    f.note_states[0] = .4;
+    f.note_states[5] = .35;
+    f.note_states[10] = .1;
+    f.note_states.back() = .1;
+    transcribe::TemporalDecodingOptions options;
+    options.activation_on = .5;
+    options.activation_off = .3;
+    options.maximum_gap_seconds = .011;
+    const auto segments = transcribe::detect_pitch_activity_regions(f, options);
+    REQUIRE(segments.size() == 1);
+    REQUIRE(std::abs(segments[0].onset_seconds - .21) < 1e-10);
+    REQUIRE(std::abs(segments[0].offset_seconds - .39) < 1e-10);
+    REQUIRE(segments[0].frame_indices.size() == 17);
+    options.maximum_gap_seconds = 0;
+    REQUIRE(transcribe::segment_pitch_activity(f, options).size() == 2);
+}
+
+TEST_CASE("short semitone notes remain distinct and evidence duration uses frame centers",
+          "[decoding]") {
+    auto f = track();
+    for (std::size_t i = 7; i < 10; ++i) {
+        f.frames[i].midi_pitch = 70;
+        f.frames[i].fractional_midi = 70;
+    }
+    transcribe::TemporalDecodingOptions options;
+    options.minimum_duration_seconds = .02;
+    options.refine_with_audio = false;
+    REQUIRE(decode(tone(22050), {f}, options).events.size() == 3);
+    f.window_seconds = .1;
+    const auto result = decode(tone(22050), {f, f}, options);
+    REQUIRE(result.events.size() == 3);
+    const auto& e = result.events.front();
+    const auto diagnostic = transcribe::summarize_event_evidence(e, .01, .1);
+    REQUIRE(std::abs(diagnostic.activity_duration_seconds - .07) <= 1.0 / 22050);
+    REQUIRE(diagnostic.pitch_stability == 1);
+    REQUIRE_FALSE(diagnostic.maximum_note_state);
+    auto unsupported = e;
+    unsupported.evidence.clear();
+    const auto absent = transcribe::summarize_event_evidence(unsupported, .01, .1);
+    REQUIRE(absent.activity_duration_seconds == 0);
+    REQUIRE_FALSE(absent.pitch_stability);
+    REQUIRE_FALSE(absent.onset_strength);
+    REQUIRE_THROWS(transcribe::summarize_event_evidence(e, 0));
+}
+
+TEST_CASE("new decoder parameters and aligned evidence fail explicitly on invalid input",
+          "[decoding]") {
+    auto f = track();
+    f.onset_strengths = {.5};
+    REQUIRE_THROWS(transcribe::segment_pitch_activity(f, {}));
+    f.onset_strengths.assign(f.frames.size(), .5);
+    f.note_states.assign(f.frames.size(), .8);
+    f.note_states[3] = std::numeric_limits<double>::infinity();
+    REQUIRE_THROWS(transcribe::segment_pitch_activity(f, {}));
+    f.note_states.clear();
+    transcribe::TemporalDecodingOptions options;
+    for (auto member : {&transcribe::TemporalDecodingOptions::pitch_stability_seconds,
+                       &transcribe::TemporalDecodingOptions::pitch_tolerance_semitones,
+                       &transcribe::TemporalDecodingOptions::onset_threshold,
+                       &transcribe::TemporalDecodingOptions::minimum_onset_spacing_seconds,
+                       &transcribe::TemporalDecodingOptions::onset_energy_rise,
+                       &transcribe::TemporalDecodingOptions::onset_state_drop}) {
+        options.*member = std::numeric_limits<double>::quiet_NaN();
+        REQUIRE_THROWS(transcribe::segment_pitch_activity(f, options));
+        options = {};
+        options.*member = -1;
+        REQUIRE_THROWS(transcribe::segment_pitch_activity(f, options));
+        options = {};
+    }
+    REQUIRE(transcribe::segment_pitch_activity(f, {}).size() == 1);
+}
+
+TEST_CASE("model onset and note state distinguish repeated notes from vibrato onset ripples",
+          "[decoding]") {
+    auto f = track();
+    f.method = "basic-pitch";
+    f.raw_midi_pitch = 69;
+    f.onset_strengths.assign(f.frames.size(), .1);
+    f.note_states.assign(f.frames.size(), .9);
+    f.onset_strengths[10] = .9;
+    REQUIRE(transcribe::segment_pitch_activity(f, {}).size() == 1);
+    f.note_states[8] = .6;
+    f.note_states[9] = .7;
+    const auto segments = transcribe::segment_pitch_activity(f, {});
+    REQUIRE(segments.size() == 2);
+    REQUIRE(segments[0].offset_from_attack);
+    REQUIRE(segments[1].onset_from_attack);
+    REQUIRE(segments[0].offset_seconds == segments[1].onset_seconds);
+    transcribe::TemporalDecodingOptions options;
+    options.refine_with_audio = false;
+    const auto result = decode(tone(22050), {f}, options);
+    REQUIRE(result.events.size() == 2);
+    REQUIRE(result.events[1].evidence.front().onset_strength == .9);
+    REQUIRE(result.events[1].evidence.front().note_state == .9);
+    options.minimum_onset_spacing_seconds = 0;
+    REQUIRE(transcribe::segment_pitch_activity(f, options).size() == 2);
+    options.minimum_onset_spacing_seconds = .07;
+    f.onset_strengths[11] = .9;
+    REQUIRE(transcribe::segment_pitch_activity(f, {}).size() == 2);
+    f.note_states[10] = .6;
+    REQUIRE(transcribe::segment_pitch_activity(f, {}).size() == 1);
+    f.note_states[10] = .9;
+    options.use_model_onsets = false;
+    REQUIRE(decode(tone(22050), {f}, options).events.size() == 1);
+    f.onset_strengths.assign(f.frames.size(), .1);
+    f.onset_strengths[16] = .9;
+    f.note_states.assign(f.frames.size(), .9);
+    f.note_states[14] = .6;
+    f.note_states[15] = .7;
+    REQUIRE(transcribe::segment_pitch_activity(f, {}).size() == 1);
+    options.minimum_duration_seconds = .02;
+    options.use_model_onsets = true;
+    REQUIRE(transcribe::segment_pitch_activity(f, options).size() == 2);
+}
+
+TEST_CASE("audio attacks split repeated YIN notes but not amplitude-stable pitch motion",
+          "[decoding]") {
+    auto f = track();
+    std::vector<transcribe::OnsetEvidence> onsets{{.3, .8, .7, .6, .5}};
+    const auto repeated = transcribe::segment_pitch_activity(f, {}, onsets);
+    REQUIRE(repeated.size() == 2);
+    onsets[0].energy_rise = .01;
+    REQUIRE(transcribe::segment_pitch_activity(f, {}, onsets).size() == 1);
+    f.method = "spectral";
+    onsets[0].energy_rise = .5;
+    REQUIRE(transcribe::segment_pitch_activity(f, {}, onsets).size() == 1);
+}
+
+TEST_CASE("quiet valid notes are not discarded by another note's global peak",
+          "[decoding]") {
+    auto audio = tone(22050);
+    for (std::size_t i = 0; i < audio.samples.size(); ++i) {
+        const double time = static_cast<double>(i) / audio.sample_rate;
+        if (time < .15 || (time >= .4 && time < .6) || time >= .85) audio.samples[i] = 0;
+        else if (time < .4) audio.samples[i] *= .015f;
+    }
+    auto f = track();
+    f.frames.clear();
+    for (int i = 0; i < 100; ++i) f.frames.push_back({69, i * .01, .9, .9});
+    const auto result = decode(audio, {f});
+    REQUIRE(result.events.size() == 2);
+    REQUIRE(std::abs(result.events[0].onset_seconds - .15) < .006);
+    REQUIRE(std::abs(result.events[0].offset_seconds - .4) < .006);
+    REQUIRE(result.events[0].intensity_rms.value() < .005);
+    REQUIRE(result.events[1].intensity_rms.value() > .1);
+}
+
+TEST_CASE("onset evidence preserves legacy timing and exposes independent flux and HFC",
+          "[decoding]") {
+    auto audio = tone(22050);
+    std::fill(audio.samples.begin(), audio.samples.begin() + 5000, 0);
+    const auto evidence = transcribe::detect_onset_evidence(audio);
+    const auto legacy = transcribe::detect_onsets(audio);
+    REQUIRE(evidence.size() == legacy.size());
+    REQUIRE_FALSE(evidence.empty());
+    for (std::size_t i = 0; i < evidence.size(); ++i) {
+        REQUIRE(evidence[i].time_seconds == legacy[i]);
+        REQUIRE(evidence[i].strength > 0);
+        REQUIRE(evidence[i].spectral_flux >= 0);
+        REQUIRE(evidence[i].high_frequency_content >= 0);
+    }
+    transcribe::OnsetDetectionOptions invalid;
+    invalid.minimum_spacing_seconds = -1;
+    REQUIRE_THROWS(transcribe::detect_onset_evidence(audio, invalid));
+}
+
 TEST_CASE("temporal audio refinement splits repeats rejects silence and retains short evidence",
           "[decoding]") {
     auto audio = tone(48000);
@@ -361,6 +560,8 @@ TEST_CASE("Basic Pitch canonical adapter retains raw note heads without changing
     options.evidence_callback = [&](const auto& track) {
         ++observed;
         REQUIRE(track.raw_values.size() == track.frames.size());
+        REQUIRE(track.onset_strengths.size() == track.frames.size());
+        REQUIRE(track.note_states == track.raw_values);
         REQUIRE(track.raw_midi_pitch >= 28);
         REQUIRE(track.raw_midi_pitch <= 96);
     };
@@ -379,6 +580,8 @@ TEST_CASE("Basic Pitch canonical adapter retains raw note heads without changing
     REQUIRE(canonical.raw_tracks.size() == 69);
     REQUIRE(canonical.events.front().source_model == "model-sha256");
     REQUIRE(canonical.events.front().evidence.front().raw_model_value);
+    REQUIRE(canonical.events.front().evidence.front().onset_strength);
+    REQUIRE(canonical.events.front().evidence.front().note_state);
     REQUIRE_FALSE(canonical.events.front().calibrated_confidence);
 }
 #endif

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "file": "basic_pitch.onnx",
+  "sha256": "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec",
+  "source_repository": "https://github.com/spotify/basic-pitch",
+  "source_commit": "fa5997af0a8210982619003269994a1be25eddf3",
+  "download_url": "https://raw.githubusercontent.com/spotify/basic-pitch/fa5997af0a8210982619003269994a1be25eddf3/basic_pitch/saved_models/icassp_2022/nmp.onnx",
+  "size_bytes": 230444,
+  "license": "Apache-2.0",
+  "license_file": "LICENSE-basic-pitch.txt",
+  "objective": "polyphonic-note-activity",
+  "adapter": "BasicPitchV1",
+  "evaluation_warning": "GuitarSet may overlap training data; do not treat it as an independent holdout."
+}

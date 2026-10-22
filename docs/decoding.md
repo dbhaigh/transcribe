@@ -46,9 +46,9 @@ duration-bearing representation is named `CanonicalNoteEvent`.
   **Re-decoding with different boundaries/options is not an identity-tracking
   service:** changed onset estimates can produce different IDs. Full-buffer
   and differently phased chunks need not produce identical IDs or samples.
-- MIDI pitch is stored as a double to accommodate future fractional estimates;
-  the present adapters emit integer MIDI pitches. Fractional evidence is absent,
-  not invented from an integer estimate.
+- Event MIDI pitches remain integers stored as doubles. YIN now retains its
+  interpolated-lag fractional MIDI estimate in frame/event evidence; integer-only
+  adapters leave fractional evidence absent rather than inventing it.
 - `intensity_rms` is measured from the event's source audio. It is not MIDI
   velocity or calibrated loudness. A merged streaming event's RMS is absent:
   reporting one partial chunk's RMS as the whole event would be misleading.
@@ -73,17 +73,23 @@ probability. Rejected and unselected evidence remains in `result.raw_tracks`.
 
 | Adapter | Selected frame strength | Additional retained values |
 |---|---|---|
-| YIN | `1 - CMND`, plus the existing voicing heuristic | Original integer frame pitch, including octave excursions |
+| YIN | `1 - CMND`, plus the existing voicing heuristic | Original integer and fractional frame pitch, including octave excursions |
 | Spectral | Salience divided by strongest pitch salience, after candidate selection | Preselection salience per pitch and frame peak/summed-spectrum ratio |
-| Basic Pitch | Selected/clamped note-head activation | Unclamped note-head activation for every frame in supported MIDI range 28-96 |
+| Basic Pitch | Selected/clamped note-head activation | Unclamped note-state and onset-head activation for every frame in supported MIDI range 28-96 |
 | Generic ONNX mono | Selected normalized activation | Selected raw tensor activation; not the complete class distribution |
 | Generic ONNX poly | Selected normalized activation | Raw tensor activation for each adapted pitch track |
 
-Basic Pitch's onset and contour heads are still **not consumed or retained**
-by this adapter. This change does not claim onset-head/contour decoding, expand
-its pitch range, expose fractional pitch, calibrate activations, or correct
-generic ONNX model alignment. Existing model frame steps, trimming and
-overlap handling remain the adapter's time reference. The generic-model
+Basic Pitch's adapter identifies the named `StatefulPartitionedCall:2` onset
+head and `:1` note-state head, validates float32 `[1,172,88]` output, and trims
+and stitches both identically. Onset evidence is absent if the model has no
+onset head; malformed heads fail explicitly when evidence is requested.
+The default adapter leaves the contour head unused. The optional
+[aligned-head adapter](polyphonic.md#basic-pitch-heads-and-temporal-alignment)
+retains local fractional contour evidence and corrects multi-window drift.
+This does not expand the model's pitch range,
+calibrate activations, or correct generic ONNX
+model alignment. Existing model frame steps, trimming and overlap handling
+remain the adapter's time reference. The generic-model
 adapters compile in the optional build but were not accuracy-tested with a
 separate generic ONNX model here.
 
@@ -99,24 +105,49 @@ callbacks changes aggregate layout and is not a binary-ABI guarantee.
 1. Validate finite audio, source rate (at least 2000 Hz), nonempty provenance,
    track geometry, ordered nonnegative frame times, MIDI range and raw shapes.
    Invalid input throws; it is not returned as a successful empty transcription.
-2. Form pitch-connected regions using activation thresholds and optional gap
-   closing. Pitch tracks remain independent; different pitches may overlap.
-   Below-off frames do not extend regions, but their evidence remains available.
-3. Optionally correct one-frame YIN octave excursions only between matching,
+2. `stabilize_pitch_activity` interprets YIN fractional evidence near the
+   preceding pitch as a bounded excursion, without modifying original evidence.
+   An excursion outside the pitch tolerance changes pitch immediately; one
+   lasting at least the stability interval also becomes a pitch change. Exact
+   short semitone notes are not blindly relabelled as their neighbors.
+3. `detect_pitch_activity_regions` implements separate activation/termination
+   thresholds and optional gap closing. It backdates an offset to the final
+   supported frame center plus one hop, not to the end of the release wait.
+   Pitch tracks remain independent and may overlap. Below-off frames do not
+   extend regions; original evidence remains available. With model-state
+   hysteresis enabled (`off < on`), raw note state can sustain activity even
+   when the adapter's selected pitch is absent.
+4. `detect_onset_evidence` exposes the existing spectral-flux/HFC/energy-rise
+   detector as an independent component, retaining window-start timing for
+   compatibility. `detect_onsets` is its legacy time-only projection.
+   `segment_pitch_activity` splits activity regions using attack evidence.
+   Its onset input uses window centers: callers supplying acoustic evidence
+   directly must add `512.0 / source_sample_rate` to the detector's times, as
+   the canonical decoder does once internally.
+   YIN requires an acoustic energy rise; an onset for a different voice is
+   not blindly applied to all spectral/model pitches. Model retriggers require
+   an onset-head local maximum, a preceding note-state drop, and recovery by
+   at least half that drop. Stable-state vibrato onset ripples and falling
+   release tails are not repeated attacks. Both resulting support intervals
+   must meet the configured minimum duration.
+5. Optionally correct one-frame YIN octave excursions only between matching,
    strong neighbors, with a gap allowance of at least one hop and no observed
    attack between the neighbors. Sustained octave changes are not corrected.
-4. Build approximately 5 ms source-audio RMS regions. Start at the larger of
-   the absolute floor and the relative peak threshold; sustain down to the
-   absolute floor so a decaying note is not cut at its initial attack threshold.
+6. Build approximately 5 ms source-audio RMS regions using the absolute floor
+   for both start and sustain. A quiet note with valid pitch evidence is no
+   longer discarded because another note sets a much louder global peak.
+   Relative peak strength is retained only as a boundary-refinement cue.
    Actual zero samples remain silent even when the floor is zero.
-5. Refine against intersecting audio regions and split at real energy gaps.
+7. Refine against intersecting audio regions and split at real energy gaps.
    Snap edges only within half an analysis window plus one hop. Do not use
    another sustained pitch's earlier/later activity to stretch an overlapping
    event to the shared audio envelope: cross-pitch bounds use a two-hop guard
    and at least minimum-duration evidence. Nearby onset peaks can adjust a
    start by at most one hop. A region starting at sample zero with RMS below
    half the clip peak is treated as a weak initial region for onset fallback.
-6. Quantize only to source samples; reject below-duration/energy candidates,
+   Attack-split boundaries constrain refinement, so neighboring repeated events
+   cannot both snap back to the shared envelope and merge.
+8. Quantize only to source samples; reject below-duration/energy candidates,
    retain their evidence, and coalesce overlapping same-pitch/same-method
    duplicates. No tempo, score rhythm or musical-grid quantization is involved.
 
@@ -125,15 +156,38 @@ constraints:
 
 | Option | Default | Meaning / constraints |
 |---|---:|---|
-| `activation_on` | 0.4 | Selected normalized strength required to start; at most 1 |
+| `activation_on` | 0.4 | Selected normalized strength or supplied note-state activation required to start; at most 1 |
 | `activation_off` | 0.4 | Strength to sustain; at most `activation_on`; lower it to enable hysteresis |
 | `maximum_gap_seconds` | 0 | Maximum inactive time bridged between frames or RMS regions; zero disables gap closing |
 | `minimum_duration_seconds` | 0.055 | Minimum accepted sample-rounded duration; strictly positive, configurable for shorter notes |
 | `energy_floor_rms` | 0.0015 | Absolute source RMS sustain/rejection floor, in floating audio sample units |
-| `energy_relative_threshold` | 0.08 | Fraction of clip/chunk peak RMS required to start an energy region; at most 1 |
+| `energy_relative_threshold` | 0.08 | Relative peak cue for weak initial-region refinement, not a quiet-note rejection gate; at most 1 |
 | `spectral_peak_fraction` | 0.02 | Minimum frame peak/summed-spectrum ratio when supplied; at most 1; rejects diffuse spectra, not a probability |
 | `refine_with_audio` | true | Enable audio boundaries, energy-gap splitting and nearby onset constraints; false still enforces duration/RMS |
 | `correct_isolated_octaves` | false | Enable the constrained, YIN-only correction above; requires adequate gap allowance |
+| `pitch_stability_seconds` | 0.05 | Maximum bounded YIN fractional excursion before accepting a pitch change; zero disables stabilization |
+| `pitch_tolerance_semitones` | 0.75 | Distance from the preceding pitch eligible for stabilization; at most 1 |
+| `onset_threshold` | 0.5 | Minimum model onset activation for a retrigger; at most 1 |
+| `minimum_onset_spacing_seconds` | 0.07 | Minimum attack spacing within a pitch activity region |
+| `onset_energy_rise` | 0.25 | Minimum normalized acoustic energy rise for a YIN retrigger |
+| `onset_state_drop` | 0.15 | Required model note-state drop before a repeated attack, plus recovery of at least half this value; at most 1 |
+| `use_model_onsets` | true | Use available model onset evidence for segmentation; evidence remains retained when disabled |
+
+Independent `OnsetDetectionOptions` configure the acoustic detector's minimum
+strength (0.08), median-absolute-deviation multiplier (2.5), and minimum spacing
+(0.07 seconds). The legacy wrapper retains exactly these defaults.
+
+`summarize_event_evidence(event, hop_seconds, window_seconds)` reports supported
+activity duration (union of frame-center/hop intervals clipped to the event),
+pitch stability (fraction of original integer pitches agreeing with the event),
+maximum onset strength, and maximum model note state. Pass the original track's
+window duration for YIN/spectral, zero for pointwise model tracks. Duplicate
+chunk coverage does not double-count duration; the agreement fraction still
+describes the retained evidence samples. These are **diagnostics, not calibrated
+probabilities**. Evaluation JSON includes them per event, alongside optional
+per-frame `onset_strength` and `note_state`. Score project round trips and GUI
+evidence collection preserve the new optional evidence fields; existing
+documents without them remain readable.
 
 ### Streaming
 
@@ -154,7 +208,7 @@ rejected by the canonical streaming API; it has a different event type.
 Audio/evidence callbacks are synchronous and overall progress is monotonic.
 Realtime capture, its callback, locks and stabilization are not changed.
 
-## Measurements and selection
+## Historical connected-region measurements and selection
 
 Same-mode full-buffer Release comparisons used corpus v1: 16 clips, 24 reference
 notes, seed 2026, PCM16 mono 22050 Hz, corpus SHA-256
@@ -233,13 +287,17 @@ python .\python\evaluate.py `
   --runner .\build-release-mingw\transcriber-evaluate.exe `
   --build-info .\build-release-mingw\evaluation-build-Release.json `
   --backend spectral --mode full --temporal `
-  --compare .\python\evaluation\synthetic-v1-windows-clang23-spectral-temporal-full.json `
-  --max-event-f1-drop 0 `
   --output-json .\build-release-mingw\evaluation\candidate-temporal.json `
   --output-text .\build-release-mingw\evaluation\candidate-temporal.txt
 ```
 
-Change backend/baseline together for YIN. For Basic Pitch use an ONNX-enabled
+This captures a current-schema baseline. For subsequent matching-configuration
+runs, add `--compare` pointing to that report and `--max-event-f1-drop 0`.
+Historical schema/configuration snapshots are not interchangeable with current
+reports; the integration tests still enforce their established event-count
+floors while asserting the added defaults explicitly.
+
+Change backend for YIN. For Basic Pitch use an ONNX-enabled
 runner/build metadata and `--backend onnx --mode full --temporal --model
 .\python\models\basic_pitch.onnx`. Model identity is its file SHA-256:
 `2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec`.
@@ -287,6 +345,123 @@ Validation performed locally:
 - Legacy YIN and spectral note vectors, times and heuristic confidences on the
   supplied unlabeled recording exactly match the saved pre-decoder performance
   report. Private audio and its predictions remain local/ignored.
+
+## Attack-aware segmentation evaluation
+
+The changes above were compared against the immediately preceding canonical
+decoder, **not** against legacy CLI output. Both corpus versions were generated
+with the existing evaluation framework; their identities were unchanged:
+v1 has 16 clips/24 reference notes and v2 has 22 clips/30 reference notes.
+The v2 manifest SHA-256 is
+`3a9d0d856f85e5617d8b56012146d405a4d75a628a3b0cc45ae9db5d87da22ba`.
+Build/model, CPU provider, tolerances and machine were as in the historical
+Windows/Clang comparison above. Before and final after runs each discarded one
+warmup and measured three fresh-process repetitions. This is a synthetic
+development/regression experiment, not independent real-recording accuracy.
+
+Strict precision/recall/F1 and onset+pitch F1 are unchanged **for every clip**,
+not merely in aggregate:
+
+| Corpus | Backend | Strict precision | Strict recall | Strict F1 | Frame F1 before -> after |
+|---|---|---:|---:|---:|---:|
+| v1 | YIN | 0.6818 | 0.6250 | 0.6522 | 0.8095 -> 0.8095 |
+| v1 | Spectral | 0.8696 | 0.8333 | 0.8511 | 0.9774 -> 0.9779 |
+| v1 | Basic Pitch | 0.8696 | 0.8333 | 0.8511 | 0.9826 -> 0.9830 |
+| v2 | YIN | 0.6552 | 0.6333 | 0.6441 | 0.7879 -> 0.7899 |
+| v2 | Spectral | 0.8000 | 0.8000 | 0.8000 | 0.9034 -> 0.9037 |
+| v2 | Basic Pitch | 0.7742 | 0.8000 | 0.7869 | 0.8854 -> 0.8857 |
+
+Onset+pitch F1 for v2 is 0.7797/0.8667/0.8852, respectively. Fragmented reference
+notes, extra fragments, and merged predictions were zero before and after on
+both corpora; this baseline does **not** demonstrate a numerical fragmentation
+reduction. False positives per minute are unchanged (v2:
+10.9270/6.5562/7.6489).
+
+| v2 backend | Mean onset error before -> after (ms) | Onset p95 before -> after (ms) | Mean offset error before -> after (ms) | Offset p95 before -> after (ms) |
+|---|---:|---:|---:|---:|
+| YIN | 3.389 -> 4.223 | 19.615 -> 21.837 | 99.817 -> 96.788 | 596.281 -> 596.281 |
+| Spectral | 2.352 -> 1.698 | 19.615 -> 3.741 | 57.072 -> 57.072 | 232.358 -> 232.358 |
+| Basic Pitch | 6.722 -> 6.092 | 34.671 -> 34.671 | 64.593 -> 64.593 | 276.077 -> 276.077 |
+
+Timing errors use the same onset+pitch matched population here; low error
+medians do not erase the remaining misses or long offset tails.
+Median v2 analysis times before -> after were 18.081 -> 18.509 ms (YIN),
+15.252 -> 15.481 ms (spectral), and 147.923 -> 145.736 ms (Basic Pitch).
+These pooled, unequal-duration fresh-process timings are machine-dependent,
+not a speedup claim.
+
+### Individual changes and limitations
+
+- All three improve `attack` frame F1 from 0.993902 to 1.0 by retaining early,
+  quiet activity. YIN `pitch_bend` frame F1 improves 0.410000 -> 0.441103, but
+  strict event F1 remains zero: a continuous 120-cent bend is still represented
+  by two semitone events, not a bend curve.
+- **YIN regressions are retained and disclosed:** `octaves` frame F1 changes
+  1.0 -> 0.993902 (also in v1); `harmonics_only` changes 1.0 -> 0.996656.
+  The final octave note starts at 1.671837 s rather than 1.651247 s; the
+  harmonics-only note starts at 0.208980 s rather than 0.199546 s. Bounded
+  pitch stabilization and changed weak-region refinement can delay an
+  ambiguous attack. Strict matches/recall are unchanged, but YIN mean/p95
+  onset error is worse. No aggregate quality score hides these changes.
+- Spectral and Basic Pitch have no regressed per-clip strict, onset+pitch or
+  frame F1 on these fixtures. Quiet-note evidence thresholds were not raised.
+- A naive onset-head-maximum trial split the vibrato fixture into 14 events.
+  Note-state drop **and recovery** removed that failure without raising
+  activation/onset thresholds. The final corpus again has one vibrato event.
+  Repeated attacks without discriminating energy or note-state recovery can
+  still merge; thresholding cannot establish evidence that is absent.
+
+The new deterministic component tests additionally verify one event under
+65-cent pitch oscillation, preservation of short exact semitone changes,
+two repeated events after a model-state dip/recovery, a single event for stable
+state/onset ripples or a falling release, plateau-onset single triggering,
+and two accepted audio regions when one valid note is roughly 67 times quieter
+than another. Hysteresis tests exercise selected-pitch absence with retained
+model note state, a bridged dropout and an offset backdated to final support.
+Existing overlap/chunk sweeps still cover five seam phases at two source rates.
+These hand-constructed cases establish component behavior; they are not a
+claim of measured real-music precision gains.
+
+### Reproduce the current reports
+
+After the documented [evaluation build](evaluation.md), run:
+
+```powershell
+python .\python\evaluate.py `
+  --runner .\build-onnx-asio-mingw\transcriber-evaluate.exe `
+  --build-info .\build-onnx-asio-mingw\evaluation-build-Release.json `
+  --backend all --mode full --temporal --corpus-version 2 `
+  --warmups 1 --repetitions 3 `
+  --output-json .\build-onnx-asio-mingw\evaluation\segmentation-after-v2.json `
+  --output-markdown .\build-onnx-asio-mingw\evaluation\segmentation-after-v2.md
+```
+
+Use corpus version 1 and matching output names for v1. An ONNX-enabled runner
+discovers the bundled compatible model; a default build compares built-ins
+only. Local before/after reports are
+named `segmentation-before-v1/v2.json` and `segmentation-after-v1/v2.json`, with
+Markdown counterparts, under that build's evaluation directory. JSON retains
+per-clip evidence, diagnostics, timing samples and build/model identity.
+The old and new decoder configurations intentionally differ: do not bypass
+normal `--compare` compatibility checks or relabel the old snapshot as current.
+
+Evaluation flags map to the parameter table:
+`--minimum-duration`, `--energy-floor`, `--pitch-stability`, `--pitch-tolerance`,
+`--onset-threshold`, `--onset-spacing`, `--onset-energy-rise`,
+`--onset-state-drop`, and `--no-model-onsets`, in addition to the existing
+activation/gap/refinement options. Invalid/nonfinite parameters fail explicitly.
+No new regression threshold is inferred from this one development experiment.
+
+Final validation for this revision:
+
+- Default Release: 138 CTests passed, one external-audio smoke test skipped
+  (139 registered).
+- ONNX/ASIO Release: 143 passed, the same smoke test skipped (144 registered).
+- Focused decoder suite: 19 cases, including zero-spacing onset recovery.
+- WebView2/ONNX/ASIO GUI Release builds successfully, including the evidence
+  collector and JSON projection. No interactive GUI or hardware test is claimed.
+- Score serialization tests verify optional onset/state/fractional evidence
+  round trips, old-field absence and nonfinite evidence rejection.
 
 ## Limits
 

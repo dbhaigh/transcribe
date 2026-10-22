@@ -66,9 +66,19 @@ struct ResamplerDeleter {
 
 } // namespace
 
-AudioBuffer read_audio_ffmpeg(const std::filesystem::path& path) {
-    AVFormatContext* raw_format = nullptr;
-    int result = avformat_open_input(&raw_format, path.string().c_str(), nullptr, nullptr);
+AudioBuffer read_audio_ffmpeg(const std::filesystem::path& path, std::stop_token cancellation) {
+    const auto check_cancelled = [&] {
+        if (cancellation.stop_requested()) throw std::runtime_error("FFmpeg decoding cancelled.");
+    };
+    check_cancelled();
+    AVFormatContext* raw_format = avformat_alloc_context();
+    if (raw_format == nullptr) throw std::runtime_error("Could not allocate FFmpeg input context.");
+    raw_format->interrupt_callback = {
+        [](void* token) { return static_cast<std::stop_token*>(token)->stop_requested() ? 1 : 0; },
+        &cancellation};
+    const auto encoded_path = path.u8string();
+    const std::string input_path(encoded_path.begin(), encoded_path.end());
+    int result = avformat_open_input(&raw_format, input_path.c_str(), nullptr, nullptr);
     if (result < 0) {
         throw_ffmpeg_error("Could not open audio input", result);
     }
@@ -140,6 +150,7 @@ AudioBuffer read_audio_ffmpeg(const std::filesystem::path& path) {
     AudioBuffer audio{output_sample_rate, {}};
     const auto receive_frames = [&]() {
         while (true) {
+            check_cancelled();
             const int receive_result = avcodec_receive_frame(codec_context.get(), frame.get());
             if (receive_result == AVERROR(EAGAIN) || receive_result == AVERROR_EOF) {
                 return;
@@ -166,6 +177,7 @@ AudioBuffer read_audio_ffmpeg(const std::filesystem::path& path) {
     };
 
     while ((result = av_read_frame(format.get(), packet.get())) >= 0) {
+        check_cancelled();
         if (packet->stream_index == stream_index) {
             result = avcodec_send_packet(codec_context.get(), packet.get());
             if (result < 0) {
@@ -186,6 +198,7 @@ AudioBuffer read_audio_ffmpeg(const std::filesystem::path& path) {
     receive_frames();
 
     while (true) {
+        check_cancelled();
         const int capacity = swr_get_out_samples(resampler.get(), 0);
         if (capacity <= 0) {
             break;
@@ -195,7 +208,10 @@ AudioBuffer read_audio_ffmpeg(const std::filesystem::path& path) {
             reinterpret_cast<std::uint8_t*>(converted.data())};
         const int converted_samples =
             swr_convert(resampler.get(), output, capacity, nullptr, 0);
-        if (converted_samples <= 0) {
+        if (converted_samples < 0) {
+            throw_ffmpeg_error("Could not flush audio resampling", converted_samples);
+        }
+        if (converted_samples == 0) {
             break;
         }
         audio.samples.insert(audio.samples.end(), converted.begin(),

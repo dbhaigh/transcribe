@@ -4,8 +4,13 @@
 #include "transcribe/audio.hpp"
 #include "transcribe/guitar_tab.hpp"
 #include "transcribe/musicxml.hpp"
+#include "transcribe/inference.hpp"
+#include "transcribe/engine.hpp"
+#include "transcribe/preprocessing.hpp"
+#include "transcribe/path.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -40,7 +45,10 @@ public:
         if ((!track.raw_values.empty() &&
              track.raw_values.size() != track.frames.size()) ||
             (!track.spectral_peak_fractions.empty() &&
-             track.spectral_peak_fractions.size() != track.frames.size())) {
+             track.spectral_peak_fractions.size() != track.frames.size()) ||
+            (!track.onset_strengths.empty() && track.onset_strengths.size() != track.frames.size()) ||
+            (!track.note_states.empty() && track.note_states.size() != track.frames.size()) ||
+            (!track.contour_midi.empty() && track.contour_midi.size() != track.frames.size())) {
             throw std::invalid_argument(
                 "Review evidence arrays must align with detector frames.");
         }
@@ -56,7 +64,10 @@ public:
                     entry.track.raw_value_semantics == track.raw_value_semantics &&
                     entry.has_raw_values == !track.raw_values.empty() &&
                     entry.has_spectral_peak_fractions ==
-                        !track.spectral_peak_fractions.empty();
+                        !track.spectral_peak_fractions.empty() &&
+                    entry.has_onsets == !track.onset_strengths.empty() &&
+                    entry.has_states == !track.note_states.empty() &&
+                    entry.has_contours == !track.contour_midi.empty();
             });
         if (found == tracks_.end()) {
             Entry entry;
@@ -71,6 +82,9 @@ public:
             entry.has_raw_values = !track.raw_values.empty();
             entry.has_spectral_peak_fractions =
                 !track.spectral_peak_fractions.empty();
+            entry.has_onsets = !track.onset_strengths.empty();
+            entry.has_states = !track.note_states.empty();
+            entry.has_contours = !track.contour_midi.empty();
             const auto identity = track.method + ":" + track.evidence_kind +
                 ":" + std::to_string(track.window_seconds) + ":" +
                 std::to_string(track.hop_seconds) +
@@ -106,6 +120,13 @@ public:
                     found->track.spectral_peak_fractions.push_back(
                         track.spectral_peak_fractions[index]);
                 }
+                if (!track.onset_strengths.empty()) {
+                    found->track.onset_strengths.push_back(track.onset_strengths[index]);
+                }
+                if (!track.note_states.empty()) {
+                    found->track.note_states.push_back(track.note_states[index]);
+                }
+                if (!track.contour_midi.empty()) found->track.contour_midi.push_back(track.contour_midi[index]);
             } else {
                 found->track.frames[slot] = track.frames[index];
                 if (!track.raw_values.empty()) {
@@ -122,6 +143,13 @@ public:
                     found->track.spectral_peak_fractions[slot] =
                         track.spectral_peak_fractions[index];
                 }
+                if (!track.onset_strengths.empty()) {
+                    found->track.onset_strengths[slot] = track.onset_strengths[index];
+                }
+                if (!track.note_states.empty()) {
+                    found->track.note_states[slot] = track.note_states[index];
+                }
+                if (!track.contour_midi.empty()) found->track.contour_midi[slot] = track.contour_midi[index];
             }
         }
     }
@@ -142,6 +170,9 @@ public:
             ordered.frames.clear();
             ordered.raw_values.clear();
             ordered.spectral_peak_fractions.clear();
+            ordered.onset_strengths.clear();
+            ordered.note_states.clear();
+            ordered.contour_midi.clear();
             ordered.frames.reserve(order.size());
             if (!entry.track.raw_values.empty()) {
                 ordered.raw_values.reserve(order.size());
@@ -158,6 +189,13 @@ public:
                     ordered.spectral_peak_fractions.push_back(
                         entry.track.spectral_peak_fractions[index]);
                 }
+                if (!entry.track.onset_strengths.empty()) {
+                    ordered.onset_strengths.push_back(entry.track.onset_strengths[index]);
+                }
+                if (!entry.track.note_states.empty()) {
+                    ordered.note_states.push_back(entry.track.note_states[index]);
+                }
+                if (!entry.track.contour_midi.empty()) ordered.contour_midi.push_back(entry.track.contour_midi[index]);
             }
             result.push_back(std::move(ordered));
         }
@@ -173,6 +211,9 @@ private:
         std::uint64_t hash_seed{};
         bool has_raw_values{};
         bool has_spectral_peak_fractions{};
+        bool has_onsets{};
+        bool has_states{};
+        bool has_contours{};
     };
     static constexpr std::size_t maximum_samples_per_track = 2048;
     std::vector<Entry> tracks_;
@@ -211,6 +252,7 @@ void attach_review_evidence(ScoreDocument& score,
                 evidence.raw_strength = std::max(0.0, frame.confidence);
                 evidence.raw_voicing = std::clamp(frame.voicing_probability, 0.0, 1.0);
                 evidence.raw_midi_pitch = pitch;
+                evidence.fractional_midi = frame.fractional_midi;
                 evidence.strength_semantics = track.selected_strength_semantics;
                 evidence.raw_value_semantics = track.raw_value_semantics;
                 if (!track.raw_values.empty()) {
@@ -220,6 +262,8 @@ void attach_review_evidence(ScoreDocument& score,
                     evidence.spectral_peak_fraction =
                         track.spectral_peak_fractions[index];
                 }
+                if (!track.onset_strengths.empty()) evidence.onset_strength = track.onset_strengths[index];
+                if (!track.note_states.empty()) evidence.note_state = track.note_states[index];
                 if (pitch == target_pitch) {
                     if (primary_track == nullptr) primary_track = &track;
                     selected.push_back(std::move(evidence));
@@ -314,7 +358,25 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
         throw std::runtime_error("Transcription was cancelled.");
     }
 
-    auto extension = request.input_path.extension().string();
+    if (request.use_asio && !request.isolated_audio_path.empty()) {
+        throw std::invalid_argument("Source isolation is an offline file operation, not a live audio callback.");
+    }
+    const auto target = request.instrument == InstrumentPrior::Guitar ? "guitar" :
+        request.instrument == InstrumentPrior::Bass ? "bass" :
+        request.instrument == InstrumentPrior::Piano ? "piano" :
+        request.instrument == InstrumentPrior::Voice ? "voice" : "";
+    if (!request.isolated_audio_path.empty()) {
+        const std::array outputs{request.musicxml_path, request.tab_path, request.midi_path};
+        protect_preprocessing_inputs({request.input_path, request.isolated_audio_path, target, false}, outputs);
+    }
+    report_progress(progress_callback, 0.0, "Validating optional isolated audio");
+    const auto prepared = prepare_audio({request.input_path, request.isolated_audio_path,
+        target, request.preprocessing_fallback}, stop_token);
+    if (!request.isolated_audio_path.empty() && progress_callback) {
+        progress_callback(0.0, prepared.diagnostic);
+    }
+    const auto& analysis_path = prepared.analysis_path;
+    auto extension = path_utf8(analysis_path.extension());
     std::transform(extension.begin(), extension.end(), extension.begin(),
                    [](unsigned char character) {
                        return static_cast<char>(std::tolower(character));
@@ -329,12 +391,50 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
     std::uint32_t audio_sample_rate = 0;
     std::uint64_t audio_frame_count = 0;
 
-    if (streaming_wav) {
+    if (request.bounded_inference) {
+        if (request.use_asio || extension != ".wav" || request.model_path.empty()) {
+            throw std::invalid_argument("Bounded neural analysis requires a WAV file and a Basic Pitch model.");
+        }
+        ModelRegistry registry(request.model_path);
+        auto created = registry.create("onnx:basic-pitch-v1");
+        if (const auto* error = std::get_if<InferenceError>(&created)) {
+            throw std::runtime_error(error->message);
+        }
+        auto backend = std::move(std::get<std::unique_ptr<ModelBackend>>(created));
+        const auto loaded = backend->load();
+        if (const auto* error = std::get_if<InferenceError>(&loaded)) {
+            throw std::runtime_error(error->message);
+        }
+        InferenceRequest inference;
+        inference.cancellation = stop_token;
+        inference.onnx.polyphonic = request.polyphonic;
+        inference.onnx.independent_probabilities = request.polyphonic;
+        inference.onnx.evidence_callback = retain_evidence;
+        inference.progress = [&](double progress) {
+            report_progress(progress_callback, progress, "Analyzing bounded neural windows");
+        };
+        FileInferenceOptions file;
+        file.audio_callback = [&](const AudioBlockView& block) {
+            if (audio_preview_callback) {
+                audio_preview_callback(static_cast<double>(block.first_frame) / block.sample_rate,
+                    make_audio_preview(block.samples, block.sample_rate, 16, 40), false);
+            }
+        };
+        auto result = infer_wav_file(*backend, analysis_path, inference, file);
+        if (const auto* error = std::get_if<InferenceError>(&result)) {
+            throw std::runtime_error(error->message);
+        }
+        auto& output = std::get<FileInferenceResult>(result);
+        notes = std::move(output.notes);
+        audio_sample_rate = output.sample_rate;
+        audio_frame_count = output.source_frames;
+    } else if (streaming_wav) {
         report_progress(progress_callback, 0.0, "Reading audio");
         StreamingOptions options;
         options.chunk_seconds = 2.0;
         options.overlap_seconds = 0.5;
         options.analysis.fast_preview = request.fast_preview;
+        options.analysis.cancellation = stop_token;
         options.analysis.instrument = request.instrument;
         if (request.retain_review_evidence) {
             options.analysis.evidence_callback = retain_evidence;
@@ -359,7 +459,7 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
                 live_preview_callback(0.0, updated_notes, {});
             }
         };
-        notes = transcribe_wav_streaming(request.input_path, options).notes;
+        notes = transcribe_wav_streaming(analysis_path, options).notes;
     } else {
         const auto audio_update_callback =
             [&](double offset, const AudioBuffer& preview_audio) {
@@ -373,7 +473,7 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
             ? capture_asio(
                   request.capture_seconds, stop_token,
                   [&](double progress) {
-                      report_progress(progress_callback, progress * 0.35,
+                      report_progress(progress_callback, progress,
                                       "Capturing ASIO audio");
                   },
                   audio_update_callback,
@@ -384,7 +484,7 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
                       }
                   },
                   request.realtime_options)
-            : read_audio(request.input_path);
+            : read_audio(analysis_path, stop_token);
         audio_sample_rate = audio.sample_rate;
         audio_frame_count = audio.samples.size();
 
@@ -393,29 +493,50 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
                 make_audio_preview(audio.samples, audio.sample_rate, 512, 48);
             audio_preview_callback(0.0, preview, true);
         }
-        report_progress(progress_callback, 0.4, "Audio loaded");
+        report_progress(progress_callback, 1.0, "Audio loaded");
         if (request.model_path.empty()) {
             AnalysisOptions options;
             options.fast_preview = request.fast_preview;
+            options.cancellation = request.use_asio ? std::stop_token{} : stop_token;
             options.instrument = request.instrument;
             if (request.retain_review_evidence) {
                 options.evidence_callback = retain_evidence;
             }
             options.progress_callback = [&](double progress) {
-                report_progress(progress_callback, 0.4 + progress * 0.6,
+                report_progress(progress_callback, progress,
                                 "Analyzing audio");
             };
-            notes = transcribe_monophonic(audio, options);
+            EngineRegistry engines;
+            auto created = engines.create("builtin:yin");
+            if (const auto* error = std::get_if<InferenceError>(&created))
+                throw std::runtime_error(error->message);
+            auto engine = std::move(std::get<std::unique_ptr<TranscriptionEngine>>(created));
+            ModelLoadOptions load;
+            load.fast_preview = request.fast_preview;
+            const auto initialized = engine->initialize(load);
+            if (const auto* error = std::get_if<InferenceError>(&initialized))
+                throw std::runtime_error(error->message);
+            EngineConfiguration configuration;
+            configuration.audio_source_id = request.use_asio ? "live-capture" : path_utf8(request.input_path);
+            configuration.inference.analysis = options;
+            const auto configured = engine->configure(configuration);
+            if (const auto* error = std::get_if<InferenceError>(&configured))
+                throw std::runtime_error(error->message);
+            auto analyzed = engine->transcribe(audio, options.cancellation);
+            if (const auto* error = std::get_if<InferenceError>(&analyzed))
+                throw std::runtime_error(error->message);
+            notes = std::move(std::get<EngineUpdate>(analyzed).notes);
         } else {
 #ifdef TRANSCRIBE_ENABLE_ONNX
             OnnxOptions options;
+            options.cancellation = request.use_asio ? std::stop_token{} : stop_token;
             options.polyphonic = request.polyphonic;
             options.independent_probabilities = request.polyphonic;
             if (request.retain_review_evidence) {
                 options.evidence_callback = retain_evidence;
             }
             options.progress_callback = [&](double progress) {
-                report_progress(progress_callback, 0.4 + progress * 0.6,
+                report_progress(progress_callback, progress,
                                 "Running ONNX model");
             };
             notes = transcribe_with_onnx(audio, request.model_path, options);
@@ -425,10 +546,16 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
         }
     }
 
+    if (!request.use_asio && stop_token.stop_requested()) {
+        throw std::runtime_error("Transcription cancelled.");
+    }
     if (notes.empty()) {
-        throw std::runtime_error("No stable pitches were detected in the input.");
+        throw std::runtime_error(
+            "No stable pitches were detected. Check the recording level and selected "
+            "instrument, or try a compatible model. Silence may produce no notes.");
     }
 
+    report_progress(progress_callback, 0.0, "Constructing score");
     Result result;
     auto interpretation_options = request.interpretation_options;
     if (request.instrument == InstrumentPrior::Guitar) {
@@ -437,6 +564,8 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
         interpretation_options.instrument = "Piano";
     } else if (request.instrument == InstrumentPrior::Voice) {
         interpretation_options.instrument = "Voice";
+    } else if (request.instrument == InstrumentPrior::Bass) {
+        interpretation_options.instrument = "Bass";
     }
     const auto interpretation = interpret_notes(notes, interpretation_options);
     if (interpretation.hypotheses.empty()) {
@@ -445,17 +574,24 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
     result.metadata = metadata_for_hypothesis(interpretation.hypotheses.front());
     result.score = make_score_document(
         interpretation, 0,
-        request.use_asio ? "live-capture" : request.input_path.string(),
+        request.use_asio ? "live-capture" : path_utf8(request.input_path),
         result.metadata,
         request.guitar_tab_options);
     result.audio_sample_rate = audio_sample_rate;
+    verify_prepared_audio(prepared);
+    if (!request.isolated_audio_path.empty()) {
+        result.preprocessing_diagnostic = prepared.diagnostic;
+        result.audio_channels = inspect_wav(request.input_path).channels;
+        result.score.uncertainties.push_back(prepared.diagnostic +
+            " Stem: " + path_utf8(request.isolated_audio_path));
+    }
     result.audio_frame_count = audio_frame_count;
     result.score.source_sample_rate = audio_sample_rate;
     if (request.retain_review_evidence && !request.use_asio) {
         auto tracks = review_evidence.finish();
         result.review_evidence_truncated = review_evidence.truncated();
         const std::string model_identifier = request.model_path.empty()
-            ? "builtin:yin" : request.model_path.filename().string();
+            ? "builtin:yin" : path_utf8(request.model_path.filename());
         attach_review_evidence(result.score, tracks, model_identifier,
                                result.review_evidence_truncated);
     }
@@ -481,6 +617,8 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
         }
     }
     if (!request.proposal_only) {
+        const double output_count = request.midi_path.empty() ? 2.0 : 3.0;
+        report_progress(progress_callback, 0.0, "Writing score exports");
 #ifdef TRANSCRIBE_ENABLE_VEROVIO
         write_musicxml(request.musicxml_path, result.score,
                        request.preserve_expressive_timing,
@@ -489,10 +627,13 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
         write_musicxml(request.musicxml_path, result.score,
                        request.preserve_expressive_timing);
 #endif
+        report_progress(progress_callback, 1.0 / output_count, "Writing score exports");
         write_guitar_tab(request.tab_path, result.score,
                          request.guitar_tab_options);
+        report_progress(progress_callback, 2.0 / output_count, "Writing score exports");
         if (!request.midi_path.empty()) {
             write_midi(request.midi_path, result.score);
+            report_progress(progress_callback, 1.0, "Writing score exports");
         }
     }
 

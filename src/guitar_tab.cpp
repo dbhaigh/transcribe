@@ -1,4 +1,5 @@
 #include "transcribe/guitar_tab.hpp"
+#include "transcribe/output.hpp"
 #include "transcribe/score.hpp"
 
 #include <algorithm>
@@ -17,7 +18,7 @@ namespace {
 struct TabEvent {
     double start{};
     double duration{};
-    std::array<std::string, 6> strings;
+    std::vector<std::string> strings;
 };
 
 void validate_options(const GuitarTabOptions& options) {
@@ -34,12 +35,16 @@ void validate_options(const GuitarTabOptions& options) {
     if (options.capo_fret < 0 || options.capo_fret > 24) {
         throw std::invalid_argument("Capo fret must be between 0 and 24.");
     }
-    if (options.alternative_fingerings > 5) {
-        throw std::invalid_argument("At most five alternative fingerings can be requested.");
+    if (options.alternative_fingerings > 4095) {
+        throw std::invalid_argument("At most 4095 alternative fingerings can be requested.");
     }
-    for (std::size_t i = 0; i < options.tuning.size(); ++i) {
-        if (options.tuning[i] < 0 || options.tuning[i] > 127 ||
-            (i > 0 && options.tuning[i] >= options.tuning[i - 1])) {
+    const auto tuning = configured_tuning(options);
+    if (tuning.empty() || tuning.size() > maximum_guitar_strings) {
+        throw std::invalid_argument("Guitar tablature requires between 1 and 12 strings.");
+    }
+    for (std::size_t i = 0; i < tuning.size(); ++i) {
+        if (tuning[i] < 0 || tuning[i] > 127 ||
+            (options.string_tuning.empty() && i > 0 && tuning[i] >= tuning[i - 1])) {
             throw std::invalid_argument(
                 "Guitar tuning must contain six descending MIDI pitches from high to low.");
         }
@@ -66,11 +71,17 @@ std::vector<std::vector<std::size_t>> note_groups(
 
 } // namespace
 
+std::span<const int> configured_tuning(const GuitarTabOptions& options) noexcept {
+    return options.string_tuning.empty() ? std::span<const int>(options.tuning) :
+        std::span<const int>(options.string_tuning);
+}
+
 FingeringResult assign_guitar_tab_fingerings(
     const std::vector<Note>& notes, const GuitarTabOptions& options) {
     validate_options(options);
-    FingeringOptions fingering_options;
+    auto fingering_options = options.search;
     fingering_options.tuning = options.tuning;
+    fingering_options.string_tuning = options.string_tuning;
     fingering_options.capo_fret = options.capo_fret;
     fingering_options.maximum_fret = options.maximum_fret;
     fingering_options.preferred_position = options.preferred_position;
@@ -110,12 +121,12 @@ void write_guitar_tab(const std::filesystem::path& path,
     for (std::size_t index = 0; index < notes.size(); ++index) {
         const auto& position = fingering.positions[index];
         if (position.note_index != index || position.string_number < 0 ||
-            position.string_number > 6 ||
+            static_cast<std::size_t>(position.string_number) > configured_tuning(requested_options).size() ||
             (position.string_number == 0 && position.fret != -1) ||
             (position.string_number > 0 &&
              (position.fret < 0 ||
               position.fret > requested_options.maximum_fret ||
-              requested_options.tuning[position.string_number - 1] +
+              configured_tuning(requested_options)[position.string_number - 1] +
                       requested_options.capo_fret + position.fret !=
                   notes[index].midi_pitch))) {
             throw std::invalid_argument(
@@ -128,12 +139,19 @@ void write_guitar_tab(const std::filesystem::path& path,
                 "A supplied fingering alternative does not match the note sequence.");
         }
     }
+    auto constraints = requested_options.search;
+    constraints.tuning = requested_options.tuning;
+    constraints.string_tuning = requested_options.string_tuning;
+    constraints.capo_fret = requested_options.capo_fret;
+    constraints.maximum_fret = requested_options.maximum_fret;
+    constraints.preferred_position = requested_options.preferred_position;
+    validate_fingering_assignment(notes, fingering.positions, constraints);
+    for (const auto& alternative : fingering.alternatives) {
+        validate_fingering_assignment(notes, alternative.positions, constraints);
+    }
     const auto& assigned_positions = fingering.positions;
 
-    std::ofstream output(path, std::ios::binary);
-    if (!output) {
-        throw std::runtime_error("Could not create tablature output: " + path.string());
-    }
+    std::ostringstream output;
 
     std::vector<std::size_t> ordered_indices(notes.size());
     for (std::size_t i = 0; i < ordered_indices.size(); ++i) {
@@ -147,6 +165,7 @@ void write_guitar_tab(const std::filesystem::path& path,
     std::vector<TabEvent> events;
     for (const auto& group_indices : note_groups(notes, ordered_indices)) {
         TabEvent event;
+        event.strings.resize(configured_tuning(requested_options).size());
         event.start = notes[group_indices.front()].start_seconds;
         for (std::size_t i = 0; i < group_indices.size(); ++i) {
             const auto& position = assigned_positions[group_indices[i]];
@@ -162,10 +181,10 @@ void write_guitar_tab(const std::filesystem::path& path,
         events.push_back(std::move(event));
     }
 
-    for (std::size_t event = 1; event < events.size(); ++event) {
+    for (std::size_t event = 1; requested_options.suggest_legato_marks && event < events.size(); ++event) {
         const double gap = events[event].start - events[event - 1].start;
         if (gap < 0.12) {
-            for (std::size_t string = 0; string < requested_options.tuning.size(); ++string) {
+            for (std::size_t string = 0; string < configured_tuning(requested_options).size(); ++string) {
                 auto& previous = events[event - 1].strings[string];
                 const auto& current = events[event].strings[string];
                 if (previous.empty() || current.empty()) {
@@ -186,9 +205,9 @@ void write_guitar_tab(const std::filesystem::path& path,
         }
     }
 
-    std::array<std::ostringstream, 6> lines;
+    std::vector<std::ostringstream> lines(configured_tuning(requested_options).size());
     for (std::size_t string = 0; string < lines.size(); ++string) {
-        lines[string] << midi_note_name(requested_options.tuning[string]) << '|';
+        lines[string] << midi_note_name(configured_tuning(requested_options)[string]) << '|';
     }
     for (const auto& event : events) {
         int width = 4;
@@ -213,18 +232,22 @@ void write_guitar_tab(const std::filesystem::path& path,
     }
 
     output << "Estimated guitar tablature (high-to-low tuning: ";
-    for (std::size_t string = requested_options.tuning.size(); string > 0; --string) {
-        output << midi_note_name(requested_options.tuning[string - 1])
-               << (string == 1 ? "" : "-");
+    for (std::size_t string = 0; string < configured_tuning(requested_options).size(); ++string) {
+        output << midi_note_name(configured_tuning(requested_options)[string])
+               << (string + 1 == configured_tuning(requested_options).size() ? "" : "-");
     }
     output << ")\n";
     if (requested_options.capo_fret > 0) {
         output << "Capo: fret " << requested_options.capo_fret << '\n';
     }
-    output << "Fingering, legato marks, and rhythm are approximate.\n";
+    output << "Suggested fingering only; performed strings and fingers are unknown. Rhythm is approximate.\n";
+    if (requested_options.suggest_legato_marks) {
+        output << "Legato/slide marks are heuristic suggestions, not detected techniques.\n";
+    }
+    if (!fingering.explanation.empty()) output << fingering.explanation << '\n';
     if (fingering.search_truncated) {
-        output << "Warning: the bounded fingering search reached its per-chord "
-                  "visit limit; review the assignments.\n";
+        output << "Warning: the bounded fingering search pruned states or reached its "
+                  "visit limit; alternatives are not exhaustive.\n";
     }
     for (auto& line : lines) {
         output << line.str() << "|\n";
@@ -234,15 +257,19 @@ void write_guitar_tab(const std::filesystem::path& path,
         const auto* note = &notes[index];
         const auto& assignment = fingering.notes[index];
         output << std::fixed << std::setprecision(2) << note->start_seconds << "s  "
-               << note->name << "  " << note->duration_seconds << "s  confidence "
+               << note->name << "  " << note->duration_seconds << "s  raw pitch support "
                << std::setprecision(2) << note->confidence << "  ";
         if (!assignment.playable) {
             output << "fingering unassigned";
+            if (!assignment.explanation.empty()) output << ": " << assignment.explanation;
         } else {
             output << "string " << assignment.position.string_number
                    << " fret " << assignment.position.fret;
             if (assignment.ambiguous) output << " (ambiguous)";
             if (assignment.position.manually_corrected) output << " (manual)";
+            if (assignment.position.suggested_finger) {
+                output << " suggested finger " << *assignment.position.suggested_finger;
+            }
         }
         if (assignment.correction_rejected) {
             output << " (saved correction rejected)";
@@ -261,12 +288,15 @@ void write_guitar_tab(const std::filesystem::path& path,
                    << ", hand movement=" << cost.hand_movement
                    << ", string preference=" << cost.string_preference
                    << ", chord stretch=" << cost.chord_stretch
+                   << ", repeated strings=" << cost.repeated_strings
+                   << ", string crossings=" << cost.string_crossings
+                   << ", awkward transitions=" << cost.awkward_transitions
                    << ", unassigned=" << cost.unassigned_notes << "):";
             for (const auto note_index : ordered_indices) {
                 const auto& position = alternative.positions[note_index];
                 output << ' ' << notes[note_index].name << '=';
                 if (position.string_number < 1) {
-                    output << "unplayable";
+                    output << "unresolved";
                 } else {
                     output << "string " << position.string_number << " fret "
                            << position.fret;
@@ -278,21 +308,17 @@ void write_guitar_tab(const std::filesystem::path& path,
     if (!output) {
         throw std::runtime_error("Failed while writing tablature output.");
     }
+    write_output_atomic(path, output.str());
 }
 
 void write_guitar_tab(const std::filesystem::path& path,
                       const ScoreDocument& score,
                       const GuitarTabOptions& requested_options) {
     validate_score_document(score);
-    if (score.instrument.tuning.size() != requested_options.tuning.size()) {
-        throw std::invalid_argument(
-            "ASCII tablature export requires exactly six configured guitar strings.");
-    }
-
     auto options = requested_options;
-    std::copy(score.instrument.tuning.begin(), score.instrument.tuning.end(),
-              options.tuning.begin());
+    options.string_tuning = score.instrument.tuning;
     options.capo_fret = score.instrument.capo_fret;
+    options.search.physical_fret_count = score.instrument.physical_fret_count;
 
     auto notes = score_notes(score);
     std::vector<const ScoreNote*> ordered_score_notes;

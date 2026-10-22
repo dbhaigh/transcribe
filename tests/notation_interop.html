@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Independent MusicXML import semantics</title>
+<pre id="result">Running...</pre>
+<main id="pages"></main>
+<iframe id="workstation" title="Real engraving workstation" style="width:1400px;height:900px"></iframe>
+<script type="module">
+const result = document.getElementById("result");
+const require = (value, message) => { if (!value) throw Error(message); };
+const parse = (text) => {
+  const xml = new DOMParser().parseFromString(text, "application/xml");
+  require(!xml.querySelector("parsererror"), "Malformed XML");
+  return xml;
+};
+function rhythm(note, mei) {
+  let duration;
+  if (!mei) {
+    const types = { whole: 1, half: 2, quarter: 4, eighth: 8, "16th": 16,
+      "32nd": 32, "64th": 64, "128th": 128 };
+    const type = note.querySelector("type")?.textContent;
+    if (!type) return null;
+    duration = 4 / types[type];
+    const dots = note.querySelectorAll("dot").length;
+    duration *= 2 - 1 / 2 ** dots;
+    const actual = Number(note.querySelector("actual-notes")?.textContent || 1);
+    const normal = Number(note.querySelector("normal-notes")?.textContent || 1);
+    return duration * normal / actual;
+  }
+  const owner = note.hasAttribute("dur") ? note : note.closest("chord, tabGrp");
+  if (!owner) return null;
+  duration = 4 / Number(owner.getAttribute("dur"));
+  duration *= 2 - 1 / 2 ** Number(owner.getAttribute("dots") || 0);
+  for (let parent = note.parentElement; parent; parent = parent.parentElement) {
+    if (parent.localName === "tuplet")
+      duration *= Number(parent.getAttribute("numbase")) / Number(parent.getAttribute("num"));
+  }
+  return duration;
+}
+try {
+  const worker = new Worker("notation-worker.js", { type: "module" });
+  const fixtures = await (await fetch("manifest.json")).json();
+  let requestId = 0, checked = 0, pages = 0;
+  for (const fixture of fixtures) {
+    const musicxml = await (await fetch(fixture)).text();
+    const input = parse(musicxml);
+    const rendered = await new Promise((resolve, reject) => {
+      worker.onmessage = event => event.data.type === "error"
+        ? reject(Error(`${fixture}: ${event.data.message}`)) : resolve(event.data);
+      worker.onerror = event => reject(Error(event.message));
+      worker.postMessage({ requestId: ++requestId, musicxml, inspect: true, layout: "a4" });
+    });
+    const mei = parse(rendered.mei);
+    const byId = new Map([...mei.querySelectorAll("note")].map(note =>
+      [note.getAttribute("xml:id"), note]));
+    const svgIds = new Set();
+    for (const source of rendered.pages) {
+      const svg = parse(source);
+      require(svg.documentElement.localName === "svg", `${fixture}: missing SVG`);
+      svg.querySelectorAll("[id]").forEach(element => svgIds.add(element.id));
+      pages++;
+    }
+    for (const note of input.querySelectorAll("note[id]")) {
+      if (!note.querySelector("pitch")) continue;
+      const id = note.getAttribute("id");
+      const imported = byId.get(id);
+      require(imported && svgIds.has(id), `${fixture}: lost canonical ID ${id}`);
+      const tablature = note.closest("part").querySelector("clef > sign")?.textContent === "TAB";
+      if (tablature) {
+        const string = note.querySelector("technical > string")?.textContent;
+        const fret = note.querySelector("technical > fret")?.textContent;
+        if (string) require(imported.getAttribute("tab.course") === string &&
+          imported.getAttribute("tab.fret") === fret, `${fixture}/${id}: changed fingering`);
+        else continue; // The workstation explicitly warns about unresolved tab positions.
+      } else {
+        require(imported.getAttribute("pname") === note.querySelector("step").textContent.toLowerCase() &&
+          Number(imported.getAttribute("oct")) === Number(note.querySelector("octave").textContent),
+          `${fixture}/${id}: independent importer changed written pitch`);
+        const pitch = 12 * (Number(note.querySelector("octave").textContent) + 1) +
+          { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[note.querySelector("step").textContent] +
+          Number(note.querySelector("alter")?.textContent || 0);
+        const transpose = Number(note.closest("part").querySelector("transpose > chromatic")?.textContent || 0);
+        const staff = imported.closest("staff")?.getAttribute("n");
+        const definition = [...mei.querySelectorAll("staffDef")].find(item =>
+          item.getAttribute("n") === staff);
+        const importedTranspose = Number(definition?.getAttribute("trans.semi") || 0);
+        require(importedTranspose === transpose &&
+          rendered.midiValues[id]?.pitch + importedTranspose === pitch + transpose,
+          `${fixture}/${id}: independent importer changed pitch or transposition`);
+      }
+      const expected = rhythm(note, false);
+      if (expected !== null)
+        require(Math.abs(rhythm(imported, true) - expected) < 1e-7,
+          `${fixture}/${id}: independent importer changed duration ${rhythm(imported, true)} != ${expected}: ${note.outerHTML} -> ${imported.parentElement.outerHTML}`);
+      const voice = note.querySelector("voice")?.textContent || "1";
+      require(imported.closest("layer")?.getAttribute("n") === voice,
+        `${fixture}/${id}: independent importer changed voice`);
+      if (!tablature) {
+        for (const tie of note.querySelectorAll("tie")) {
+          const endpoint = tie.getAttribute("type") === "start" ? "startid" : "endid";
+          require([...mei.querySelectorAll("tie")].some(item =>
+            item.getAttribute(endpoint) === `#${id}`), `${fixture}/${id}: lost tie endpoint`);
+        }
+      }
+      checked++;
+    }
+    for (const repeat of input.querySelectorAll("repeat")) {
+      const direction = repeat.getAttribute("direction");
+      const value = direction === "forward" ? "rptstart" : "rptend";
+      const location = direction === "forward" ? "left" : "right";
+      require([...mei.querySelectorAll("measure")].some(measure =>
+        measure.getAttribute(location)?.includes(value)), `${fixture}: lost repeat ${direction}`);
+    }
+    // Retain one real engraving for visual review without growing the test DOM.
+    document.getElementById("pages").innerHTML = rendered.pages[0];
+  }
+  worker.terminate();
+  const score = await (await fetch("paginated-score.json")).json();
+  const musicxml = await (await fetch("paginated-score.roundtrip.musicxml")).text();
+  const frame = document.getElementById("workstation");
+  const source = await (await fetch("workstation.html")).text();
+  const bootstrap = `<base href="${location.href}"><script>
+    window.__errors = [];
+    window.addEventListener("error", event => window.__errors.push(event.message));
+    window.addEventListener("unhandledrejection", event => window.__errors.push(String(event.reason)));
+    window.chrome = {webview: {postMessage() {}, addEventListener() {}}};
+  <\/script>`;
+  await new Promise(resolve => {
+    frame.onload = resolve;
+    frame.srcdoc = source.replace("<head>", "<head>" + bootstrap);
+  });
+  const studio = frame.contentWindow, doc = frame.contentDocument;
+  const send = (name, detail) => studio.dispatchEvent(new studio.CustomEvent(`transcribe:${name}`, { detail }));
+  const wait = async check => {
+    for (let attempt = 0; attempt < 400; ++attempt) {
+      if (check()) return;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    throw Error(`Workstation rendering timed out: ${doc.getElementById("engraving-status").textContent}`);
+  };
+  send("config", { verovio: true });
+  const notes = score.notes.map(note => ({ id: note.id, midi: note.sounding_midi_pitch,
+    start: note.measured_onset_seconds, duration: note.measured_offset_seconds - note.measured_onset_seconds }));
+  send("accepted-score", { musicxml, notes, score_revision: 7 });
+  await wait(() => doc.querySelectorAll(".engraving-page").length > 1 &&
+    doc.getElementById("engraving-status").textContent.startsWith("Accepted score revision 7"));
+  const last = notes.at(-1);
+  send("score-selection", { id: last.id });
+  await wait(() => doc.querySelector(".engraving-selected"));
+  require(doc.querySelector(".engraving-selected").id.endsWith(
+    [...new TextEncoder().encode(last.id)].map(byte => byte.toString(16).padStart(2, "0")).join("")),
+    "Selection did not mount the off-screen note page");
+  const layout = doc.getElementById("engraving-layout");
+  for (const value of ["compact", "letter", "a4", "compact"]) {
+    layout.value = value;
+    layout.dispatchEvent(new studio.Event("change"));
+  }
+  await wait(() => doc.getElementById("engraving-status").textContent.startsWith("Accepted score revision 7"));
+  send("edited", {});
+  require(doc.body.classList.contains("engraving-draft"), "Draft edit was mistaken for accepted engraving");
+  require(studio.__errors.length === 0, `Workstation errors: ${studio.__errors.join("; ")}`);
+  result.textContent = `${fixtures.length} MusicXML files imported; ${checked} pitched fragments checked for IDs, written/sounding pitch or fingering, symbolic duration and voices; ties and repeats preserved; ${pages} SVG pages rendered. Workstation pagination, off-screen selection, coalesced page-layout changes and draft separation passed with Verovio 6.3.0.`;
+  document.body.dataset.result = "passed";
+} catch (error) {
+  result.textContent = String(error.stack || error);
+  document.body.dataset.result = "failed";
+}
+</script>

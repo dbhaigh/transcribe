@@ -9,6 +9,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,116 @@ std::string render_musicxml(const transcribe::ScoreInterpretation& interpretatio
 }
 
 } // namespace
+
+TEST_CASE("evidence quantization uses passage support while sparse timing stays measured",
+          "[interpretation][rhythm]") {
+    transcribe::InterpretationOptions options;
+    options.tempo_bpm = 120;
+    options.meter = transcribe::MeterConstraint{4, 4, {}};
+    options.key_fifths = 0;
+    options.quantization_mode = transcribe::QuantizationMode::EvidenceAware;
+    std::vector<transcribe::CanonicalNoteEvent> events;
+    for (int i = 0; i < 8; ++i) {
+        events.push_back(note_event(60 + i, i * .5 + .005, (i + 1) * .5 + .005));
+    }
+    const auto score = transcribe::interpret_note_events(events, options).hypotheses.front();
+    for (std::size_t i = 0; i < score.notes.size(); ++i) {
+        const auto& note = score.notes[i];
+        REQUIRE(note.onset_quarters == Catch::Approx(i).margin(1e-9));
+        REQUIRE(note.duration_quarters == Catch::Approx(1));
+        REQUIRE(note.confidence >= options.minimum_rhythm_evidence);
+        REQUIRE(note.rhythm.symbolic);
+    }
+    events.resize(2);
+    const auto sparse = transcribe::interpret_note_events(events, options).hypotheses.front();
+    REQUIRE(sparse.notes[0].onset_quarters == Catch::Approx(.01));
+    REQUIRE_FALSE(sparse.notes[0].rhythm.symbolic);
+    REQUIRE(sparse.notes[0].confidence < options.minimum_rhythm_evidence);
+    REQUIRE(sparse.notes[0].onset_residual_seconds == Catch::Approx(0).margin(1e-9));
+}
+
+TEST_CASE("expressive and partial-strength timing do not masquerade as symbolic rhythms",
+          "[interpretation][rhythm]") {
+    transcribe::InterpretationOptions options;
+    options.tempo_bpm = 120;
+    options.meter = transcribe::MeterConstraint{4, 4, {}};
+    options.quantization_mode = transcribe::QuantizationMode::Expressive;
+    const std::vector<transcribe::CanonicalNoteEvent> events{
+        note_event(60, .013, .489), note_event(64, .026, .807)};
+    const auto expressive = transcribe::interpret_note_events(events, options).hypotheses.front();
+    REQUIRE(expressive.notes[0].onset_quarters == Catch::Approx(.026));
+    REQUIRE(expressive.notes[0].duration_quarters == Catch::Approx(.952));
+    REQUIRE(expressive.notes[1].onset_quarters == Catch::Approx(.052));
+    REQUIRE(expressive.notes[0].voice != expressive.notes[1].voice);
+    REQUIRE_FALSE(expressive.notes[0].rhythm.symbolic);
+    REQUIRE_FALSE(expressive.notes[0].chord_group);
+    options.quantization_mode = transcribe::QuantizationMode::Legacy;
+    options.quantization_strength = .5;
+    const auto partial = transcribe::interpret_note_events(events, options).hypotheses.front();
+    REQUIRE(partial.notes[0].onset_quarters == Catch::Approx(.013));
+    REQUIRE(partial.notes[0].duration_quarters == Catch::Approx(.976));
+    REQUIRE_FALSE(partial.notes[0].rhythm.symbolic);
+    options.quantization_strength = 0;
+    const auto zero = transcribe::interpret_note_events(events, options).hypotheses.front();
+    REQUIRE(zero.notes[0].onset_quarters == expressive.notes[0].onset_quarters);
+    options.quantization_strength = std::numeric_limits<double>::quiet_NaN();
+    REQUIRE_THROWS_AS(transcribe::interpret_note_events(events, options), std::invalid_argument);
+    REQUIRE_THROWS_AS(transcribe::parse_quantization_mode("unknown"), std::invalid_argument);
+}
+
+TEST_CASE("unequal simultaneous releases use separate voices and rests never change gap length",
+          "[interpretation][rhythm]") {
+    transcribe::InterpretationOptions options;
+    options.tempo_bpm = 120;
+    options.meter = transcribe::MeterConstraint{4, 4, {}};
+    options.quantization_mode = transcribe::QuantizationMode::Expressive;
+    const std::vector<transcribe::CanonicalNoteEvent> events{
+        note_event(48, 0, 2), note_event(60, 0, .5), note_event(62, .511, 1)};
+    const auto score = transcribe::interpret_note_events(events, options).hypotheses.front();
+    REQUIRE(score.notes[0].voice != score.notes[1].voice);
+    REQUIRE(score.notes[1].voice == score.notes[2].voice);
+    const auto gap = std::find_if(score.rests.begin(), score.rests.end(),
+        [&](const auto& rest) { return rest.voice == score.notes[1].voice &&
+                                      std::abs(rest.onset_quarters - 1) < 1e-9; });
+    REQUIRE(gap != score.rests.end());
+    REQUIRE(gap->duration_quarters == Catch::Approx(.022));
+    REQUIRE_FALSE(gap->rhythm.symbolic);
+}
+
+TEST_CASE("rhythmic subdivision changes do not invent tempo doubling",
+          "[interpretation][rhythm]") {
+    std::vector<transcribe::CanonicalNoteEvent> events;
+    for (const double onset : {0., .5, 1., 1.5, 2., 2.25, 2.5, 2.75, 3., 3.25, 3.5, 3.75, 4.}) {
+        events.push_back(note_event(60, onset, onset + .2));
+    }
+    transcribe::InterpretationOptions options;
+    options.quantization_mode = transcribe::QuantizationMode::EvidenceAware;
+    const auto score = transcribe::interpret_note_events(events, options).hypotheses.front();
+    REQUIRE(score.tempo_map.size() == 1);
+}
+
+TEST_CASE("explicit key signatures retain extreme enharmonics and override local inference",
+          "[interpretation][spelling]") {
+    transcribe::InterpretationOptions options;
+    options.tempo_bpm = 120;
+    options.key_fifths = 7;
+    auto events = beat_fixture(4, 4, .5);
+    events[0].midi_pitch = 60;
+    events[1].midi_pitch = 65;
+    const auto sharp = transcribe::interpret_note_events(events, options).hypotheses.front();
+    REQUIRE(sharp.local_tonal_context.empty());
+    REQUIRE(sharp.notes[0].spelling_step == "B");
+    REQUIRE(sharp.notes[0].spelling_alter == 1);
+    REQUIRE(sharp.notes[0].spelling_octave == 3);
+    REQUIRE(sharp.notes[1].spelling_step == "E");
+    REQUIRE(sharp.notes[1].spelling_alter == 1);
+    options.key_fifths = -7;
+    const std::vector<transcribe::CanonicalNoteEvent> flat_events{note_event(59, 0, .5)};
+    const auto flat = transcribe::interpret_note_events(flat_events, options).hypotheses.front();
+    REQUIRE(flat.notes[0].spelling_step == "C");
+    REQUIRE(flat.notes[0].spelling_alter == -1);
+    REQUIRE(flat.notes[0].spelling_octave == 4);
+}
 
 TEST_CASE("interpretation preserves raw timing and honors user constraints", "[interpretation]") {
     auto events = beat_fixture(6, 8, 0.3, 8);

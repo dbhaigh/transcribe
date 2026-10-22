@@ -1,5 +1,23 @@
 # Model inference contract
 
+The [engine layer](engines.md) composes this interface with versioned engine
+configuration, capability selection, common result updates and optional live
+input. `ModelBackend` remains the lower-level inference adapter; its existing
+public contracts remain backward-compatible.
+
+For explicit neural speed/quality selection, per-head geometry, pinned acquisition,
+validation-only confidence calibration and measured note-event results, see
+[Neural transcription strategy](neural-strategy.md).
+
+For opt-in bounded WAV windows, per-instance result caching, cancellation and
+explicit non-streaming limitations, see [Long recording pipelines](streaming.md).
+
+For the current frame-by-pitch representation, explicit objective declarations,
+aligned Basic Pitch onset/contour processing, and real-data benchmark tradeoffs,
+see [Polyphonic activation and model adapters](polyphonic.md).
+The inspection and measurements below describe the original adapter baseline
+unless explicitly stated otherwise.
+
 ## Existing implementation (inspected before refactoring)
 
 The legacy entry points are `transcribe_monophonic` and `transcribe_with_onnx`
@@ -24,9 +42,11 @@ The file's three float32 outputs are `StatefulPartitionedCall:2`
 `[symbolic_batch,172,264]`. The adapter consumes the note head named
 `StatefulPartitionedCall:1`, which must return `[1,172,88]` at runtime,
 representing MIDI 21-108 at 256-sample frame steps.
-The engine currently adapts only MIDI **28-96**. It ignores the onset and contour
-heads: it cannot claim contour-based fractional MIDI, instrument identity,
-velocity, calibrated confidence, or onset-head temporal decoding.
+The engine adapts only MIDI **28-96**. The baseline did not use onset or contour
+heads. The current canonical decoder retains/uses onset and note state, and
+`OnnxOptions::aligned_model_heads` additionally enables jointly aligned contour
+evidence and corrects multi-window time drift. This still does not supply
+instrument identity, velocity or calibrated correctness confidence.
 
 The adapter prepends 3840 zero samples, advances windows by 36164 samples,
 discards 15 frames at each edge, retains 142 frames per window and trims the
@@ -101,6 +121,10 @@ aggregate layouts change.
   activation semantics and offline/incremental support. Capability bounds are
   not an accuracy guarantee. Spectral/ONNX allow up to 69 pitch candidates;
   existing default requests still select at most six.
+  Current metadata also declares objective, edge trimming, temporal alignment
+  and head semantics. `LegacyPitchV1` no longer advertises polyphony solely from
+  tensor dimensions: a definition or request must explicitly declare an
+  independent multi-pitch objective before a polyphonic request is accepted.
 - `load(options)` selects the provider, device and built-in preview variant.
   Loading replaces/releases the old session first; failure leaves the instance
   unloaded, not secretly using the previous model. Loading is synchronous.
@@ -109,6 +133,9 @@ aggregate layouts change.
   Model ID selects the built-in algorithm; YIN explicitly rejects a polyphonic
   request. Preview is selected at load, not silently switched per request.
   ONNX request provider/device must match the loaded session.
+  Retained aligned fixed-pitch evidence additionally supplies an optional
+  `PitchActivationGrid`; unknown objective semantics are never inferred from
+  its number of columns.
 - `release()` is idempotent and destroys that instance's session. New instances
   bypass the legacy global session cache; they do not retain sessions by path.
   A file replaced on disk is observed when loaded again. The legacy entry

@@ -24,6 +24,8 @@ struct EventEvidence {
     EvidenceSemantics strength_semantics{EvidenceSemantics::Unspecified};
     EvidenceSemantics raw_value_semantics{EvidenceSemantics::Unspecified};
     std::optional<double> spectral_peak_fraction;
+    std::optional<double> onset_strength{};
+    std::optional<double> note_state{};
 };
 
 struct CanonicalNoteEvent {
@@ -58,7 +60,46 @@ struct TemporalDecodingOptions {
     double spectral_peak_fraction{0.02};
     bool refine_with_audio{true};
     bool correct_isolated_octaves{false};
+    double pitch_stability_seconds{0.05};
+    double pitch_tolerance_semitones{0.75};
+    double onset_threshold{0.5};
+    double minimum_onset_spacing_seconds{0.07};
+    double onset_energy_rise{0.25};
+    bool use_model_onsets{true};
+    double onset_state_drop{0.15};
 };
+
+struct PitchActivitySegment {
+    int midi_pitch{-1};
+    std::vector<std::size_t> frame_indices;
+    double onset_seconds{};
+    double offset_seconds{};
+    bool onset_from_attack{};
+    bool offset_from_attack{};
+};
+
+void validate_temporal_decoding_options(const TemporalDecodingOptions& options);
+
+std::vector<int> stabilize_pitch_activity(
+    const FrameEvidenceTrack& track, const TemporalDecodingOptions& options);
+
+std::vector<PitchActivitySegment> detect_pitch_activity_regions(
+    const FrameEvidenceTrack& track, const TemporalDecodingOptions& options);
+
+// Onsets use window-center times; translate detect_onset_evidence's window starts first.
+std::vector<PitchActivitySegment> segment_pitch_activity(
+    const FrameEvidenceTrack& track, const TemporalDecodingOptions& options,
+    std::span<const OnsetEvidence> onsets = {});
+
+struct EventDiagnostics {
+    double activity_duration_seconds{};
+    std::optional<double> pitch_stability;
+    std::optional<double> onset_strength;
+    std::optional<double> maximum_note_state;
+};
+
+EventDiagnostics summarize_event_evidence(const CanonicalNoteEvent& event, double hop_seconds,
+                                         double window_seconds = 0);
 
 struct DecodedTranscription {
     std::vector<CanonicalNoteEvent> events;

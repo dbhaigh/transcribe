@@ -1,6 +1,8 @@
 """Check that pinned dependencies and bundled license evidence stay aligned."""
 
 import sys
+import hashlib
+import json
 from pathlib import Path
 
 
@@ -56,6 +58,22 @@ def main():
         "Basic Pitch license text",
     )
     require("Version 2.0" in model_license, "Basic Pitch license text is not Apache-2.0")
+    provenance = json.loads((root / "python" / "models" / "basic_pitch.provenance.json").read_text())
+    require(provenance["schema_version"] == 1 and provenance["license"] == "Apache-2.0",
+            "Unsupported model provenance or license")
+    require(provenance["source_commit"] in model_readme,
+            "Model catalog and machine-readable provenance disagree")
+    model = root / "python" / "models" / provenance["file"]
+    require(hashlib.sha256(model.read_bytes()).hexdigest() == provenance["sha256"],
+            "Bundled model checksum differs from the reviewed provenance")
+    require(model.stat().st_size == provenance["size_bytes"] and
+            provenance["download_url"] ==
+            f"https://raw.githubusercontent.com/spotify/basic-pitch/{provenance['source_commit']}/"
+            "basic_pitch/saved_models/icassp_2022/nmp.onnx",
+            "Model acquisition URL/size is not pinned to the reviewed source")
+    require(provenance["license_file"] == "LICENSE-basic-pitch.txt" and
+            "training data" in provenance["evaluation_warning"],
+            "Model license/leakage evidence is incomplete")
 
     for name in ("COPYING", "COPYING.LESSER", "NOTICE.txt"):
         require((root / "third_party" / "verovio" / name).is_file(),

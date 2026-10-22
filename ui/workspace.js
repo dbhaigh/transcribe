@@ -110,4 +110,69 @@
   $("theme-toggle").addEventListener("click", () => {
     setTheme(document.body.dataset.theme === "light" ? "dark" : "light");
   });
+
+  const help = {
+    "instrument-prior": "Limits or biases candidate notes where supported. It does not separate instruments in a mix or prove which instrument played a note.",
+    "quality-mode": "Full analysis and Fast preview use existing backend configurations. Fast preview trades analysis work for speed and may miss notes. A selected ONNX model keeps its own analysis contract.",
+    "model-path": "Optional local ONNX model. No weights are downloaded automatically. The model must match a supported adapter; this build reports unavailable integrations explicitly.",
+    "guitar-tuning": "Open-string sounding pitches, ordered from string 1 (highest) down. Tuning constrains suggested fingerings; audio cannot usually establish the performed string.",
+    "capo-fret": "The capo raises every open string. Exported fret positions are relative to the capo; sounding pitch remains authoritative.",
+    "quantization-mode": "Legacy uses the existing grid. Evidence-aware uses timing support. Preserve measured timing avoids forcing ambiguous attacks onto a grid; notation may be less conventional.",
+    "quantization-strength": "0 retains measured timing; 1 applies the supported grid fully where the selected rhythm mode permits. This does not change the source audio.",
+    "tempo-control": "Beats per minute. Auto infers tempo when evidence permits; otherwise a documented default is used. Editing accepted tempo preserves musical positions, so projected seconds can change.",
+    "meter-control": "Beats grouped per measure (for example 6/8). Auto is inferred, not guaranteed. An explicit value overrides inference and affects bar boundaries.",
+    "detected-confidence": "Only a validated calibration may be called a correctness probability. Raw activity, onset and stability scores are heuristic evidence, not percentages of certainty.",
+  };
+  Object.entries(help).forEach(([id, text]) => {
+    const control = $(id);
+    const label = document.querySelector(`label[for="${id}"]`) ||
+      (id === "detected-confidence" ? control.previousElementSibling : null);
+    if (!label) return;
+    const description = document.createElement("p");
+    description.id = `${id}-help`;
+    description.className = "context-help";
+    description.hidden = true;
+    description.textContent = text;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "help-tip";
+    button.textContent = "?";
+    button.title = text;
+    button.setAttribute("aria-label", `Explain ${label.textContent.trim()}`);
+    button.setAttribute("aria-controls", description.id);
+    button.setAttribute("aria-expanded", "false");
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      description.hidden = !description.hidden;
+      button.setAttribute("aria-expanded", String(!description.hidden));
+    });
+    label.append(button);
+    // Keep disclosure text outside form labels and compact transport rows.
+    const container = id === "tempo-control" || id === "meter-control"
+      ? control.closest(".transport-input") : label.parentElement;
+    container.append(description);
+    control.setAttribute("aria-describedby", description.id);
+    control.title = text;
+  });
+
+  $("help-button").addEventListener("click", () => $("help-dialog").showModal());
+  $("close-help").addEventListener("click", () => $("help-dialog").close());
+  $("hide-guide").addEventListener("click", () => {
+    $("journey-guide").hidden = true;
+    localStorage.setItem("transcribe.guide.hidden", "true");
+  });
+  $("show-guide").addEventListener("click", () => {
+    $("journey-guide").hidden = false;
+    localStorage.setItem("transcribe.guide.hidden", "false");
+    $("help-dialog").close();
+    $("journey-guide").scrollIntoView({ block: "nearest" });
+    $("hide-guide").focus();
+  });
+  $("journey-guide").hidden = localStorage.getItem("transcribe.guide.hidden") === "true";
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "F1") {
+      event.preventDefault();
+      if (!document.querySelector("dialog[open]")) $("help-dialog").showModal();
+    }
+  });
 })();

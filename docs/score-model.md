@@ -32,6 +32,10 @@ probability. User-authored values carry provenance and a revision.
 
 `ScoreTabNote` has its own stable ID and a `notation_note_id` relationship.
 String/fret assignments are checked against sounding pitch, tuning, and capo.
+Instrument tuning supports 1-12 strings in string-number order, including
+reentrant tunings. Optional `physical_fret_count` constrains capo plus relative
+fret; it is serialized as a nullable additive schema-1 field. Older schema-1
+projects without the field retain the previous unknown-neck-length behavior.
 Unknown assignments remain unassigned. Tablature positions are suggestions,
 not evidence of the exact fingering used in the recording.
 
@@ -63,25 +67,25 @@ evidence that was not present in the old project.
 The CLI option `--score-project <path>` writes this canonical project. The
 existing `--json` output remains the compatibility-oriented raw detection
 report; use the score project when editable musical interpretation and
-notation/tab relationships are required. The C++ deserialize API supports
-project loading, but the current GUI does not yet provide a project-open/save
-workflow.
+notation/tab relationships are required. The GUI also exposes project
+open/save and recovery through the shared project/score representation.
 
 ## Views and exports
 
 The score-aware MusicXML and MIDI overloads validate and export a
 `ScoreDocument`. MusicXML uses written pitch for notation and uses the linked
-tab assignment (or an inferred position where the assignment is unknown);
+tab assignment, preserving explicitly unknown positions as unresolved;
 MIDI uses sounding pitch and score-quarter timing. The score-aware ASCII tab
 writer uses the document's string/fret assignments and instrument tuning.
 CLI and GUI export paths use these score-aware writers, so accepted edits are
 not replaced by a fresh detection pass at export time.
 
 The GUI retains re-analysis as a separate proposal when a score is already
-accepted. A proposal preview does not replace the accepted revision or its
-exports. The current interface does not yet offer an explicit proposal
-acceptance or project-reopen workflow; callers can compare proposals and apply
-approved changes through score transactions.
+accepted, including an empty score. A proposal preview does not replace the
+accepted revision or its exports. The GUI supports explicit proposal acceptance,
+project open/save and pending-edit snapshots; proposal acceptance asks before
+discarding unexported edits. See [Editing and playback](editing-playback.md)
+for timebase mappings, transaction/history behavior, playback clocks and limits.
 
 ## Validation
 

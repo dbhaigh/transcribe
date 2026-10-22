@@ -1,6 +1,7 @@
 #include "transcribe/audio.hpp"
 #include "transcribe/guitar_tab.hpp"
 #include "transcribe/musicxml.hpp"
+#include "transcribe/output.hpp"
 #include "transcribe/transcriber.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -18,6 +19,12 @@
 #include <numbers>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -72,6 +79,49 @@ void create_pcm16_wav(const std::filesystem::path& path, double frequency,
 }
 
 } // namespace
+
+TEST_CASE("atomic exports replace complete binary files and clean up failed replacements",
+          "[export][persistence]") {
+    TemporaryDirectory temporary;
+    const auto path = temporary.path / "export.bin";
+    transcribe::write_output_atomic(path, "previous");
+    const std::string binary("MThd\0\1\2", 7);
+    transcribe::write_output_atomic(path, binary);
+    std::ifstream input(path, std::ios::binary);
+    REQUIRE(std::string(std::istreambuf_iterator<char>(input), {}) == binary);
+    input.close();
+    const auto blocked = temporary.path / "directory";
+    std::filesystem::create_directory(blocked);
+    transcribe::write_output_atomic(blocked / "preserved", "untouched");
+    REQUIRE_THROWS(transcribe::write_output_atomic(blocked, "replacement"));
+    REQUIRE(std::filesystem::is_regular_file(blocked / "preserved"));
+    REQUIRE_THROWS(transcribe::write_output_atomic({}, "invalid"));
+    REQUIRE_THROWS(transcribe::write_output_atomic(temporary.path / "missing" / "out", "invalid"));
+    std::size_t entries = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(temporary.path)) {
+        REQUIRE(entry.path().filename().string().find(".tmp-") == std::string::npos);
+        ++entries;
+    }
+    REQUIRE(entries == 2);
+#ifdef _WIN32
+    const auto handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(handle != INVALID_HANDLE_VALUE);
+    bool rejected = false;
+    try {
+        transcribe::write_output_atomic(path, "must not replace a locked file");
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    CloseHandle(handle);
+    REQUIRE(rejected);
+    std::ifstream preserved(path, std::ios::binary);
+    REQUIRE(std::string(std::istreambuf_iterator<char>(preserved), {}) == binary);
+    for (const auto& entry : std::filesystem::directory_iterator(temporary.path)) {
+        REQUIRE(entry.path().filename().string().find(".tmp-") == std::string::npos);
+    }
+#endif
+}
 
 TEST_CASE("batched YIN agrees exactly with scalar lag accumulation", "[performance]") {
     const auto reference = [](std::span<const float> samples, std::uint32_t rate) {
@@ -556,6 +606,8 @@ TEST_CASE("audio preview builds bounded waveform and log-frequency spectrogram d
     REQUIRE(preview.columns > 0);
     REQUIRE(preview.columns <= 32);
     REQUIRE(preview.frequency_bands == 24);
+    REQUIRE(preview.minimum_frequency_hz == 55.0);
+    REQUIRE(preview.maximum_frequency_hz == sample_rate * 0.5);
     REQUIRE(preview.waveform.size() == preview.columns);
     REQUIRE(preview.spectrogram.size() == preview.columns * 24);
     REQUIRE(*std::max_element(preview.waveform.begin(), preview.waveform.end()) > 0.5f);

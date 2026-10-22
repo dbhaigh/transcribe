@@ -2,6 +2,7 @@
 #include "transcribe/audio.hpp"
 #include "transcribe/inference.hpp"
 #include "transcribe/live.hpp"
+#include "../src/asio_transport.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -54,6 +55,7 @@ const char* kind_name(LiveEventKind kind) {
     case LiveEventKind::NoteOn: return "note_on";
     case LiveEventKind::NoteStabilized: return "note_stabilized";
     case LiveEventKind::NoteOff: return "note_off";
+    case LiveEventKind::NoteFinalized: return "note_finalized";
     case LiveEventKind::NoteCorrected: return "note_corrected";
     case LiveEventKind::NoteRetracted: return "note_retracted";
     case LiveEventKind::AnalysisGap: return "analysis_gap";
@@ -78,9 +80,10 @@ void write_latency(std::ostream& output, const LatencySummary& summary) {
     output << "{\"count\":" << summary.count;
     if (summary.count) {
         output << ",\"mean\":" << summary.mean_seconds << ",\"p50\":" << summary.p50_seconds
-               << ",\"p95\":" << summary.p95_seconds << ",\"maximum\":" << summary.maximum_seconds;
+               << ",\"p95\":" << summary.p95_seconds << ",\"p99\":" << summary.p99_seconds
+               << ",\"maximum\":" << summary.maximum_seconds;
     } else {
-        output << ",\"mean\":null,\"p50\":null,\"p95\":null,\"maximum\":null";
+        output << ",\"mean\":null,\"p50\":null,\"p95\":null,\"p99\":null,\"maximum\":null";
     }
     output << '}';
 }
@@ -139,6 +142,7 @@ int main(int argc, char** argv) {
                 " [--model path] [--pace realtime|none] [--policy lossless|skip]"
                 " [--block-frames N] [--window-seconds S] [--hop-seconds S]"
                 " [--refine-backend yin|spectral|onnx|none] [--refine-mode auto|full|windowed]"
+                " [--callback-replay 0|1] [--analysis-delay-ms 0-1000]"
                 " [--max-lag-seconds S]");
         }
         const std::filesystem::path input = argv[1];
@@ -151,6 +155,8 @@ int main(int argc, char** argv) {
         std::filesystem::path model_path;
         std::size_t block_frames = 256;
         bool dump_events = false;
+        bool callback_replay = false;
+        double analysis_delay_ms = 0;
         LiveOptions options;
         for (int i = 3; i < argc; ++i) {
             const std::string flag = argv[i];
@@ -163,6 +169,13 @@ int main(int argc, char** argv) {
             else if (flag == "--refine-backend") refine_backend = value;
             else if (flag == "--refine-mode") refine_mode = value;
             else if (flag == "--dump-events") dump_events = number(value) != 0;
+            else if (flag == "--callback-replay") callback_replay = number(value) != 0;
+            else if (flag == "--analysis-delay-ms") {
+                analysis_delay_ms = number(value);
+                if (analysis_delay_ms < 0 || analysis_delay_ms > 1000) {
+                    throw std::invalid_argument("Analysis delay must be 0-1000 ms");
+                }
+            }
             else if (flag == "--block-frames") {
                 const double frames = number(value);
                 if (frames < 1 || frames > 1 << 20 || frames != std::floor(frames)) {
@@ -171,6 +184,15 @@ int main(int argc, char** argv) {
                 block_frames = static_cast<std::size_t>(frames);
             } else if (flag == "--window-seconds") options.window.window_seconds = number(value);
             else if (flag == "--hop-seconds") options.window.hop_seconds = number(value);
+            else if (flag == "--target-ms") options.target_provisional_seconds = number(value) / 1000;
+            else if (flag == "--stabilized-target-ms") options.target_stabilized_seconds = number(value) / 1000;
+            else if (flag == "--neural-decoder") {
+                if (value != "speed" && value != "quality")
+                    throw std::invalid_argument("Neural decoder must be speed or quality");
+                options.window.request.onnx.note_decoder = value == "quality" ?
+                    NeuralNoteDecoder::MultiHeadEvents : NeuralNoteDecoder::Legacy;
+                options.window.temporal_decoding = value != "quality";
+            }
             else if (flag == "--max-lag-seconds") options.max_analysis_lag_seconds = number(value);
             else throw std::invalid_argument("Unknown option: " + flag);
         }
@@ -188,20 +210,31 @@ int main(int argc, char** argv) {
         if (refine_mode == "auto") refine_mode = refine_backend == "onnx" ? "windowed" : "full";
         if (pace != "realtime" && pace != "none") throw std::invalid_argument("Unknown pace: " + pace);
         if (policy != "lossless" && policy != "skip") throw std::invalid_argument("Unknown policy: " + policy);
+        if (callback_replay && policy != "skip") {
+            throw std::invalid_argument("Callback replay requires --policy skip (no producer blocking/retry)");
+        }
         if ((backend == "onnx" || refine_backend == "onnx") && model_path.empty()) {
             throw std::invalid_argument("The onnx backend requires --model");
         }
+        if (options.window.request.onnx.note_decoder == NeuralNoteDecoder::MultiHeadEvents && backend != "onnx")
+            throw std::invalid_argument("Neural quality mode requires the ONNX backend");
 
-        const auto audio = read_audio(input);
+        const auto info = inspect_wav(input);
+        const AudioBuffer audio{info.sample_rate, {}};
         if (audio.sample_rate == 0) throw std::runtime_error("Input has no sample rate");
-        const double duration = static_cast<double>(audio.samples.size()) / audio.sample_rate;
+        const double duration = static_cast<double>(info.frames) / audio.sample_rate;
         block_frames = std::min(block_frames, options.max_block_frames);
         options.format = {audio.sample_rate, 1};
         options.lag_policy = policy == "lossless" ? LagPolicy::Lossless : LagPolicy::SkipAhead;
         options.audio_source_id = "file:" + input.filename().string();
-        options.max_recording_seconds = std::max(options.max_recording_seconds, duration + 1.0);
+        options.max_recording_seconds = refine_backend == "none" ? 0 : options.max_recording_seconds;
+        if (refine_backend != "none" && duration > options.max_recording_seconds)
+            throw std::invalid_argument("Refinement exceeds bounded recording retention");
         options.window.request.onnx.polyphonic = true;
         options.window.request.onnx.independent_probabilities = true;
+        if (analysis_delay_ms) options.analysis_hook = [analysis_delay_ms](std::uint64_t) {
+            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(analysis_delay_ms));
+        };
         std::unique_ptr<ModelBackend> model;
         if (backend != "yin") {
             options.backend = LiveBackendKind::OverlappingWindow;
@@ -213,7 +246,14 @@ int main(int argc, char** argv) {
         if (const auto* failure = std::get_if<InferenceError>(&started)) {
             throw std::runtime_error("Live session failed to start: " + failure->message);
         }
+        session.begin_input(0);
         TranscriptionDocument document(audio.sample_rate);
+        transcribe::detail::LiveCaptureTransport transport;
+        transport.session = &session;
+        transport.format = options.format;
+        transport.capacity = info.frames;
+        std::vector<double> callback_times;
+        callback_times.reserve((info.frames + block_frames - 1) / block_frames);
         std::map<std::string, std::size_t> kinds;
         std::vector<LiveEvent> log;
         std::uint64_t retries = 0, dropped_blocks = 0, resyncs = 0;
@@ -234,13 +274,15 @@ int main(int argc, char** argv) {
             document.apply(batch);
             if (document.requires_resync()) {
                 ++resyncs;
-                document.resync(session.snapshot());
+                document.resync(batch.resync_snapshot);
             }
         };
 
         const auto wall_start = Clock::now();
-        for (std::size_t offset = 0; offset < audio.samples.size(); offset += block_frames) {
-            const auto count = std::min(block_frames, audio.samples.size() - offset);
+        std::uint64_t sequence = 0;
+        read_wav_blocks(input, block_frames, [&](const AudioBlockView& source) {
+            const auto offset = source.first_frame;
+            const auto count = source.samples.size();
             if (pace == "realtime") {
                 // Deliver each block when its last frame would have been captured.
                 const auto due = wall_start + std::chrono::duration_cast<Clock::duration>(
@@ -248,9 +290,18 @@ int main(int argc, char** argv) {
                 std::this_thread::sleep_until(due);
             }
             const AudioFrameBlock block{options.format, offset,
-                std::span<const float>(audio.samples).subspan(offset, count),
-                std::chrono::duration_cast<Nanoseconds>(Clock::now().time_since_epoch()), false};
-            auto status = session.push(block);
+                source.samples,
+                pace == "realtime" ? std::chrono::duration_cast<Nanoseconds>(
+                    Clock::now().time_since_epoch()) : Nanoseconds{}, false, sequence++};
+            PushStatus status;
+            if (callback_replay) {
+                const auto before = Clock::now();
+                const auto refused = transport.refused.load();
+                transport.receive(block.interleaved.data(), count, false, block.capture_time);
+                callback_times.push_back(std::chrono::duration<double>(Clock::now() - before).count());
+                status = transport.rejected.load() ? PushStatus::Closed :
+                    transport.refused.load() != refused ? PushStatus::QueueFull : PushStatus::Accepted;
+            } else status = session.push(block);
             while (status == PushStatus::QueueFull && policy == "lossless") {
                 ++retries;
                 std::this_thread::sleep_for(std::chrono::microseconds(200));
@@ -261,7 +312,8 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Live session rejected audio block");
             }
             consume(wall_start);
-        }
+        });
+        session.end_input(info.frames);
         session.finish();
         consume(wall_start);
         const double live_wall = std::chrono::duration<double>(Clock::now() - wall_start).count();
@@ -304,8 +356,12 @@ int main(int argc, char** argv) {
                << json_string(backend == "yin" ? "incremental_yin" : "overlapping_window")
                << ",\"pace\":" << json_string(pace) << ",\"policy\":" << json_string(policy)
                << ",\"block_frames\":" << block_frames
+               << ",\"callback_replay\":" << (callback_replay ? "true" : "false")
+               << ",\"injected_analysis_delay_ms\":" << analysis_delay_ms
                << ",\"window_seconds\":" << options.window.window_seconds
                << ",\"hop_seconds\":" << options.window.hop_seconds
+               << ",\"neural_decoder\":" << json_string(
+                    options.window.request.onnx.note_decoder == NeuralNoteDecoder::MultiHeadEvents ? "quality" : "speed")
                << ",\"max_analysis_lag_seconds\":" << options.max_analysis_lag_seconds
                << ",\"input_queue_blocks\":" << options.input_queue_blocks
                << ",\"state\":" << json_string(state_name(session.state()))
@@ -332,9 +388,48 @@ int main(int argc, char** argv) {
         write_latency(output, metrics.stabilization_delay);
         output << ",\"algorithmic_latency\":";
         write_latency(output, metrics.algorithmic_latency);
+        output << ",\"analysis_queue_latency\":";
+        write_latency(output, metrics.analysis_queue_latency);
+        output << ",\"confirmation_latency\":";
+        write_latency(output, metrics.confirmation_latency);
+        output << ",\"publication_queue_latency\":";
+        write_latency(output, metrics.publication_queue_latency);
+        output << ",\"overloaded\":" << (metrics.overloaded ? "true" : "false");
+        const auto budget = latency_budget(options, block_frames);
+        output << ",\"latency_budget\":{\"capture_block_seconds\":" << budget.capture_block_seconds
+               << ",\"ingest_poll_seconds\":" << budget.ingest_poll_seconds
+               << ",\"analysis_context_seconds\":" << budget.analysis_context_seconds
+               << ",\"update_wait_seconds\":" << budget.update_wait_seconds
+               << ",\"stabilization_seconds\":" << budget.stabilization_seconds
+               << ",\"provisional_estimate_seconds\":" << budget.provisional_estimate_seconds
+               << ",\"stabilized_estimate_seconds\":" << budget.stabilized_estimate_seconds << '}'
+               << ",\"provisional_target_seconds\":" << options.target_provisional_seconds
+               << ",\"stabilized_target_seconds\":" << options.target_stabilized_seconds
+               << ",\"provisional_target_misses\":" << metrics.provisional_target_misses
+               << ",\"stabilized_target_misses\":" << metrics.stabilized_target_misses
+               << ",\"input_queue_depth\":" << metrics.input_queue_depth
+               << ",\"event_queue_depth\":" << metrics.event_queue_depth
+               << ",\"processing_lag_frames\":" << metrics.current_lag_frames;
+        output << ",\"callback_execution\":";
+        LatencySummary callback_summary;
+        if (!callback_times.empty()) {
+            std::sort(callback_times.begin(), callback_times.end());
+            callback_summary.count = callback_times.size();
+            for (const auto value : callback_times) callback_summary.mean_seconds += value;
+            callback_summary.mean_seconds /= callback_times.size();
+            callback_summary.maximum_seconds = callback_times.back();
+            callback_summary.p50_seconds = callback_times[(callback_times.size() - 1) / 2];
+            callback_summary.p95_seconds = callback_times[
+                static_cast<std::size_t>(std::ceil(callback_times.size() * .95)) - 1];
+            callback_summary.p99_seconds = callback_times[
+                static_cast<std::size_t>(std::ceil(callback_times.size() * .99)) - 1];
+        }
+        write_latency(output, callback_summary);
         output << ",\"frames_received\":" << metrics.frames_received
                << ",\"blocks_refused\":" << metrics.blocks_refused
                << ",\"gap_frames\":" << metrics.gap_frames
+               << ",\"frames_refused\":" << metrics.frames_refused
+               << ",\"sequence_gaps\":" << metrics.sequence_gaps
                << ",\"input_queue_capacity\":" << metrics.input_queue_capacity
                << ",\"input_queue_high_water\":" << metrics.input_queue_high_water
                << ",\"event_queue_capacity\":" << metrics.event_queue_capacity

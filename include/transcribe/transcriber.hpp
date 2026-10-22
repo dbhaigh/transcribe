@@ -53,6 +53,11 @@ struct RealtimeOptions {
     std::size_t offset_stability_frames{3};
 };
 
+struct RealtimeSnapshot {
+    std::vector<Note> notes;
+    std::vector<NoteEvent> events;
+};
+
 class RealtimeTranscriber {
 public:
     explicit RealtimeTranscriber(const RealtimeOptions& options = {});
@@ -64,6 +69,8 @@ public:
     void finish();
     std::vector<Note> live_notes() const;
     std::vector<NoteEvent> take_events();
+    // Notes and drained events copied under one lock on the non-audio thread.
+    RealtimeSnapshot take_snapshot();
 
 private:
     struct Impl;
@@ -74,6 +81,7 @@ struct PitchEstimate {
     int midi_pitch{-1};
     double confidence{};
     double voicing_probability{};
+    std::optional<double> fractional_midi;
 };
 
 struct PitchFrame {
@@ -82,6 +90,7 @@ struct PitchFrame {
     double confidence{};
     double voicing_probability{};
     double amplitude{};
+    std::optional<double> fractional_midi{};
 };
 
 struct FrameEvidenceTrack {
@@ -97,7 +106,27 @@ struct FrameEvidenceTrack {
     int raw_midi_pitch{-1};
     EvidenceSemantics selected_strength_semantics{EvidenceSemantics::Unspecified};
     EvidenceSemantics raw_value_semantics{EvidenceSemantics::Unspecified};
+    std::vector<double> onset_strengths{};
+    std::vector<double> note_states{};
+    std::vector<double> contour_midi{};
 };
+
+struct OnsetDetectionOptions {
+    double minimum_strength{0.08};
+    double deviation_multiplier{2.5};
+    double minimum_spacing_seconds{0.07};
+};
+
+struct OnsetEvidence {
+    double time_seconds{}; // Analysis-window start, matching detect_onsets.
+    double strength{};
+    double spectral_flux{};
+    double high_frequency_content{};
+    double energy_rise{};
+};
+
+std::vector<OnsetEvidence> detect_onset_evidence(
+    const AudioBuffer& audio, const OnsetDetectionOptions& options = {});
 
 struct AudioPreviewData {
     double duration_seconds{};
@@ -105,13 +134,16 @@ struct AudioPreviewData {
     std::size_t frequency_bands{};
     std::vector<float> waveform;
     std::vector<float> spectrogram;
+    double minimum_frequency_hz{};
+    double maximum_frequency_hz{};
 };
 
 enum class InstrumentPrior {
     None,
     Guitar,
     Piano,
-    Voice
+    Voice,
+    Bass
 };
 
 enum class OnnxExecutionProvider {
@@ -120,6 +152,10 @@ enum class OnnxExecutionProvider {
     DirectML,
     Rocm
 };
+
+enum class PitchObjective { Unspecified, Monophonic, IndependentMultiPitch };
+enum class SpectralDecoder { LegacySalience, HarmonicCompetition };
+enum class NeuralNoteDecoder { Legacy, MultiHeadEvents };
 
 struct AnalysisTimings {
     double preprocessing_seconds{};
@@ -142,6 +178,7 @@ struct AnalysisOptions {
     std::function<void(const AnalysisTimings&)> timing_callback;
     std::function<void(const FrameEvidenceTrack&)> evidence_callback;
     std::stop_token cancellation;
+    SpectralDecoder spectral_decoder{SpectralDecoder::LegacySalience};
 };
 
 struct OnnxOptions {
@@ -155,6 +192,9 @@ struct OnnxOptions {
     int device_id{};
     std::function<void(const FrameEvidenceTrack&)> evidence_callback;
     std::stop_token cancellation;
+    PitchObjective objective{PitchObjective::Unspecified};
+    bool aligned_model_heads{};
+    NeuralNoteDecoder note_decoder{NeuralNoteDecoder::Legacy};
 };
 
 struct ScoreMetadata {

@@ -10,4 +10,5 @@ Package provenance:
   SHA-1: a11cce5a4126a5ed1e11418f1a28614b36705c94
   Git revision: 425dd7b6ba26edcecbe345c10b15586d095743d9
 
-The default CLI and native Win32 GUI do not include or load Verovio.
+The default CLI does not include or load Verovio. Only WebView2 builds with
+TRANSCRIBE_ENABLE_VEROVIO enabled package the optional renderer.

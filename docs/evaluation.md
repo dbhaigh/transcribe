@@ -1,12 +1,26 @@
 # Quality and performance evaluation
 
+For opt-in neural event modes, checked model acquisition and validation-only
+confidence calibration, see [Neural transcription strategy](neural-strategy.md).
+
 For the opt-in canonical event API, temporal-decoding parameters, ablations and
 measured event/frame improvements, see [Note-event decoding](decoding.md).
+Its [attack-aware evaluation](decoding.md#attack-aware-segmentation-evaluation)
+includes current per-clip tradeoffs, model onset/state evidence and the
+`--pitch-stability`, `--onset-state-drop` and other segmentation controls.
+For corpus v3's polyphonic cases and paired annotated real-guitar measurements,
+see [Polyphonic activation and model adapters](polyphonic.md). The experimental
+spectral alternative is not the default because its real-data recall regresses.
 For adapter compatibility and persistent-session/provider benchmarks, see
 [Model inference](model-inference.md).
 
 For measured DSP optimizations, cold versus in-process warm timings, CPU use
 and peak-memory methodology, see [Performance](performance.md).
+For `--corpus mixed`, licensed original/stem manifest schemas, target-only
+annotations, separation-artifact diagnostics and per-pair regressions, see
+[Instrument isolation](instrument-isolation.md). This mode reuses the same
+scoring functions and runner; synthetic oracle stems are not learned-model
+or real-recording accuracy evidence.
 
 The evaluation framework exercises the existing public C++20 engine without
 changing production APIs or CLI behavior. Python 3.10+ and the standard
@@ -19,10 +33,15 @@ time when tests are enabled.
 Single-configuration generators (MinGW Makefiles, Ninja, Unix Makefiles):
 
 ```powershell
-cmake -S . -B build-evaluation -DCMAKE_BUILD_TYPE=Release -DTRANSCRIBE_BUILD_TESTS=ON
+cmake -S . -B build-evaluation -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DTRANSCRIBE_BUILD_TESTS=ON
 cmake --build build-evaluation --parallel
 ctest --test-dir build-evaluation -C Release --output-on-failure
 ```
+
+The command pins the Windows LLVM-MinGW single-configuration generator.
+On Linux, replace it with `-G "Unix Makefiles"` (or an installed Ninja
+generator). For Visual Studio, use the installed Visual Studio generator and
+build/test with `--config Release` as described below.
 
 For Visual Studio, configure with `-DTRANSCRIBE_BUILD_TESTS=ON`, build with
 `--config Release`, and run CTest with `-C Release`. Its executable is in
@@ -44,7 +63,8 @@ python .\python\evaluate.py `
   --build-info .\build-evaluation\evaluation-build-Release.json `
   --backend yin --mode streaming `
   --output-json .\build-evaluation\evaluation\baseline-yin.json `
-  --output-text .\build-evaluation\evaluation\baseline-yin.txt
+  --output-text .\build-evaluation\evaluation\baseline-yin.txt `
+  --output-markdown .\build-evaluation\evaluation\baseline-yin.md
 ```
 
 On Linux, omit `.exe`. For Visual Studio, use
@@ -104,8 +124,12 @@ actually execute and are covered by Catch2.
 
 ## Versioned synthetic ground truth
 
-[synthetic_corpus.py](../python/synthetic_corpus.py) defines corpus v1:
-16 PCM16 mono clips at 22,050 Hz with seed 2026.
+[synthetic_corpus.py](../python/synthetic_corpus.py) preserves corpus v1:
+16 PCM16 mono clips at 22,050 Hz with seed 2026. Existing v1 fixture IDs,
+waveforms and SHA-256 identity remain unchanged. Corpus v2 retains those
+fixtures and adds six explicit cases for sustained notes, a known continuous
+pitch bend, a fundamental-suppressed harmonic tone, and low/middle/high
+register notes.
 
 | Fixture | Purpose |
 |---|---|
@@ -121,11 +145,22 @@ actually execute and are covered by Catch2.
 | clipping | Deliberate hard clipping |
 | long_boundary | 16.5 s audio with a note spanning the default streaming seam |
 
+Version 2 tags fixtures for monophonic, simultaneous/chord, overlapping,
+sustained, repeated, vibrato, noisy, bend, harmonic, register-transition and
+streaming-boundary cohorts. These tags produce separate metric summaries,
+not just a single aggregate. Register cohorts use MIDI 0–47 (low), 48–71
+(middle) and 72–127 (high); a wrong-register prediction is a miss in the
+annotated register and a false positive in its predicted register. Cohorts
+without reference or predicted notes are reported as unavailable.
+
 Each note carries MIDI pitch, onset, offset, duration, synthesis velocity and
 instrument identifier. Labels describe dry oscillator activation, not a
 psychoacoustic estimate of audibility. Reverb tails are not extra reference
 notes. Synthesis velocity controls gain; it is not a calibrated MIDI-velocity
 or real-instrument loudness benchmark.
+The bend fixture labels its starting MIDI pitch while continuously raising
+frequency by 120 cents over the note; it tests a bent-pitch condition, not a
+cents-accurate bend estimator.
 
 An explicit integer PRNG determines noise. Generated WAVs and the entire
 manifest have SHA-256 fingerprints. Two generations are compared in tests.
@@ -136,11 +171,21 @@ Floating-point `sin`/`exp` implementations can differ across platforms at
 rounding boundaries. The audio/corpus digest is authoritative: if it differs,
 the comparison refuses to call it the same corpus.
 
+Synthetic v2 is evaluation-only: all fixtures are assigned to the test role;
+training and validation partitions are intentionally empty. Do not train or
+tune a model on it and then describe the same results as held-out test
+accuracy. It is generated from code rather than third-party recordings, but
+its simple harmonic oscillator does not replace representative licensed
+recordings.
+
 To retain inspectable fixtures outside normal temporary evaluation:
 
 ```powershell
 python .\python\synthetic_corpus.py --output .\build-evaluation\corpus
 ```
+
+Pass `--version 2` to generate the expanded corpus explicitly; the generator
+defaults to v1 to preserve historical fingerprints.
 
 No generated WAVs need to be committed. The older checked-in
 [sample generator](../samples/generate_samples.py), sample files and expected
@@ -161,6 +206,10 @@ the production CLI's error text.
   do not optimize total timing error. Boundary comparisons allow a 1e-12 s
   floating-point epsilon. Set `--onset-tolerance`, `--offset-tolerance`,
   `--offset-ratio` and `--frame-step` to declare a different protocol.
+- **Pitch-event precision/recall/F1:** maximum-cardinality one-to-one matching
+  of exact MIDI pitches whose event intervals overlap. It does not require
+  onset proximity; it is a pitch-presence diagnostic, not onset+pitch
+  accuracy. Duplicate predictions remain unmatched false positives.
 - **Pitch accuracy:** exact-pitch fraction among pitch-independent one-to-one
   onset-time matches. This measures pitch correctness conditional on timing
   matches, **not** pitch recall or cents accuracy. Misses remain visible in
@@ -173,6 +222,16 @@ the production CLI's error text.
   timing error without checking recall.
 - **False positives / missed notes:** unmatched predictions/references under
   the strict event protocol, also available per clip.
+- **False positives/minute:** strict-event false positives divided by total
+  evaluated audio duration, multiplied by 60. Zero-duration input has no
+  defined rate (`null`).
+- **Fragmentation:** a reference note is fragmented if more than one same-pitch
+  predicted interval overlaps it; report affected references and extra
+  predicted fragments.
+- **Merging:** a prediction is merged if it overlaps multiple same-pitch
+  reference notes that are separate or touch at an onset boundary; report
+  merged predictions and extra reference notes. These counts supplement,
+  rather than replace, one-to-one event precision/recall.
 - **Chord-note recall:** onset+pitch recall for reference events overlapping
   at least one differently pitched reference event. This includes staggered
   overlaps, not just identical-onset chords.
@@ -186,8 +245,9 @@ the production CLI's error text.
   All-empty P/R/F1 is defined as 0, not a fabricated perfect score. Per-clip
   results show silence/noise false positives separately.
 
-The metric suite checks perfect/empty/duplicate/wrong-pitch/chord cases,
-explicit tolerances, augmenting-path results against brute force, frame
+The metric suite checks perfect/empty/duplicate/wrong-pitch/chord/overlap/
+fragmentation/merging cases, explicit and inclusive tolerances,
+augmenting-path results against brute force, frame
 interval scoring against a dense reference, and malformed labels.
 Frame scoring merges sparse intervals, avoiding one dense Boolean array per
 pitch per long recording.
@@ -214,6 +274,10 @@ Reports distinguish:
   device/driver/GUI latency or a physical end-to-end measurement.
 - Per-clip real-time factors and corpus-duration-weighted engine real-time
   factor. Empty clips have no per-clip factor.
+- Median and p90/p95/p99 engine/process timings, and peak resident memory
+  where the platform exposes a process high-water mark. Windows reports peak
+  working set; POSIX reports `getrusage` peak RSS. Memory includes process
+  startup and model loading.
 
 Every benchmark includes compiler/version/path, configuration/flags, feature
 switches, binary digest, model identifier/digest, provider/device setting,
@@ -221,12 +285,48 @@ audio sample rates, quality/chunk/threshold options, protocol tolerances,
 source identity, Python/platform/CPU information, repetitions and clock
 definitions. There are no hardcoded expected engine-accuracy numbers.
 
+### Automated same-input backend suite
+
+From a clean checkout, after the Release build and CTest commands above:
+
+```powershell
+python .\python\evaluate.py `
+  --runner .\build-evaluation\transcriber-evaluate.exe `
+  --build-info .\build-evaluation\evaluation-build-Release.json `
+  --backend all --mode full --corpus synthetic --corpus-version 2 `
+  --repetitions 3 --warmups 1 `
+  --output-json .\build-evaluation\evaluation\quality-suite.json `
+  --output-markdown .\build-evaluation\evaluation\quality-suite.md
+```
+
+`all` evaluates built-in YIN, built-in spectral analysis, and every `.onnx`
+file discovered under `python/models` against the same versioned WAVs and
+labels. Add external models by repeating `--models <path-to-model.onnx>`; each
+model is identified by SHA-256. An
+incompatible model or unavailable provider fails explicitly. ONNX inference
+requires an ONNX-enabled build and the requested runtime/provider. If ONNX is
+disabled, discovered models are listed as not evaluated with the reason and
+the suite reports the built-in systems. `--mode full` is required so the
+algorithms receive the same offline analysis mode. JSON retains all per-clip
+predictions, metrics, timing samples, build and model metadata; Markdown
+includes aggregate, scenario, register and per-clip tables.
+
+Compare a candidate suite with `--compare .\baseline-suite.json`.
+`--max-event-f1-drop 0.01` is an optional caller-selected gate: it fails if
+either aggregate strict event F1 or any individual clip's strict event F1
+drops by more than one percentage point for any matched system. Every clip
+delta remains visible even if aggregate F1 improves. No threshold is enabled
+by default; do not establish v2 gates until a stable baseline has been
+recorded. Existing v1 snapshots remain a separate historical protocol and do
+not become v2 regression thresholds.
+
 For meaningful performance comparisons: use the same machine, toolchain,
 Release flags, power policy, CPU load, corpus and backend configuration;
 record extra environment constraints in experiment notes. The framework
 does not control turbo, scheduling, antivirus, thermal state or system load.
 CTest uses one measured repetition/no warmup as a correctness smoke, not a
-statistically qualified speed gate. CI uploads its JSON/text reports.
+statistically qualified speed gate. CI uploads its JSON, text and Markdown
+evaluation reports.
 
 ### Compare a future engine against the baseline
 
@@ -283,6 +383,17 @@ python .\python\evaluate.py --corpus guitarset `
   --output-json .\build-evaluation\evaluation\guitarset-yin-subset.json
 ```
 
+The `--dataset-split` option accepts `train`, `validation`, `test`, or `all`.
+The fixed protocol groups by performer ID: players 00–03 train, 04 validation,
+and 05 test, with all 60 recordings per performer kept together. `all` is the
+backwards-compatible default; use `--dataset-split test` for held-out
+performers. The mapping is recorded in each report and each clip carries its
+partition. This split prevents performer overlap within the evaluation
+protocol, but does not certify model-training independence: Basic Pitch may
+have seen GuitarSet during training, so results are explicitly marked as
+potentially leaked. The synthetic v2 fixtures use a separate test-only role
+with empty train and validation sets.
+
 Omit `--limit` for all recordings. Change to a capable ONNX runner and add
 `--backend onnx --mode full --model ... --provider cpu` for a model run, or
 use `--backend spectral --mode full` without a model. The exact selected
@@ -334,3 +445,11 @@ Timing diagnostics do not verify engraving, output-schema conformance,
 hardware capture reliability or GUI rendering. Optional model/provider,
 Linux, hardware and real-data checks must be reported as unexecuted when
 their environments are unavailable.
+
+The release workflow now applies reviewed schema-aware, per-fixture gates to
+the three maintained synthetic-v1 engine sentinels. It deliberately does not
+gate v2/v3 until their baselines are stable, nor does synthetic CI assert
+real-recording generalization. See [Release evidence](release-evidence.md)
+for exact thresholds, the cold/warm benchmark protocol, clean-checkout
+commands, leakage/provenance requirements, and release-report/manual-acceptance
+schemas.

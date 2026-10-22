@@ -1,0 +1,74 @@
+{
+  "provenance": "Hand-authored reference passages, not transcriptions of copyrighted works. MIT project license. Evaluation-only; no training data.",
+  "passages": [
+    {
+      "id": "dotted-syncopation-rest-bar-tie",
+      "tempo": 120, "meter": [4, 4], "fifths": -1, "mode": "evidence",
+      "notes": [
+        [60, 0, 0.75, 0, 1.5, 1],
+        [62, 1, 1.25, 2, 0.5, 1],
+        [65, 1.75, 2.5, 3.5, 1.5, 1],
+        [67, 2.5, 3, 5, 1, 1],
+        [69, 3, 3.5, 6, 1, 1],
+        [70, 3.5, 4, 7, 1, 1],
+        [72, 4, 4.5, 8, 1, 1],
+        [74, 4.5, 5, 9, 1, 1]
+      ],
+      "dots": true, "ties": true
+    },
+    {
+      "id": "sustained-bass-independent-melody",
+      "tempo": 120, "meter": [4, 4], "fifths": 0, "mode": "expressive",
+      "notes": [
+        [48, 0, 2.5, 0, 5, 1],
+        [60, 0, 0.5, 0, 1, 2],
+        [62, 0.5, 1, 1, 1, 2],
+        [64, 1, 1.5, 2, 1, 2],
+        [65, 1.5, 2, 3, 1, 2],
+        [67, 2, 2.5, 4, 1, 2]
+      ],
+      "ties": true, "expressive": true
+    },
+    {
+      "id": "equal-release-chord",
+      "tempo": 120, "meter": [3, 4], "fifths": 0, "mode": "legacy",
+      "notes": [[60, 0, 0.5, 0, 1, 1], [64, 0, 0.5, 0, 1, 1], [67, 0, 0.5, 0, 1, 1]],
+      "chord": true
+    },
+    {
+      "id": "accidentals-cancel-repeat-reset",
+      "tempo": 120, "meter": [4, 4], "fifths": 1, "mode": "legacy",
+      "notes": [
+        [65, 0, 0.5, 0, 1, 1], [65, 0.5, 1, 1, 1, 1],
+        [66, 1, 1.5, 2, 1, 1], [66, 1.5, 2, 3, 1, 1],
+        [65, 2, 2.5, 4, 1, 1]
+      ],
+      "accidentals": ["natural", null, "sharp", null, "natural"]
+    },
+    {
+      "id": "expressive-off-grid",
+      "tempo": 100, "meter": [6, 8], "fifths": -3, "mode": "expressive",
+      "notes": [[60, 0.017, 0.581, 0.028333333333333, 0.94, 1],
+                [63, 0.643, 1.047, 1.071666666666667, 0.673333333333333, 1]],
+      "expressive": true
+    },
+    {
+      "id": "pickup",
+      "tempo": 120, "meter": [3, 4], "fifths": 0, "mode": "legacy", "pickup": 1,
+      "notes": [[60, 0, 0.5, 0, 1, 1], [62, 0.5, 1, 1, 1, 1]]
+    },
+    {
+      "id": "b-sharp-octave",
+      "tempo": 120, "meter": [4, 4], "fifths": 7, "mode": "legacy",
+      "notes": [[60, 0, 0.5, 0, 1, 1]],
+      "spellings": [["B", 1, 3]]
+    },
+    {
+      "id": "c-flat-octave",
+      "tempo": 120, "meter": [4, 4], "fifths": -7, "mode": "legacy",
+      "notes": [[59, 0, 0.5, 0, 1, 1]],
+      "spellings": [["C", -1, 4]]
+    }
+  ],
+  "note_columns": ["midi", "measured_onset_seconds", "measured_offset_seconds", "reference_onset_quarters", "reference_duration_quarters", "reference_voice"]
+}

@@ -396,7 +396,13 @@ std::vector<TempoSegment> make_tempo_map(const std::vector<OnsetGroup>& groups,
         }
         if (intervals.size() < 3) continue;
         const double beat = median(intervals);
-        const double bpm = std::clamp(60.0 / beat, 40.0, 240.0);
+        double bpm = 60.0 / beat;
+        if (options.quantization_mode == QuantizationMode::EvidenceAware) {
+            // A change in subdivision alone is not evidence for doubling the tempo.
+            while (bpm > base_bpm * 1.5) bpm *= 0.5;
+            while (bpm < base_bpm / 1.5) bpm *= 2.0;
+        }
+        bpm = std::clamp(bpm, 40.0, 240.0);
         std::vector<double> deviations;
         for (const auto interval : intervals) deviations.push_back(std::abs(interval - beat));
         const double local_confidence = clamp01(1.0 - median(deviations) / beat) *
@@ -445,7 +451,7 @@ double seconds_at(const std::vector<TempoSegment>& tempo, double quarters) {
     }
     if (tempo.empty()) return quarters * 0.5;
     const auto& last = tempo.back();
-    return last.end_seconds +
+    return last.start_seconds +
            (quarters - last.start_quarters) * 60.0 / last.beats_per_minute;
 }
 
@@ -551,30 +557,28 @@ int key_alteration_for_step(int fifths, int step) {
     return 0;
 }
 
-struct Spelling {
-    std::string step;
-    int alter{};
-    int octave{};
-    bool accidental{};
-};
-
-Spelling spell_pitch(int midi, int fifths) {
+PitchSpelling spell_pitch(int midi, int fifths) {
     static constexpr std::array<const char*, 7> steps{"C", "D", "E", "F", "G", "A", "B"};
-    const bool flats = fifths < 0;
-    static constexpr std::array<int, 12> sharp_letter{
-        0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6};
-    static constexpr std::array<int, 12> flat_letter{
-        0, 1, 1, 2, 2, 3, 4, 4, 5, 5, 6, 6};
-    static constexpr std::array<int, 12> sharp_alter{
-        0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0};
-    static constexpr std::array<int, 12> flat_alter{
-        0, -1, 0, -1, 0, 0, -1, 0, -1, 0, -1, 0};
-    const auto pc = static_cast<std::size_t>((midi % 12 + 12) % 12);
-    const int letter = flats ? flat_letter[pc] : sharp_letter[pc];
-    const int alter = flats ? flat_alter[pc] : sharp_alter[pc];
-    const int octave = midi / 12 - 1;
-    return {steps[static_cast<std::size_t>(letter)], alter, octave,
-            alter != key_alteration_for_step(fifths, letter)};
+    static constexpr std::array<int, 7> natural{0, 2, 4, 5, 7, 9, 11};
+    PitchSpelling best;
+    double best_cost = std::numeric_limits<double>::infinity();
+    for (int letter = 0; letter < 7; ++letter) {
+        for (int alter = -1; alter <= 1; ++alter) {
+            const int shifted = midi - natural[static_cast<std::size_t>(letter)] - alter;
+            if (shifted % 12 != 0) continue;
+            if (shifted / 12 - 1 < -1 || shifted / 12 - 1 > 9) continue;
+            const int key_alter = key_alteration_for_step(fifths, letter);
+            const double cost = (alter != key_alter ? 2.0 : 0.0) +
+                std::abs(alter) * 0.2 +
+                ((fifths < 0 && alter > 0) || (fifths >= 0 && alter < 0) ? 0.1 : 0.0);
+            if (cost < best_cost) {
+                best_cost = cost;
+                best = {steps[static_cast<std::size_t>(letter)], alter,
+                        shifted / 12 - 1, alter != key_alter};
+            }
+        }
+    }
+    return best;
 }
 
 std::vector<TonalRegion> local_keys_for(
@@ -664,10 +668,10 @@ void make_rests(ScoreHypothesis& score, const std::vector<RhythmValue>& rhythms)
             }
             if (onset > cursor + 1e-6) {
                 const double duration = onset - cursor;
-                const auto [rhythm, unused] = match_rhythm(duration, rhythms, 0.06);
+                const auto [rhythm, unused] = match_rhythm(duration, rhythms, 1e-8);
                 (void)unused;
                 score.rests.push_back({voice, cursor,
-                                       rhythm.symbolic ? rhythm.duration_quarters : duration,
+                                       duration,
                                        rhythm});
             }
             cursor = std::max(cursor, end);
@@ -675,13 +679,55 @@ void make_rests(ScoreHypothesis& score, const std::vector<RhythmValue>& rhythms)
         }
         if (score.total_quarters > cursor + 1e-6) {
             const double duration = score.total_quarters - cursor;
-            const auto [rhythm, unused] = match_rhythm(duration, rhythms, 0.06);
+            const auto [rhythm, unused] = match_rhythm(duration, rhythms, 1e-8);
             (void)unused;
             score.rests.push_back({voice, cursor,
-                                   rhythm.symbolic ? rhythm.duration_quarters : duration,
+                                   duration,
                                    rhythm});
         }
     }
+}
+
+struct GridEvidence {
+    double step{1.0};
+    double support{};
+};
+
+double grid_fit(double position, double step, double tolerance) {
+    const double error = std::abs(position - std::round(position / step) * step);
+    return tolerance > 0.0 ? clamp01(1.0 - 0.5 * error / tolerance) :
+        (error < 1e-9 ? 1.0 : 0.0);
+}
+
+GridEvidence select_grid(const std::vector<SourceNote>& notes,
+                         const std::vector<TempoSegment>& tempo,
+                         double tolerance_seconds, double duration_tolerance) {
+    GridEvidence best;
+    double best_score = -1.0;
+    for (const double step : {1.0, 0.5, 0.25, 1.0 / 3.0, 0.2, 1.0 / 7.0, 0.125}) {
+        double fit = 0.0;
+        // One attack, rather than each chord member, contributes onset support.
+        std::size_t attacks = 0;
+        double previous_onset = -1.0;
+        for (const auto& note : notes) {
+            if (std::abs(note.onset - previous_onset) < 0.001) continue;
+            previous_onset = note.onset;
+            ++attacks;
+            const double onset = quarter_at(tempo, note.onset);
+            const double duration = quarter_at(tempo, note.offset) - onset;
+            const double tolerance = quarter_at(tempo, note.onset + tolerance_seconds) - onset;
+            fit += 0.65 * grid_fit(onset, step, tolerance) +
+                   0.35 * grid_fit(duration, step, std::max(0.03, duration * duration_tolerance));
+        }
+        const double support = attacks ? fit / attacks : 0.0;
+        const bool tuplet = step == 1.0 / 3.0 || step == 0.2 || step == 1.0 / 7.0;
+        const double score = support - 0.035 * std::log2(1.0 / step) - (tuplet ? 0.04 : 0.0);
+        if (score > best_score) {
+            best_score = score;
+            best = {step, support * static_cast<double>(attacks) / (attacks + 2.0)};
+        }
+    }
+    return best;
 }
 
 ScoreHypothesis build_hypothesis(
@@ -721,30 +767,73 @@ ScoreHypothesis build_hypothesis(
         std::vector<RhythmValue> rhythm_alternatives;
         int voice{};
         std::optional<std::size_t> chord_group;
+        double rhythm_evidence{};
     };
     std::vector<Positioned> positioned;
     positioned.reserve(notes.size());
     const auto rhythms = rhythm_candidates();
+    const bool expressive = options.quantization_mode == QuantizationMode::Expressive ||
+                            options.quantization_strength == 0.0;
+    const bool evidence_aware = options.quantization_mode == QuantizationMode::EvidenceAware;
+    const auto grid = evidence_aware ? select_grid(notes, score.tempo_map,
+        options.onset_quantization_tolerance_seconds, options.rhythm_quantization_tolerance) :
+        GridEvidence{};
+    auto note_rhythms = rhythms;
+    if (evidence_aware) {
+        std::erase_if(note_rhythms, [&](const auto& value) {
+            return grid_fit(value.duration_quarters, grid.step, 1e-8) <= 0.99;
+        });
+    }
+    std::size_t unquantized = 0;
     for (const auto& note : notes) {
         const double raw_onset = quarter_at(score.tempo_map, note.onset);
         const double raw_offset = quarter_at(score.tempo_map, note.offset);
-        const double onset_unwarped = straighten_swing(raw_onset, swing_ratio, score.swing_inferred);
-        const double offset_unwarped = straighten_swing(raw_offset, swing_ratio, score.swing_inferred);
+        const double onset_unwarped = straighten_swing(raw_onset, swing_ratio,
+                                                       score.swing_inferred && !expressive);
+        const double offset_unwarped = straighten_swing(raw_offset, swing_ratio,
+                                                        score.swing_inferred && !expressive);
         bool snapped = false;
-        const double tolerance_q = std::max(0.01,
-            options.onset_quantization_tolerance_seconds * tempo_candidate.value / 60.0);
+        const auto segment = std::find_if(score.tempo_map.begin(), score.tempo_map.end(),
+            [&](const auto& value) { return note.onset < value.end_seconds; });
+        const double bpm = segment == score.tempo_map.end() ?
+            score.tempo_map.back().beats_per_minute : segment->beats_per_minute;
+        const double tolerance_q = options.onset_quantization_tolerance_seconds * bpm / 60.0;
         double onset = snap_onset(onset_unwarped, tolerance_q, snapped);
         const double raw_duration = std::max(1.0 / 960.0, offset_unwarped - onset_unwarped);
         auto [rhythm, alternatives] = match_rhythm(
-            raw_duration, rhythms,
+            raw_duration, note_rhythms,
             std::max(0.03, raw_duration * options.rhythm_quantization_tolerance));
-        const double duration = rhythm.symbolic ? rhythm.duration_quarters : raw_duration;
+        double evidence = rhythm.symbolic ? clamp01(1.0 - rhythm.fit_error_quarters /
+            std::max(rhythm.duration_quarters, 0.1)) : 0.0;
+        if (evidence_aware) {
+            onset = std::round(onset_unwarped / grid.step) * grid.step;
+            snapped = std::abs(onset - onset_unwarped) <= tolerance_q + 1e-9;
+            evidence = grid.support * (0.6 * grid_fit(onset_unwarped, grid.step, tolerance_q) +
+                0.4 * grid_fit(raw_duration, grid.step,
+                    std::max(0.03, raw_duration * options.rhythm_quantization_tolerance)));
+        }
+        const bool accepted = !expressive && (!evidence_aware ||
+            (snapped && rhythm.symbolic && evidence >= options.minimum_rhythm_evidence));
+        double duration = rhythm.symbolic ? rhythm.duration_quarters : raw_duration;
         if (!snapped) onset = onset_unwarped;
+        if (!accepted) {
+            onset = raw_onset;
+            duration = std::max(1.0 / 960.0, raw_offset - raw_onset);
+            rhythm = {0, 0, 0, 0, duration, 0.0, false};
+            ++unquantized;
+        } else {
+            onset = raw_onset + options.quantization_strength * (onset - raw_onset);
+            duration = (raw_offset - raw_onset) +
+                options.quantization_strength * (duration - (raw_offset - raw_onset));
+            if (options.quantization_strength < 1.0) {
+                rhythm = match_rhythm(duration, rhythms, 1e-9).first;
+            }
+        }
         const double offset = onset + duration;
         positioned.push_back({note, raw_onset, raw_offset, onset, duration,
                               seconds_at(score.tempo_map, onset) - note.onset,
                               seconds_at(score.tempo_map, offset) - note.offset,
-                              snapped, rhythm, std::move(alternatives), 0, std::nullopt});
+                              snapped, rhythm, std::move(alternatives), 0, std::nullopt, evidence});
     }
 
     std::stable_sort(positioned.begin(), positioned.end(), [](const auto& a, const auto& b) {
@@ -757,7 +846,14 @@ ScoreHypothesis build_hypothesis(
         std::size_t end = first + 1;
         const double anchor = positioned[first].source.onset;
         while (end < positioned.size() &&
-               positioned[end].source.onset - anchor <= options.chord_onset_tolerance_seconds) {
+               std::abs(positioned[end].source.onset - anchor) <=
+                   (expressive ? 1e-9 : options.chord_onset_tolerance_seconds) &&
+               std::abs(positioned[end].duration_quarters -
+                        positioned[first].duration_quarters) < 1e-6 &&
+               ((options.quantization_mode == QuantizationMode::Legacy &&
+                 options.quantization_strength == 1.0) ||
+                std::abs(positioned[end].onset_quarters -
+                         positioned[first].onset_quarters) < 1e-9)) {
             ++end;
         }
         const double onset = positioned[first].onset_quarters;
@@ -813,21 +909,22 @@ ScoreHypothesis build_hypothesis(
             note.voice, note.chord_group, written_pitch,
             spelling.step, spelling.alter, spelling.octave, spelling.accidental,
             note.rhythm, note.rhythm_alternatives,
-            note.rhythm.symbolic ? clamp01(1.0 - note.rhythm.fit_error_quarters /
-                std::max(note.rhythm.duration_quarters, 0.1)) : 0.0,
+            note.rhythm_evidence,
             note.source.velocity, note.source.articulation, false, false,
             sounding_pitch});
     }
 
-    score.local_tonal_context = local_keys_for(notes, score.notes, meter, score.pickup_quarters);
-    if (options.infer_local_keys) {
+    if (options.infer_local_keys && !key.user_constrained) {
+        score.local_tonal_context = local_keys_for(notes, score.notes, meter, score.pickup_quarters);
         for (auto& note : score.notes) {
             const double measure_position = note.onset_quarters >= score.pickup_quarters
                 ? std::floor((note.onset_quarters - score.pickup_quarters) / bar)
                 : 0.0;
-            const auto measure_index = static_cast<std::size_t>(std::max(0.0, measure_position));
+            const auto measure_index = static_cast<std::size_t>(std::max(0.0, measure_position)) +
+                (score.pickup_quarters > 0.0 && note.onset_quarters >= score.pickup_quarters ? 1 : 0);
             for (const auto& region : score.local_tonal_context) {
-                if (measure_index >= region.first_measure && measure_index < region.end_measure) {
+                if (region.key.confidence >= 0.5 && measure_index >= region.first_measure &&
+                    measure_index < region.end_measure) {
                     const auto spelling = spell_pitch(note.written_midi_pitch, region.key.fifths);
                     note.spelling_step = spelling.step;
                     note.spelling_alter = spelling.alter;
@@ -849,6 +946,8 @@ ScoreHypothesis build_hypothesis(
     if (score.tempo_ambiguous) score.uncertainties.push_back("Tempo is ambiguous.");
     if (score.meter_ambiguous) score.uncertainties.push_back("Meter is ambiguous.");
     if (score.key_ambiguous) score.uncertainties.push_back("Key is ambiguous.");
+    if (unquantized) score.uncertainties.push_back(
+        std::to_string(unquantized) + " notes retain unquantized measured timing.");
     if (score.swing_inferred) {
         score.uncertainties.push_back("Swing interpretation is a hypothesis, not a tupleting rule.");
     }
@@ -859,6 +958,20 @@ ScoreHypothesis build_hypothesis(
 }
 
 } // namespace
+
+QuantizationMode parse_quantization_mode(std::string_view value) {
+    if (value == "legacy") return QuantizationMode::Legacy;
+    if (value == "evidence") return QuantizationMode::EvidenceAware;
+    if (value == "expressive") return QuantizationMode::Expressive;
+    throw std::invalid_argument("Quantization mode must be legacy, evidence or expressive.");
+}
+
+PitchSpelling spell_written_pitch(int midi, int key_fifths) {
+    if (midi < 0 || midi > 127 || key_fifths < -7 || key_fifths > 7) {
+        throw std::invalid_argument("Pitch spelling requires MIDI 0-127 and key fifths -7 to 7.");
+    }
+    return spell_pitch(midi, key_fifths);
+}
 
 ScoreInterpretation interpret_note_events(std::span<const CanonicalNoteEvent> events,
                                            const InterpretationOptions& options) {
@@ -884,6 +997,14 @@ ScoreInterpretation interpret_note_events(std::span<const CanonicalNoteEvent> ev
         !std::isfinite(options.tempo_change_threshold) ||
         options.tempo_change_threshold <= 0.0 || options.maximum_hypotheses == 0) {
         throw std::invalid_argument("Interpretation tolerances and hypothesis limit are invalid.");
+    }
+    if (!std::isfinite(options.quantization_strength) || options.quantization_strength < 0.0 ||
+        options.quantization_strength > 1.0 || !std::isfinite(options.minimum_rhythm_evidence) ||
+        options.minimum_rhythm_evidence < 0.0 || options.minimum_rhythm_evidence > 1.0 ||
+        (options.quantization_mode != QuantizationMode::Legacy &&
+         options.quantization_mode != QuantizationMode::EvidenceAware &&
+         options.quantization_mode != QuantizationMode::Expressive)) {
+        throw std::invalid_argument("Quantization strength and minimum rhythm evidence must be between 0 and 1.");
     }
     if (options.written_transposition_semitones < -48 ||
         options.written_transposition_semitones > 48) {
@@ -983,7 +1104,7 @@ ScoreInterpretation interpret_notes(std::span<const Note> notes,
             note.start_seconds, note.midi_pitch, note.confidence, 0.0,
             std::nullopt, std::nullopt, note.midi_pitch,
             EvidenceSemantics::HeuristicScore, EvidenceSemantics::Unspecified,
-            std::nullopt});
+            std::nullopt, std::nullopt, std::nullopt});
         events.push_back(std::move(event));
     }
     return interpret_note_events(events, options);

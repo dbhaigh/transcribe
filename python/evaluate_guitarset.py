@@ -30,6 +30,40 @@ ANNOTATION_MD5 = "b39b78e63d3446f2e54ddb7a54df9b10"
 ONSET_TOLERANCE_SECONDS = 0.05
 FRAME_STEP_SECONDS = 0.01
 BUNDLED_MODEL_SHA256 = "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec"
+GUITARSET_PLAYER_SPLITS = {
+    "00": "train",
+    "01": "train",
+    "02": "train",
+    "03": "train",
+    "04": "validation",
+    "05": "test",
+}
+
+
+def guitarset_player_id(track: str) -> str | None:
+    candidate = track.split("_", 1)[0]
+    return candidate if len(candidate) == 2 and candidate.isdigit() else None
+
+
+def guitarset_dataset_split(track: str) -> str | None:
+    player = guitarset_player_id(track)
+    return GUITARSET_PLAYER_SPLITS.get(player) if player is not None else None
+
+
+def guitarset_split_policy() -> dict[str, Any]:
+    return {
+        "grouping": "performer ID; all recordings by a performer stay in one partition",
+        "player_assignments": dict(GUITARSET_PLAYER_SPLITS),
+        "partitions": {
+            name: sorted(player for player, split in GUITARSET_PLAYER_SPLITS.items()
+                         if split == name)
+            for name in ("train", "validation", "test")
+        },
+        "warning": (
+            "The grouped split prevents performer overlap within this protocol, but the "
+            "Basic Pitch model may have seen GuitarSet recordings during training."
+        ),
+    }
 
 
 def md5_file(path: Path) -> str:
@@ -201,6 +235,20 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         )
         if not jam_names:
             raise ValueError(f"No .jams annotation files found in {annotation_archive}.")
+        selected_split = getattr(args, "dataset_split", "all")
+        if selected_split not in ("all", "train", "validation", "test"):
+            raise ValueError(f"Unknown GuitarSet dataset split: {selected_split}")
+        if selected_split != "all":
+            selected_names = []
+            for name in jam_names:
+                split = guitarset_dataset_split(PurePosixPath(name).stem)
+                if split is None:
+                    raise ValueError(f"No performer split assignment for {name}")
+                if split == selected_split:
+                    selected_names.append(name)
+            jam_names = selected_names
+            if not jam_names:
+                raise ValueError(f"GuitarSet split has no recordings: {selected_split}")
         if args.limit is not None:
             if args.limit < 1:
                 raise ValueError("--limit must be at least 1.")
@@ -243,6 +291,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
 
                 clip_result: dict[str, Any] = {
                     "track": annotation_stem,
+                    "dataset_split": guitarset_dataset_split(annotation_stem) or "unassigned",
+                    "performer_id": guitarset_player_id(annotation_stem),
                     "reference_notes": len(references),
                     "duration_seconds": duration,
                     "sample_rate": sample_rate,
@@ -305,6 +355,23 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "reference_notes": sum(clip["reference_notes"] for clip in clips),
             "systems": grouped_systems,
         }
+    dataset_splits: dict[str, Any] = {}
+    for split in ("train", "validation", "test"):
+        clips = [clip for clip in per_clip if clip["dataset_split"] == split]
+        grouped_systems = {}
+        for label, _ in modes:
+            grouped_systems[label] = {
+                metric: checked_metrics(*(
+                    sum(clip["systems"][label]["metrics"][metric][count] for clip in clips)
+                    for count in ("tp", "fp", "fn")
+                ))
+                for metric in ("onset_pitch", "note_event", "frame_10ms")
+            }
+        dataset_splits[split] = {
+            "recordings": len(clips),
+            "reference_notes": sum(clip["reference_notes"] for clip in clips),
+            "systems": grouped_systems,
+        }
     return {
         "schema_version": 2,
         "build": build_info,
@@ -331,6 +398,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "checksums_verified": not args.skip_checksums,
             "audio_source": "audio_mono-mic.zip",
             "license": "CC BY 4.0",
+            "selected_split": selected_split,
+            "split_policy": guitarset_split_policy(),
         },
         "model": {
             "name": "Spotify Basic Pitch" if model_hash == BUNDLED_MODEL_SHA256 else "User-supplied ONNX model",
@@ -349,6 +418,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         },
         "systems": systems,
         "by_performance_type": performance_types,
+        "by_dataset_split": dataset_splits,
         "per_recording": per_clip,
     }
 
@@ -380,6 +450,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--build-info", type=Path,
                         help="Matching CMake evaluation-build-<config>.json (auto-detected when unique)")
     parser.add_argument("--limit", type=int, help="Evaluate a seeded random subset (default: all recordings)")
+    parser.add_argument("--dataset-split", choices=("all", "train", "validation", "test"),
+                        default="all", help="Filter by the fixed performer-grouped partition")
     parser.add_argument("--seed", type=int, default=2026, help="Subset selection seed")
     parser.add_argument("--skip-yin-baseline", action="store_true", help="Run only the ONNX model")
     parser.add_argument("--skip-checksums", action="store_true", help="Skip the pinned Zenodo MD5 checks")

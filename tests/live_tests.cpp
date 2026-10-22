@@ -34,6 +34,7 @@ public:
     const ModelMetadata& metadata() const noexcept override { return metadata_; }
     ModelOperation load(const ModelLoadOptions&) override {
         ++loads;
+        if (on_load) on_load();
         loaded_ = true;
         return std::monostate{};
     }
@@ -66,6 +67,7 @@ public:
     BackendDiagnostics diagnostics() const override { return {}; }
 
     std::function<bool(std::size_t)> fail;
+    std::function<void()> on_load;
     std::function<void(std::size_t, std::uint64_t, std::uint64_t, std::vector<Note>&)> perturb;
     std::chrono::milliseconds delay{0};
     std::size_t calls{};
@@ -366,11 +368,131 @@ TEST_CASE("simulated clocks give exact capture, analysis, end-to-end and stabili
     REQUIRE(metrics.capture_latency.maximum_seconds == Catch::Approx(0.005).margin(1e-12));
     REQUIRE(metrics.capture_latency.p50_seconds == Catch::Approx(0.005).margin(1e-12));
     REQUIRE(metrics.analysis_latency.p95_seconds == Catch::Approx(0.020).margin(1e-12));
+    REQUIRE(metrics.analysis_latency.p99_seconds == Catch::Approx(0.020).margin(1e-12));
     REQUIRE(metrics.end_to_end_latency.count == 1);
     REQUIRE(metrics.end_to_end_latency.maximum_seconds == Catch::Approx(0.025).margin(1e-12));
     REQUIRE(metrics.stabilization_delay.maximum_seconds == Catch::Approx(0.050).margin(1e-12));
     REQUIRE(metrics.algorithmic_latency.maximum_seconds == Catch::Approx(0.2).margin(1e-12));
+    REQUIRE(metrics.analysis_queue_latency.maximum_seconds == Catch::Approx(0).margin(1e-12));
+    REQUIRE(metrics.confirmation_latency.maximum_seconds == Catch::Approx(.025).margin(1e-12));
+    now += std::chrono::milliseconds(7);
+    const auto batch = session.poll_events();
+    REQUIRE_FALSE(batch.events.empty());
+    REQUIRE(session.metrics().publication_queue_latency.count == batch.events.size());
+    REQUIRE(session.metrics().publication_queue_latency.maximum_seconds >= .007);
     session.finish();
+}
+
+TEST_CASE("sequenced interleaved input rejects replays epochs and layout changes without consuming retries", "[live]") {
+    LiveOptions options;
+    options.format = {8000, 2, ChannelLayout::Stereo};
+    options.stream_epoch = 42;
+    options.threaded = false;
+    options.input_queue_blocks = 1;
+    options.max_block_frames = 4;
+    options.max_recording_seconds = 0;
+    LiveTranscriptionSession session(options);
+    REQUIRE(std::holds_alternative<std::monostate>(session.start()));
+    session.begin_input(100);
+    const std::vector<float> audio(8, .1f);
+    AudioFrameBlock block{options.format, 100, audio, {}, false, 7, 42};
+    REQUIRE(session.push(block) == PushStatus::Accepted);
+    block.first_frame = 104;
+    block.sequence = 8;
+    REQUIRE(session.push(block) == PushStatus::QueueFull);
+    REQUIRE(session.metrics().input_queue_depth == 1);
+    session.pump();
+    REQUIRE(session.push(block) == PushStatus::Accepted);
+    session.pump();
+    block.first_frame = 108;
+    REQUIRE(session.push(block) == PushStatus::InvalidTimestamp);
+    block.sequence = 9;
+    block.stream_epoch = 41;
+    REQUIRE(session.push(block) == PushStatus::InvalidTimestamp);
+    block.stream_epoch = 42;
+    block.format.layout = ChannelLayout::DiscreteInterleaved;
+    REQUIRE(session.push(block) == PushStatus::InvalidFormat);
+    block.format = options.format;
+    block.sequence = 10;
+    REQUIRE(session.push(block) == PushStatus::Accepted);
+    session.pump();
+    session.end_input(112);
+    session.finish();
+    REQUIRE(session.metrics().sequence_gaps == 1);
+    REQUIRE(session.metrics().input_queue_depth == 0);
+    REQUIRE(session.metrics().current_lag_frames == 0);
+    REQUIRE(session.metrics().recording_frames == 0);
+}
+
+TEST_CASE("final stream revisions are immutable and a restart cannot overwrite the previous stream", "[live]") {
+    auto options = window_options();
+    options.stream_id = "take-1";
+    const auto audio = frame_index_audio(frame(7));
+    const auto first = replay(options, std::make_unique<FakeBackend>(fake_truth, fake_rate), audio, 997);
+    REQUIRE_FALSE(first.notes.empty());
+    TranscriptionDocument document(fake_rate);
+    for (const auto& event : first.events) document.apply(event);
+    for (const auto& note : first.notes) {
+        REQUIRE(note.finalized);
+        const auto final = std::find_if(first.events.begin(), first.events.end(), [&](const auto& event) {
+            return event.kind == LiveEventKind::NoteFinalized && event.note.id == note.id;
+        });
+        REQUIRE(final != first.events.end());
+        REQUIRE(std::count_if(first.events.begin(), first.events.end(), [&](const auto& event) {
+            return event.kind == LiveEventKind::NoteFinalized && event.note.id == note.id;
+        }) == 1);
+        REQUIRE(std::none_of(std::next(final), first.events.end(), [&](const auto& event) {
+            return event.note.id == note.id;
+        }));
+        REQUIRE(final->previous);
+        REQUIRE(final->note.revision == final->previous->revision + 1);
+        auto late = *final;
+        late.kind = LiveEventKind::NoteCorrected;
+        late.note.midi_pitch += 1;
+        late.note.revision += 1;
+        document.apply(late);
+        REQUIRE(document.note(note.id)->midi_pitch == note.midi_pitch);
+    }
+    options.stream_id = "take-2";
+    const auto second = replay(options, std::make_unique<FakeBackend>(fake_truth, fake_rate), audio, 4096);
+    for (const auto& event : second.events) document.apply(event);
+    REQUIRE(document.notes().size() == first.notes.size() + second.notes.size());
+    const auto old = first.events.front();
+    document.apply(old);
+    REQUIRE(document.notes().size() == first.notes.size() + second.notes.size());
+}
+
+TEST_CASE("latency targets diagnose misses without changing analysis or event content", "[live]") {
+    auto options = window_options();
+    const auto budget = latency_budget(options, 256);
+    REQUIRE(budget.capture_block_seconds == Catch::Approx(.032));
+    REQUIRE(budget.update_wait_seconds == .25);
+    REQUIRE(budget.stabilization_seconds == .25);
+    REQUIRE_FALSE(budget.provisional_estimate_within_target);
+    auto relaxed = options;
+    relaxed.target_provisional_seconds = 1;
+    relaxed.target_stabilized_seconds = 2;
+    REQUIRE(latency_budget(relaxed, 256).stabilized_estimate_within_target);
+    options.target_provisional_seconds = .001;
+    options.target_stabilized_seconds = .002;
+    Nanoseconds now{std::chrono::seconds(10)};
+    options.clock = [&] { return now; };
+    options.analysis_hook = [&](std::uint64_t) { now += std::chrono::milliseconds(20); };
+    LiveTranscriptionSession session(options,
+        std::make_unique<FakeBackend>(std::vector<Truth>{{60, .3, .8}}, fake_rate));
+    REQUIRE(std::holds_alternative<std::monostate>(session.start()));
+    const auto samples = frame_index_audio(frame(1.5));
+    for (std::size_t offset = 0; offset < samples.size(); offset += frame(.25)) {
+        REQUIRE(session.push({options.format, offset,
+            std::span(samples).subspan(offset, frame(.25)), now, false}) == PushStatus::Accepted);
+        now += std::chrono::milliseconds(5);
+        session.pump();
+    }
+    session.finish();
+    REQUIRE(session.metrics().provisional_target_misses == 1);
+    REQUIRE(session.metrics().stabilized_target_misses == 1);
+    REQUIRE(session.metrics().end_to_end_latency.p99_seconds == Catch::Approx(.025));
+    require_truth(session.snapshot(), {{60, .3, .8}});
 }
 
 TEST_CASE("missing frames and discontinuities become explicit gaps with zero-filled recordings", "[live]") {
@@ -451,13 +573,14 @@ TEST_CASE("model errors recover by reloading or fail explicitly without losing a
     const auto audio = frame_index_audio(frame(7.0));
     SECTION("transient failure") {
         auto backend = std::make_unique<FakeBackend>(fake_truth, fake_rate);
-        auto* raw = backend.get();
+        std::size_t loads = 0;
+        backend->on_load = [&] { ++loads; };
         backend->fail = [](std::size_t call) { return call == 5; };
         auto result = replay(window_options(), std::move(backend), audio, 512);
         REQUIRE(result.state == LiveState::Finished);
         REQUIRE(result.metrics.model_errors == 1);
         REQUIRE(result.metrics.model_recoveries == 1);
-        REQUIRE(raw->loads == 2);
+        REQUIRE(loads == 2);
         require_truth(result.notes, fake_truth);
     }
     SECTION("persistent failure") {
@@ -519,17 +642,18 @@ TEST_CASE("bounded event queues request resynchronization from snapshots", "[liv
         session.pump();
     }
     session.finish();
-    const auto batch = session.poll_events();
-    REQUIRE(batch.events.size() == 3);
+    const auto batch = session.poll_events(1);
+    REQUIRE(batch.events.size() == 1);
     REQUIRE(batch.resync_required);
     REQUIRE(batch.dropped_events > 0);
     REQUIRE(session.metrics().event_queue_high_water == 3);
     TranscriptionDocument document(fake_rate);
     document.apply(batch);
     REQUIRE(document.requires_resync());
-    document.resync(session.snapshot());
+    document.resync(batch.resync_snapshot);
     REQUIRE_FALSE(document.requires_resync());
     require_truth(document.notes(), fake_truth);
+    REQUIRE(session.poll_events().events.empty());
 }
 
 TEST_CASE("documents preserve history and never let live or refined updates overwrite manual edits", "[live]") {
@@ -645,6 +769,7 @@ TEST_CASE("incremental YIN emits stabilized notes and retracts short blips", "[l
             REQUIRE(note.offset_frame);
             REQUIRE(note.source_model == "builtin:yin");
         }
+
         REQUIRE(std::abs(result.notes[0].onset_seconds() - 0.2) < 0.08);
         REQUIRE(std::abs(result.notes[1].onset_seconds() - 0.9) < 0.08);
         REQUIRE(result.metrics.algorithmic_latency.count == 2);
@@ -658,6 +783,47 @@ TEST_CASE("incremental YIN emits stabilized notes and retracts short blips", "[l
     const auto blips = replay(strict, {}, audio, 512);
     REQUIRE(blips.notes.empty());
     REQUIRE(count(blips.events, LiveEventKind::NoteRetracted) == 2);
+}
+
+TEST_CASE("analysis pause keeps recording and bounded input flowing then explicitly resynchronizes", "[live]") {
+    LiveOptions options;
+    options.format = {8000, 1};
+    options.threaded = false;
+    options.max_analysis_lag_seconds = .1;
+    options.max_block_frames = 256;
+    options.input_queue_blocks = 1;
+    LiveTranscriptionSession session(options);
+    REQUIRE(std::holds_alternative<std::monostate>(session.start()));
+    session.begin_input(0);
+    session.pause_analysis(true);
+    const auto audio = tones(8000, {{440, 3}});
+    for (std::size_t offset = 0; offset < audio.size(); offset += 128) {
+        REQUIRE(session.push({options.format, offset,
+            std::span(audio).subspan(offset, std::min<std::size_t>(128, audio.size() - offset)),
+            {}, false}) == PushStatus::Accepted);
+        session.pump();
+    }
+    REQUIRE(session.snapshot().empty());
+    REQUIRE(session.metrics().analysed_audio_seconds == 0);
+    REQUIRE(session.recording().samples == audio);
+    REQUIRE(session.metrics().current_lag_frames == audio.size());
+    REQUIRE(session.metrics().blocks_refused == 0);
+    session.pause_analysis(false);
+    session.pump();
+    REQUIRE(session.metrics().skipped_frames > 0);
+    const auto batch = session.poll_events();
+    REQUIRE(std::any_of(batch.events.begin(), batch.events.end(), [](const auto& event) {
+        return event.kind == LiveEventKind::AnalysisGap;
+    }));
+    session.pause_analysis(true);
+    session.end_input(audio.size());
+    session.finish();
+    REQUIRE(session.state() == LiveState::Finished);
+    REQUIRE(session.recording().samples == audio);
+    auto lossless = options;
+    lossless.lag_policy = LagPolicy::Lossless;
+    LiveTranscriptionSession file(lossless);
+    REQUIRE_THROWS_AS(file.pause_analysis(true), std::logic_error);
 }
 
 TEST_CASE("full-context refinement creates a separate proposal", "[live]") {

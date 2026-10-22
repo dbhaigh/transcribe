@@ -24,7 +24,28 @@ jobs:
       - name: Build
         run: cmake --build --preset windows-${{ matrix.configuration }} --parallel
       - name: Test
-        run: ctest --preset windows-${{ matrix.configuration }}
+        shell: pwsh
+        run: |
+          $evaluationDir = "out\build\windows-${{ matrix.configuration }}\evaluation"
+          New-Item -ItemType Directory -Force -Path $evaluationDir | Out-Null
+          ctest --preset windows-${{ matrix.configuration }} `
+            --output-junit "evaluation\ctest.xml"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Generate release evidence report
+        if: always() && hashFiles('out/build/windows-${{ matrix.configuration }}/evaluation/ctest.xml') != ''
+        run: |
+          python python\release_report.py `
+            --quality "out\build\windows-${{ matrix.configuration }}\evaluation\synthetic-yin.json" `
+            --quality "out\build\windows-${{ matrix.configuration }}\evaluation\synthetic-spectral.json" `
+            --quality "out\build\windows-${{ matrix.configuration }}\evaluation\synthetic-realtime.json" `
+            --quality "out\build\windows-${{ matrix.configuration }}\evaluation\quality-suite.json" `
+            --quality "out\build\windows-${{ matrix.configuration }}\evaluation\polyphonic-suite.json" `
+            --quality-gate "out\build\windows-${{ matrix.configuration }}\evaluation\release-gates\yin.json" `
+            --quality-gate "out\build\windows-${{ matrix.configuration }}\evaluation\release-gates\spectral.json" `
+            --quality-gate "out\build\windows-${{ matrix.configuration }}\evaluation\release-gates\realtime.json" `
+            --ctest-junit "out\build\windows-${{ matrix.configuration }}\evaluation\ctest.xml" `
+            --output-json "out\build\windows-${{ matrix.configuration }}\evaluation\release-report.json" `
+            --output-markdown "out\build\windows-${{ matrix.configuration }}\evaluation\release-report.md"
       - name: Package and smoke-test Windows CLI
         if: matrix.configuration == 'release'
         shell: pwsh
@@ -71,7 +92,27 @@ jobs:
       - name: Build
         run: cmake --build --preset linux-${{ matrix.compiler }}-${{ matrix.configuration }} --parallel
       - name: Test
-        run: ctest --preset linux-${{ matrix.compiler }}-${{ matrix.configuration }}
+        run: |
+          evaluation_dir="out/build/linux-${{ matrix.compiler }}-${{ matrix.configuration }}/evaluation"
+          mkdir -p "$evaluation_dir"
+          ctest --preset linux-${{ matrix.compiler }}-${{ matrix.configuration }} \
+            --output-junit "evaluation/ctest.xml"
+      - name: Generate release evidence report
+        if: always() && hashFiles('out/build/linux-${{ matrix.compiler }}-${{ matrix.configuration }}/evaluation/ctest.xml') != ''
+        run: |
+          evaluation_dir="out/build/linux-${{ matrix.compiler }}-${{ matrix.configuration }}/evaluation"
+          python3 python/release_report.py \
+            --quality "$evaluation_dir/synthetic-yin.json" \
+            --quality "$evaluation_dir/synthetic-spectral.json" \
+            --quality "$evaluation_dir/synthetic-realtime.json" \
+            --quality "$evaluation_dir/quality-suite.json" \
+            --quality "$evaluation_dir/polyphonic-suite.json" \
+            --quality-gate "$evaluation_dir/release-gates/yin.json" \
+            --quality-gate "$evaluation_dir/release-gates/spectral.json" \
+            --quality-gate "$evaluation_dir/release-gates/realtime.json" \
+            --ctest-junit "$evaluation_dir/ctest.xml" \
+            --output-json "$evaluation_dir/release-report.json" \
+            --output-markdown "$evaluation_dir/release-report.md"
       - name: Package and smoke-test Release CLI
         if: matrix.configuration == 'release'
         run: |
@@ -176,7 +217,26 @@ jobs:
       - name: Build
         run: cmake --build build-onnx --parallel
       - name: Test
-        run: ctest --test-dir build-onnx --output-on-failure
+        run: |
+          mkdir -p build-onnx/evaluation
+          ctest --test-dir build-onnx --output-on-failure \
+            --output-junit evaluation/ctest.xml
+      - name: Generate CPU ONNX release evidence report
+        if: always() && hashFiles('build-onnx/evaluation/ctest.xml') != ''
+        run: |
+          python3 python/release_report.py \
+            --quality build-onnx/evaluation/synthetic-yin.json \
+            --quality build-onnx/evaluation/synthetic-spectral.json \
+            --quality build-onnx/evaluation/synthetic-realtime.json \
+            --quality build-onnx/evaluation/synthetic-onnx.json \
+            --quality build-onnx/evaluation/quality-suite.json \
+            --quality build-onnx/evaluation/polyphonic-suite.json \
+            --quality-gate build-onnx/evaluation/release-gates/yin.json \
+            --quality-gate build-onnx/evaluation/release-gates/spectral.json \
+            --quality-gate build-onnx/evaluation/release-gates/realtime.json \
+            --ctest-junit build-onnx/evaluation/ctest.xml \
+            --output-json build-onnx/evaluation/release-report.json \
+            --output-markdown build-onnx/evaluation/release-report.md
       - name: Package and smoke-test CPU ONNX
         run: |
           package_dir="$RUNNER_TEMP/transcriber-onnx-package"
@@ -232,7 +292,7 @@ jobs:
       - name: Build
         run: cmake --build build-webview2 --config Release --parallel
       - name: Test UI and engraving assets
-        run: ctest --test-dir build-webview2 -C Release --output-on-failure -R "ui_asset_smoke|notation_fixture_smoke"
+        run: ctest --test-dir build-webview2 -C Release --output-on-failure -R "ui_asset_smoke|ui_workflow_browser|notation_fixture_smoke|cli_export_validation|dependency_manifest_smoke"
       - name: Package and smoke-test WebView2/Verovio payload
         shell: pwsh
         run: |

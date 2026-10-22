@@ -1,4 +1,5 @@
 #include "transcribe/audio.hpp"
+#include "transcribe/path.hpp"
 
 #include <algorithm>
 #include <array>
@@ -93,20 +94,25 @@ float decode_sample(const unsigned char* data, std::uint16_t encoding, std::uint
 } // namespace
 
 #ifdef TRANSCRIBE_ENABLE_FFMPEG
-AudioBuffer read_audio_ffmpeg(const std::filesystem::path& path);
+AudioBuffer read_audio_ffmpeg(const std::filesystem::path& path, std::stop_token cancellation);
 #endif
 
 AudioBuffer read_audio(const std::filesystem::path& path) {
-    auto extension = path.extension().string();
+    return read_audio(path, {});
+}
+
+AudioBuffer read_audio(const std::filesystem::path& path, std::stop_token cancellation) {
+    if (cancellation.stop_requested()) throw std::runtime_error("Audio decoding cancelled.");
+    auto extension = path_utf8(path.extension());
     std::transform(extension.begin(), extension.end(), extension.begin(),
                    [](unsigned char character) {
                        return static_cast<char>(std::tolower(character));
                    });
     if (extension == ".wav") {
-        return read_wav(path);
+        return read_wav(path, cancellation);
     }
 #ifdef TRANSCRIBE_ENABLE_FFMPEG
-    return read_audio_ffmpeg(path);
+    return read_audio_ffmpeg(path, cancellation);
 #else
     throw std::runtime_error(
         "Unsupported audio format. This build reads WAV; enable TRANSCRIBE_ENABLE_FFMPEG for other formats.");
@@ -114,31 +120,45 @@ AudioBuffer read_audio(const std::filesystem::path& path) {
 }
 
 AudioBuffer read_wav(const std::filesystem::path& path) {
+    return read_wav(path, {});
+}
+
+AudioBuffer read_wav(const std::filesystem::path& path, std::stop_token cancellation) {
+    if (cancellation.stop_requested()) throw std::runtime_error("WAV decoding cancelled.");
     AudioBuffer audio;
-    read_wav_blocks(path, 4096, [&audio](const AudioBlockView& block) {
+    read_wav_blocks(path, 4096, [&](const AudioBlockView& block) {
+        if (cancellation.stop_requested()) throw std::runtime_error("WAV decoding cancelled.");
+        if (audio.sample_rate == 0) audio.samples.reserve(block.total_frames);
         audio.sample_rate = block.sample_rate;
         audio.samples.insert(audio.samples.end(), block.samples.begin(), block.samples.end());
     });
     return audio;
 }
 
-void read_wav_blocks(
+static WavInfo read_wav_blocks_impl(
     const std::filesystem::path& path, std::size_t block_frames,
-    const std::function<void(const AudioBlockView&)>& block_callback) {
+    const std::function<void(const AudioBlockView&)>& block_callback, bool metadata_only) {
     if (block_frames == 0 || !block_callback) {
         throw std::invalid_argument("WAV block size and callback must be valid.");
     }
     std::ifstream input(path, std::ios::binary);
     if (!input) {
-        throw std::runtime_error("Could not open input file: " + path.string());
+        throw std::runtime_error("Could not open input file: " + path_utf8(path));
     }
     if (read_fourcc(input) != "RIFF") {
         throw std::runtime_error("Input is not a RIFF/WAVE file.");
     }
-    (void)read_u32(input);
+    const auto riff_size = read_u32(input);
     if (read_fourcc(input) != "WAVE") {
         throw std::runtime_error("Input is not a RIFF/WAVE file.");
     }
+    input.seekg(0, std::ios::end);
+    const auto file_size = input.tellg();
+    const auto riff_end = static_cast<std::streamoff>(riff_size) + 8;
+    if (riff_size < 4 || file_size < riff_end) {
+        throw std::runtime_error("WAV RIFF header declares a truncated or invalid file size.");
+    }
+    input.seekg(12);
 
     Format format{};
     bool have_format = false;
@@ -149,6 +169,10 @@ void read_wav_blocks(
         const std::string chunk = read_fourcc(input);
         const std::uint32_t size = read_u32(input);
         const auto chunk_start = input.tellg();
+        if (chunk_start < 0 || chunk_start > riff_end ||
+            static_cast<std::streamoff>(size) > riff_end - chunk_start) {
+            throw std::runtime_error("WAV chunk exceeds the declared RIFF size.");
+        }
 
         if (chunk == "fmt ") {
             if (size < 16) {
@@ -174,7 +198,8 @@ void read_wav_blocks(
             break;
         }
         input.clear();
-        input.seekg(chunk_start + static_cast<std::streamoff>(size + (size & 1U)));
+        input.seekg(chunk_start + static_cast<std::streamoff>(size) +
+                    static_cast<std::streamoff>(size & 1U));
     }
 
     if (!have_format || !have_data || format.channels == 0 || format.sample_rate == 0 ||
@@ -184,6 +209,12 @@ void read_wav_blocks(
     const std::size_t bytes_per_sample = (format.bits_per_sample + 7U) / 8U;
     if (bytes_per_sample * format.channels > format.block_align) {
         throw std::runtime_error("WAV block alignment is smaller than its sample data.");
+    }
+    if (!((format.encoding == 1 &&
+           (format.bits_per_sample == 8 || format.bits_per_sample == 16 ||
+            format.bits_per_sample == 24 || format.bits_per_sample == 32)) ||
+          (format.encoding == 3 && format.bits_per_sample == 32))) {
+        throw std::runtime_error("Unsupported WAV encoding/width. Use PCM 8/16/24/32-bit or IEEE float 32-bit WAV.");
     }
     const auto maximum_block =
         static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) /
@@ -195,10 +226,18 @@ void read_wav_blocks(
 
     const std::size_t frames = data_size / format.block_align;
     input.clear();
+    input.seekg(0, std::ios::end);
+    const auto file_end = input.tellg();
+    if (file_end < data_start ||
+        static_cast<std::streamoff>(data_size) > file_end - data_start) {
+        throw std::runtime_error("WAV data chunk is truncated.");
+    }
     input.seekg(data_start);
+    const WavInfo info{format.sample_rate, format.channels, frames};
+    if (metadata_only) return info;
     if (frames == 0) {
         block_callback({format.sample_rate, 0, 0, {}});
-        return;
+        return info;
     }
     std::vector<unsigned char> chunk(block_frames * format.block_align);
     std::size_t frames_read = 0;
@@ -224,6 +263,16 @@ void read_wav_blocks(
         block_callback({format.sample_rate, frames_read, frames, decoded});
         frames_read += count;
     }
+    return info;
+}
+
+void read_wav_blocks(const std::filesystem::path& path, std::size_t block_frames,
+                     const std::function<void(const AudioBlockView&)>& block_callback) {
+    (void)read_wav_blocks_impl(path, block_frames, block_callback, false);
+}
+
+WavInfo inspect_wav(const std::filesystem::path& path) {
+    return read_wav_blocks_impl(path, 1, [](const AudioBlockView&) {}, true);
 }
 
 } // namespace transcribe

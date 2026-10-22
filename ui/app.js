@@ -2,6 +2,7 @@
   const $ = (id) => document.getElementById(id);
   const inputs = {
     input: $("input-path"),
+    isolated: $("isolated-path"),
     model: $("model-path"),
     musicxml: $("musicxml-path"),
     tab: $("tab-path"),
@@ -34,6 +35,25 @@
   let savedAudioDeviceId = "";
   let savedSampleRate = "";
   let savedChannels = "";
+  let timelineDuration = 1;
+  let cursorTime = null;
+  let sourceChanged = false;
+  let selectedNoteId = "";
+  let analysisPaused = false;
+  let recordingSeconds = 0;
+  let cancelPending = false;
+  let rollIndex = window.TranscribeTimeline.index([]);
+  let pitchLow = 60;
+  let pitchHigh = 72;
+
+  function clearQueuedPreviews() {
+    cancelAnimationFrame(liveFrame);
+    cancelAnimationFrame(audioPreviewFrame);
+    liveFrame = 0;
+    audioPreviewFrame = 0;
+    queuedLiveMessage = null;
+    queuedAudioPreview = null;
+  }
 
   function send(action, values = {}) {
     if (window.chrome && window.chrome.webview) {
@@ -50,14 +70,48 @@
   }
 
   function setStatus(text, percent) {
-    $("status-text").textContent = text;
-    if (typeof percent === "number") {
-      $("progress-value").textContent = `${percent}%`;
-      $("progress-bar").style.width = `${percent}%`;
+    if ($("status-text").textContent !== text) $("status-text").textContent = text;
+    $("status-text").title = text;
+    const known = Number.isFinite(percent);
+    const value = known ? Math.round(Math.max(0, Math.min(100, percent))) : 0;
+    $("progress-value").textContent = known ? `${value}% phase` : "Working";
+    $("progress-bar").style.width = `${value}%`;
+    $("phase-progress").classList.toggle("indeterminate", !known);
+    $("phase-progress").setAttribute("aria-valuetext",
+      known ? `${text}: ${value}% of current phase` : `${text}: progress unavailable`);
+    if (known) $("phase-progress").setAttribute("aria-valuenow", String(value));
+    else $("phase-progress").removeAttribute("aria-valuenow");
+    if (["processing", "canceling"].includes($("activity-panel").dataset.state)) {
+      $("activity-detail").textContent = text;
     }
     if (text.toLowerCase().includes("failed") || text.toLowerCase().includes("error")) {
       setCaptureState("Backend error", "error");
     }
+  }
+
+  function setActivity(state, heading, detail) {
+    $("activity-panel").dataset.state = state;
+    $("activity-heading").textContent = heading;
+    $("activity-detail").textContent = detail;
+    updateJourney();
+  }
+
+  function updateJourney() {
+    const ready = Boolean(inputs.input.value.trim()) || mode === "asio";
+    const reviewing = hasAcceptedScore && notes.length > 0;
+    const step = reviewing ? "review"
+      : $("transcribe-button").disabled ? "analyze" : ready ? "setup" : "open";
+    ["open", "setup", "analyze", "review"].forEach((name) => {
+      if (name === step) $(`journey-${name}`).setAttribute("aria-current", "step");
+      else $(`journey-${name}`).removeAttribute("aria-current");
+    });
+    $("journey-next").textContent = reviewing
+      ? "Select a note to inspect evidence and edit. Save the project to keep your work, or Export for other notation software."
+      : step === "analyze"
+        ? "Analysis runs in the backend. You can cancel transcription; saving and export must finish writing safely."
+        : ready
+          ? "Choose an instrument prior and analysis mode in the source panel, then select Transcribe. Existing output paths can be changed under export settings."
+          : "Use Open audio to choose a recording. No model download is required.";
   }
 
   function setCaptureState(text, state = "ready") {
@@ -96,15 +150,19 @@
   }
 
   function updateProjectTitle() {
+    $("save-state").textContent = projectDirty || hasUnexportedEdits
+      ? "Unsaved edits" : "No unsaved edits";
+    $("save-state").dataset.dirty = String(projectDirty || hasUnexportedEdits);
     if (activeProjectTitle) {
       $("project-title").textContent =
         `${activeProjectTitle}${projectDirty ? " *" : ""}`;
       return;
     }
     const path = inputs.input.value.trim();
-    $("project-title").textContent = mode === "asio"
+    $("project-title").textContent = (mode === "asio"
       ? "Live ASIO capture"
-      : path ? path.split(/[\\/]/).pop() : "Untitled session";
+      : path ? path.split(/[\\/]/).pop() : "Untitled session") +
+      (projectDirty || hasUnexportedEdits ? " *" : "");
   }
 
   function acceptProjectInfo(project) {
@@ -122,6 +180,16 @@
       if (project.exports.midi) inputs.midi.value = project.exports.midi;
     }
     const settings = project.settings || {};
+    $("project-annotation").value = project.annotation_text || "";
+    if (settings.quantization) $("quantization-mode").value = settings.quantization;
+    if (Number.isFinite(settings.quantization_strength))
+      $("quantization-strength").value = String(settings.quantization_strength);
+    if (Number.isFinite(settings.minimum_rhythm_evidence))
+      $("rhythm-evidence").value = String(settings.minimum_rhythm_evidence);
+    if (Object.hasOwn(settings, "retain_review_evidence"))
+      $("review-mode").checked = settings.retain_review_evidence;
+    if (Object.hasOwn(settings, "bounded_inference"))
+      $("bounded-inference").checked = settings.bounded_inference;
     if (Object.hasOwn(settings, "tempo_automatic")) {
       $("tempo-auto").checked = Boolean(settings.tempo_automatic);
     }
@@ -154,7 +222,7 @@
       $("capo-fret").value = String(settings.capo_fret);
     }
     if (settings.instrument_prior) {
-      $("instrument-prior").value = settings.instrument_prior;
+      $("instrument-prior").value = settings.instrument_prior === "none" ? "auto" : settings.instrument_prior;
     }
     if (Object.hasOwn(settings, "model_path")) inputs.model.value = settings.model_path;
     if (settings.live_backend) $("live-backend").value = settings.live_backend;
@@ -247,13 +315,24 @@
   }
 
   function updateAnalysisControlState() {
+    $("bounded-inference").disabled = $("transcribe-button").disabled ||
+      mode !== "file" || !window.transcribeConfig?.onnx;
     const builtInAnalysis = !inputs.model.value.trim();
     const disabled = $("transcribe-button").disabled || !builtInAnalysis;
-    $("instrument-prior").disabled = disabled;
+    $("instrument-prior").disabled = $("transcribe-button").disabled;
     $("quality-mode").disabled = disabled;
     $("live-backend").disabled = $("transcribe-button").disabled;
+    ["isolation-enabled", "isolated-path", "isolation-reviewed", "preprocessing-fallback",
+      "isolation-preview-start", "preview-mixture", "preview-isolated"].forEach(id => {
+      $(id).disabled = $("transcribe-button").disabled || mode !== "file";
+    });
     const onnxOption = $("live-backend").querySelector('option[value="onnx"]');
     onnxOption.disabled = !window.transcribeConfig?.onnx;
+    $("analysis-explanation").textContent = !builtInAnalysis
+      ? "The selected local model defines analysis behavior. Instrument remains a prior; analysis mode does not override the model."
+      : mode === "asio"
+        ? "Live backend controls mono/polyphonic operation. Pause analysis keeps recording."
+        : "Built-in YIN is monophonic. Instrument is a prior, not separation; fast preview may miss notes.";
   }
 
   function updateTempoControlState() {
@@ -261,13 +340,28 @@
       $("transcribe-button").disabled || $("tempo-auto").checked;
   }
 
-  function setBusy(busy, preserveScore = false, liveCapture = false) {
+  function setBusy(busy, preserveScore = false, liveCapture = false, cancellable = false) {
+    cancelPending = false;
+    $("workspace").setAttribute("aria-busy", String(busy));
+    if (busy) setActivity("processing", liveCapture ? "Recording audio" : "Processing",
+      $("status-text").textContent);
     captureActive = Boolean(busy && liveCapture);
+    $("pause-analysis").classList.toggle("hidden", !captureActive);
+    $("pause-analysis").disabled = !captureActive;
+    if (!captureActive) {
+      analysisPaused = false;
+      $("pause-analysis").setAttribute("aria-pressed", "false");
+      $("pause-analysis").textContent = "Pause analysis";
+    }
+    if (captureActive && !preserveScore) {
+      recordingSeconds = 0;
+      $("recording-timer").textContent = "00:00.0";
+    }
     $("transcribe-button").disabled = busy;
     $("record-button").disabled =
       busy || !window.transcribeConfig?.asio || !asioDevices.length;
     $("accept-proposal").disabled = busy || !hasPendingProposal;
-    $("cancel-button").classList.toggle("hidden", !captureActive);
+    $("cancel-button").classList.toggle("hidden", !busy || (!cancellable && !captureActive));
     $("transcribe-button").querySelector("span:last-child").textContent =
       busy ? (captureActive ? "Recording..." : "Transcribing...")
         : (mode === "asio" ? "Start capture" : "Transcribe");
@@ -286,7 +380,8 @@
     $("asio-sample-rate").disabled = busy || !asioDevices.length;
     $("asio-channels").disabled = busy || !asioDevices.length;
     ["tempo-auto", "meter-control", "key-control", "minor-control",
-      "pickup-control", "written-transposition-control"].forEach((id) => {
+      "pickup-control", "written-transposition-control", "quantization-mode",
+      "quantization-strength", "rhythm-evidence"].forEach((id) => {
       $(id).disabled = busy;
     });
     updateTempoControlState();
@@ -298,20 +393,23 @@
     updateAnalysisControlState();
     $("polyphonic").disabled = busy || !window.transcribeConfig?.onnx;
     $("open-folder-button").disabled = busy;
+    $("status-output-folder").disabled = busy;
     $("drop-browse").disabled = busy;
-    $("cancel-button").textContent = "Stop capture";
-    $("cancel-button").disabled = !captureActive;
+    $("cancel-button").textContent = captureActive ? "Stop capture" : "Cancel analysis";
+    $("cancel-button").disabled = !busy || (!cancellable && !captureActive);
     $("refine-live").disabled = busy || !hasLiveRecording;
     $("apply-refinement").disabled = busy || !hasPendingRefinement;
     $("discard-refinement").disabled = busy || !hasPendingRefinement;
     $("undo-refinement").disabled = busy || hasUnexportedEdits;
     ["new-project", "open-project", "save-project", "save-score-copy",
+      "save-portable-project", "relink-project-audio",
       "project-summary-button"].forEach((id) => {
       $(id).disabled = busy;
     });
     window.dispatchEvent(new CustomEvent("transcribe:busy", {
-      detail: { busy, preserveScore, liveCapture: captureActive },
+      detail: { busy, preserveScore, liveCapture: captureActive && !preserveScore },
     }));
+    updateJourney();
   }
 
   function selectedAsioDevice() {
@@ -404,7 +502,13 @@
       if (saved.capoFret !== undefined) $("capo-fret").value = saved.capoFret;
       if (saved.alternatives !== undefined) $("tab-alternatives").value = saved.alternatives;
       $("preserve-timing").checked = Boolean(saved.preserveTiming);
+      if (saved.quantization) $("quantization-mode").value = saved.quantization;
+      if (saved.quantizationStrength !== undefined) {
+        $("quantization-strength").value = saved.quantizationStrength;
+      }
+      if (saved.rhythmEvidence !== undefined) $("rhythm-evidence").value = saved.rhythmEvidence;
       $("review-mode").checked = Boolean(saved.reviewMode);
+      $("bounded-inference").checked = Boolean(saved.boundedInference);
       if (saved.instrument) $("instrument-prior").value = saved.instrument;
       if (saved.quality) $("quality-mode").value = saved.quality;
       if (saved.tempo) $("tempo-control").value = saved.tempo;
@@ -430,6 +534,7 @@
   }
 
   function savePaths() {
+    updateJourney();
     localStorage.setItem("transcribe.paths", JSON.stringify({
       input: inputs.input.value,
       model: inputs.model.value,
@@ -443,7 +548,11 @@
       capoFret: $("capo-fret").value,
       alternatives: $("tab-alternatives").value,
       preserveTiming: $("preserve-timing").checked,
+      quantization: $("quantization-mode").value,
+      quantizationStrength: $("quantization-strength").value,
+      rhythmEvidence: $("rhythm-evidence").value,
       reviewMode: $("review-mode").checked,
+      boundedInference: $("bounded-inference").checked,
       instrument: $("instrument-prior").value,
       quality: $("quality-mode").value,
       tempo: $("tempo-control").value,
@@ -476,6 +585,7 @@
     updateProjectTitle();
     updateModelStatus();
     updateReviewModeState();
+    updateAnalysisControlState();
     savePaths();
   }
 
@@ -525,20 +635,34 @@
         `${Number(note.start).toFixed(2)}s · ${Number(note.duration).toFixed(2)}s`;
       row.querySelector(".note-confidence").textContent = note.uncertain
         ? "UNCERTAIN"
-        : note.state ? String(note.state).replaceAll("_", " ").toUpperCase()
+        : note.finalized ? "FINALIZED"
+          : note.state ? String(note.state).replaceAll("_", " ").toUpperCase()
+          : Number.isFinite(note.calibrated_confidence)
+            ? `${Math.round(Math.max(0, Math.min(1, note.calibrated_confidence)) * 100)}% calibrated`
           : Number.isFinite(note.confidence)
-            ? `${Math.round(Math.max(0, Math.min(1, note.confidence)) * 100)}%`
+            ? `score ${note.confidence.toFixed(2)}`
             : "—";
     });
   }
 
   function renderNotes(nextNotes, final = false, notifyEditor = true) {
+    if (!final && notifyEditor && Array.isArray(nextNotes) && nextNotes.length === notes.length &&
+        nextNotes.every((note, index) => {
+          const previous = notes[index];
+          return ["id", "revision", "midi", "start", "duration", "state", "finalized",
+            "user_authored", "uncertain", "string", "fret", "calibrated_confidence"]
+            .every(key => note[key] === previous[key]);
+        })) return;
     notes = Array.isArray(nextNotes) ? nextNotes : [];
+    rollIndex = window.TranscribeTimeline.index(notes);
+    pitchLow = notes.reduce((low, note) => Math.min(low, note.midi), 127);
+    pitchHigh = notes.reduce((high, note) => Math.max(high, note.midi), 0);
     duration = Math.max(1, notes.reduce((end, note) =>
-      Math.max(end, note.start + note.duration), 0));
+      Math.max(end, note.start + note.duration), 0), timelineDuration);
     $("note-count").textContent = notes.length ? String(notes.length) : "—";
     $("empty-roll").classList.toggle("hidden", notes.length > 0);
     renderNoteList();
+    updateJourney();
     if (final) $("preview-badge").textContent = "COMPLETE";
     drawRoll();
     if (notifyEditor) {
@@ -548,6 +672,7 @@
 
   function drawRoll() {
     const canvas = $("piano-roll");
+    canvas.dataset.paintCount = String(Number(canvas.dataset.paintCount || 0) + 1);
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     const scale = window.devicePixelRatio || 1;
@@ -559,11 +684,11 @@
     context.setTransform(scale, 0, 0, scale, 0, 0);
     const width = rect.width;
     const height = rect.height;
-    context.fillStyle = "#0c141a";
+    context.fillStyle = getComputedStyle(document.body).getPropertyValue("--field");
     context.fillRect(0, 0, width, height);
     if (!notes.length) return;
-    const low = Math.min(...notes.map((note) => note.midi));
-    const high = Math.max(...notes.map((note) => note.midi));
+    const low = pitchLow;
+    const high = pitchHigh;
     const range = Math.max(12, high - low + 2);
     const minPitch = low - Math.max(0, (range - (high - low + 2)) / 2);
     const pitchHeight = height / range;
@@ -584,27 +709,44 @@
       context.lineTo(Math.round(x) + .5, height);
       context.stroke();
     }
-    notes.forEach((note, index) => {
-      const x = Math.max(0, note.start / duration * width);
-      const w = Math.max(2, note.duration / duration * width);
+    const view = window.TranscribeTimeline.bounds(duration);
+    const visible = rollIndex(duration);
+    const stride = Math.max(1, Math.ceil(visible.length / 4000));
+    let painted = 0;
+    visible.forEach(({ note }, index) => {
+      if (index % stride && note.id !== selectedNoteId) return;
+      painted += 1;
+      const x = window.TranscribeTimeline.x(note.start, duration, width);
+      const w = Math.max(2, window.TranscribeTimeline.x(note.start + note.duration, duration, width) - x);
       const y = height - ((note.midi + .5 - minPitch) / range) * height;
-      const alpha = .52 + Math.max(0, Math.min(1, note.confidence)) * .44;
-      const color = colors[(note.midi % colors.length + colors.length) % colors.length];
+      const alpha = note.state === "provisional" ? .55 : .9;
+      const color = note.user_authored ? "#c39b35" : note.uncertain ? "#e27467"
+        : note.state === "provisional" ? "#819ee5" : note.finalized ? "#32ae8c" : "#8b83d0";
       context.globalAlpha = alpha;
       context.fillStyle = color;
       context.beginPath();
       const radius = Math.min(3, w / 2, pitchHeight / 2);
       context.roundRect(x, y - Math.max(2, pitchHeight * .33), w, Math.max(4, pitchHeight * .66), radius);
       context.fill();
+      if (note.id === selectedNoteId) {
+        context.strokeStyle = document.body.dataset.theme === "light" ? "#795100" : "#fff2bd";
+        context.stroke();
+      }
       context.globalAlpha = 1;
     });
-    $("pitch-high").textContent = notes.reduce((a, b) => a.midi > b.midi ? a : b).name;
-    $("pitch-low").textContent = notes.reduce((a, b) => a.midi < b.midi ? a : b).name;
-    $("roll-end").textContent = `${duration.toFixed(1)}s`;
-    $("roll-duration").textContent = "Time";
+    const pitchName = (midi) => `${["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"][midi % 12]}${Math.floor(midi / 12) - 1}`;
+    $("pitch-high").textContent = pitchName(high);
+    $("pitch-low").textContent = pitchName(low);
+    $("roll-end").textContent = `${view.end.toFixed(1)}s`;
+    document.querySelector(".roll-time span").textContent = `${view.start.toFixed(1)}s`;
+    canvas.dataset.visibleNotes = String(visible.length);
+    canvas.dataset.paintedNotes = String(painted);
+    $("roll-duration").textContent = stride > 1
+      ? `${visible.length} notes · sampled overview; zoom to inspect every note` : "Time";
   }
 
   function showError(message) {
+    setActivity("error", "Action could not be completed", message);
     $("preview-badge").textContent = "ERROR";
     $("preview-badge").className = "preview-badge error";
     $("result-message").textContent = message;
@@ -679,6 +821,14 @@
 
   function handleMessage(event) {
     const message = event.data || {};
+    if (message.type === "analysis-paused") {
+      analysisPaused = Boolean(message.paused);
+      $("pause-analysis").disabled = !captureActive;
+      $("pause-analysis").setAttribute("aria-pressed", String(analysisPaused));
+      $("pause-analysis").textContent = analysisPaused ? "Resume analysis" : "Pause analysis";
+      setCaptureState(analysisPaused ? "Recording · analysis paused" : "Capturing · live inference", "active");
+      return;
+    }
     if (message.type === "asio-devices") {
       acceptAsioDevices(message.devices);
       return;
@@ -706,25 +856,34 @@
       return;
     }
     if (message.type === "field") {
+      if (message.field === "project-relink") {
+        if (message.value) window.dispatchEvent(new CustomEvent("transcribe:project-relink", {
+          detail: { path: message.value, generation: ++projectEditGeneration },
+        }));
+        return;
+      }
       if (message.field === "project-open") {
         if (message.value) send("open-project", { path: message.value });
         return;
       }
       if (message.field === "project-save" ||
-          message.field === "project-copy") {
+          message.field === "project-copy" || message.field === "project-portable") {
         const scoreOnly = message.field === "project-copy" ||
           pendingSaveAsScoreOnly;
         pendingSaveAsScoreOnly = false;
         if (!message.value) return;
         window.dispatchEvent(new CustomEvent(
           scoreOnly ? "transcribe:project-copy" : "transcribe:project-save",
-          { detail: { path: message.value, scoreOnly } },
+          { detail: { path: message.value, scoreOnly, copyAudio: message.field === "project-portable" } },
         ));
         return;
       }
       const input = inputs[message.field];
       if (input) {
         input.value = message.value;
+        if (message.field === "input" || message.field === "isolated") {
+          $("isolation-reviewed").checked = false;
+        }
         savePaths();
         if (message.field === "model") {
           updateAnalysisControlState();
@@ -757,11 +916,21 @@
       window.dispatchEvent(new CustomEvent("transcribe:project-autosaving", {
         detail: message,
       }));
-      setStatus("Saving an autosave recovery copy", 0);
+      $("save-state").title = "Writing a recovery copy. Unsaved edits still require Save.";
+      return;
+    }
+    if (message.type === "project-relinked") {
+      acceptProjectInfo(message.project);
+      projectDirty = true;
+      hasUnexportedEdits = true;
+      $("isolation-reviewed").checked = false;
+      inputs.isolated.value = "";
+      updateProjectTitle();
+      setStatus("Recording relocated. Score edits preserved; Save to keep the new reference. Non-WAV timing identity must be checked manually.", 100);
       return;
     }
     if (message.type === "project-autosaved") {
-      setStatus("Autosave recovery copy saved", 100);
+      $("save-state").title = "Recovery copy saved. This does not replace an explicit project Save.";
       return;
     }
     if (message.type === "project-autosave-error") {
@@ -792,6 +961,7 @@
       return;
     }
     if (message.type === "progress") {
+      if (!cancelPending) setActivity("processing", "Processing", message.status || "Analyzing audio");
       const capture = (message.status || "").toLowerCase().includes("captur");
       if ((message.status || "").toLowerCase().includes("opening project")) {
         setBusy(true, true, false);
@@ -799,35 +969,33 @@
       setCaptureState(capture ? "Capturing" : "Processing", capture ? "active" : "busy");
       $("preview-badge").textContent = "ANALYZING";
       $("preview-badge").className = "preview-badge active";
-      setStatus(message.status || "Analyzing audio", message.progress);
+      setStatus(message.status || "Analyzing audio", cancelPending ? undefined : message.progress);
       return;
     }
     if (message.type === "audio-preview") {
+      if (sourceChanged) return;
       updateInputLevel(message.waveform, message.replace);
-      queuedAudioPreview = message;
-      if (!audioPreviewFrame) {
-        audioPreviewFrame = requestAnimationFrame(() => {
-          audioPreviewFrame = 0;
-          const preview = queuedAudioPreview;
-          queuedAudioPreview = null;
-          if (preview) {
-            window.dispatchEvent(new CustomEvent("transcribe:audio-preview", {
-              detail: preview,
-            }));
-          }
-        });
-      }
+      window.dispatchEvent(new CustomEvent("transcribe:audio-preview", { detail: message }));
       return;
     }
     if (message.type === "live") {
-      queuedLiveMessage = message;
+      if (hasAcceptedScore || sourceChanged) return;
+      const events = [...(queuedLiveMessage?.events || []), ...(message.events || [])];
+      queuedLiveMessage = { ...message, events };
       if (!liveFrame) {
         liveFrame = requestAnimationFrame(() => {
           liveFrame = 0;
           const latest = queuedLiveMessage;
           queuedLiveMessage = null;
           if (!latest) return;
-          renderNotes(latest.notes);
+          if (Number.isFinite(latest.recording_seconds)) {
+            recordingSeconds = latest.recording_seconds;
+            const minutes = Math.floor(recordingSeconds / 60);
+            $("recording-timer").textContent =
+              `${String(minutes).padStart(2, "0")}:${(recordingSeconds % 60).toFixed(1).padStart(4, "0")}`;
+          }
+          if (!analysisPaused) renderNotes(latest.notes);
+          window.dispatchEvent(new CustomEvent("transcribe:live-events", { detail: latest.events || [] }));
           if (Array.isArray(latest.events) && latest.events.length) {
             recentEvents = [...recentEvents, ...latest.events].slice(-8);
             const latency = latest.metrics?.end_to_end?.p95_ms ??
@@ -842,10 +1010,21 @@
             const analysis = Number(latest.metrics.analysis?.p95_ms) || 0;
             const input = Number(latest.metrics.input_queue_high_water) || 0;
             const capacity = Number(latest.metrics.input_queue_capacity) || 0;
-            $("status-text").textContent =
-              `Live · end-to-end p95 ${Number(latest.metrics.end_to_end?.p95_ms || 0).toFixed(1)} ms · analysis p95 ${analysis.toFixed(1)} ms · queue ${input}/${capacity}`;
+            const warning = latest.metrics.overloaded || latest.metrics.gap_frames
+              ? `${latest.metrics.overloaded ? "OVERLOAD" : "INPUT GAP"}: refused ${latest.metrics.blocks_refused || 0}, gaps ${latest.metrics.gap_frames || 0} frames, events lost ${latest.metrics.events_dropped || 0} · `
+              : "";
+            const driver = Number.isFinite(latest.driver_input_latency_ms)
+              ? `${latest.driver_input_latency_ms.toFixed(1)} ms reported` : "unknown";
+            $("live-diagnostics").textContent =
+              `${warning}Live · driver ${driver} · period ${Number(latest.callback_period_ms || 0).toFixed(1)} ms · onset p95 ${Number(latest.metrics.end_to_end?.p95_ms || 0).toFixed(1)} ms · window ${Number(latest.metrics.analysis_window?.p95_ms || 0).toFixed(1)} ms · input wait ${Number(latest.metrics.capture?.p95_ms || 0).toFixed(1)} ms · analysis wait ${Number(latest.metrics.analysis_queue?.p95_ms || 0).toFixed(1)} ms · analysis p95 ${analysis.toFixed(1)} ms · confirmation ${Number(latest.metrics.confirmation?.p95_ms || 0).toFixed(1)} ms · event wait ${Number(latest.metrics.publication_queue?.p95_ms || 0).toFixed(1)} ms · UI dispatch ${Number(latest.ui_dispatch_delay_ms || 0).toFixed(1)} ms · queue ${input}/${capacity}`;
+            const status = latest.metrics.overloaded ? "Input overload; inspect live diagnostics"
+              : latest.metrics.gap_frames ? "Audio gaps detected; inspect live diagnostics"
+              : analysisPaused ? "Recording continues; live analysis paused" : "Recording; live analysis active";
+            if ($("status-text").textContent !== status) $("status-text").textContent = status;
+            $("status-text").title = $("live-diagnostics").textContent;
           }
-          setCaptureState(mode === "asio" ? "Capturing · live inference" : "Analyzing", "active");
+          setCaptureState(analysisPaused ? "Recording · analysis paused" :
+            mode === "asio" ? "Capturing · live inference" : "Analyzing", "active");
           $("preview-badge").textContent = "LISTENING";
           $("preview-badge").className = "preview-badge active";
         });
@@ -877,6 +1056,7 @@
     if (message.type === "proposal") {
       setBusy(false);
       hasPendingProposal = true;
+      setActivity("completed", "New proposal ready", "Review the proposal before replacing the accepted score.");
       $("result-message").textContent = message.summary ||
         `A new analysis proposal is available. Accepted score revision ${message.accepted_revision} remains unchanged.`;
       $("result-message").className = "result-message";
@@ -897,6 +1077,7 @@
       return;
     }
     if (message.type === "complete") {
+      clearQueuedPreviews();
       setBusy(false);
       $("proposal-details").className = "result-message hidden";
       if (message.success) {
@@ -929,12 +1110,40 @@
         if (message.project_warning) {
           $("result-message").textContent += `\n${message.project_warning}`;
         }
+        if (message.preprocessing_diagnostic) {
+          $("result-message").textContent += `\n${message.preprocessing_diagnostic}`;
+        }
+        if (message.project_opened) {
+          $("isolation-enabled").checked = false;
+          $("isolation-reviewed").checked = false;
+          inputs.isolated.value = "";
+        }
         notifyReview(message);
         setStatus(message.project_opened ? "Project opened" : "Transcription complete", 100);
         setCaptureState(message.project_opened ? "Project ready" : "Score ready");
+        setActivity("completed", message.notes.length ? "Score ready to review" : "No notes detected",
+          message.notes.length
+            ? "Select notes to inspect or edit. Save the project to preserve your work, or export the score."
+            : "Try another instrument or supported model, and inspect the recording level. Silence or unsupported material may produce no notes.");
+        updateProjectTitle();
       } else {
-        showError(message.error || "Transcription failed.");
-        setCaptureState("Transcription failed", "error");
+        if (!hasAcceptedScore) {
+          renderNotes([]);
+          window.dispatchEvent(new CustomEvent("transcribe:source-changed"));
+        }
+        if (message.cancelled) {
+          $("preview-badge").textContent = "CANCELED";
+          $("preview-badge").className = "preview-badge";
+          $("result-message").textContent = message.error || "Analysis canceled. Accepted score unchanged.";
+          $("result-message").className = "result-message";
+          setStatus("Analysis canceled; accepted score unchanged", 0);
+          setCaptureState("Canceled");
+          setActivity("canceled", "Analysis canceled",
+            "The accepted score was not replaced. Adjust the setup or select Transcribe to try again.");
+        } else {
+          showError(message.error || "Transcription failed.");
+          setCaptureState("Transcription failed", "error");
+        }
       }
       return;
     }
@@ -985,14 +1194,24 @@
           projectDirty = true;
           updateProjectTitle();
         }
+        if (message.success) {
+          setStatus(message.project_saved ? "Project saved" : "Score exported", 100);
+          setActivity("completed", message.project_saved ? "Project saved" : "Score exported",
+            "Your score is ready. Export files and project saves are separate; a recovery autosave does not replace Save.");
+          updateProjectTitle();
+        }
       }
       window.dispatchEvent(new CustomEvent("transcribe:edited-export", { detail: message }));
       return;
     }
     if (message.type === "error") {
+      window.dispatchEvent(new CustomEvent("transcribe:playback-error"));
       setBusy(false);
       setCaptureState("Backend error", "error");
       showError(message.message || "The application encountered an error.");
+    }
+    if (message.type === "playback-state") {
+      window.dispatchEvent(new CustomEvent("transcribe:playback-state", { detail: message }));
     }
   }
 
@@ -1011,6 +1230,19 @@
   $("open-project").addEventListener("click", openProjectPicker);
   $("save-project").addEventListener("click", () => requestSaveProject(false));
   $("save-score-copy").addEventListener("click", () => requestSaveProject(true));
+  $("save-portable-project").addEventListener("click", () => {
+    if (!activeProjectTitle) return showError("Create or open a project before saving.");
+    pendingSaveAsScoreOnly = false;
+    send("browse", { field: "project-portable", current: currentProjectPath });
+  });
+  $("relink-project-audio").addEventListener("click", () =>
+    send("browse", { field: "project-relink", current: inputs.input.value }));
+  $("project-annotation").addEventListener("input", () => {
+    if (!activeProjectTitle) return;
+    projectDirty = true;
+    updateProjectTitle();
+    scheduleProjectAutosave();
+  });
   window.addEventListener("transcribe:save-request", () => requestSaveProject(false));
   $("project-summary-button").addEventListener("click", () => {
     $("project-summary-dialog").showModal();
@@ -1061,7 +1293,24 @@
       showError("Capo must be 0–24 and alternative fingerings must be 0–5.");
       return;
     }
+    if (["quantization-strength", "rhythm-evidence"].some((id) => {
+      const value = $(id).value;
+      return !value.trim() || !Number.isFinite(Number(value)) ||
+        Number(value) < 0 || Number(value) > 1;
+    })) {
+      showError("Quantization strength and minimum rhythm evidence must be between 0 and 1.");
+      return;
+    }
+    if (mode === "file" && $("isolation-enabled").checked &&
+        (!inputs.isolated.value.trim() || !$("isolation-reviewed").checked ||
+         $("instrument-prior").value === "auto")) {
+      showError("Choose an instrument and aligned isolated WAV, then audition and confirm it or disable preprocessing.");
+      return;
+    }
     recentEvents = [];
+    clearQueuedPreviews();
+    sourceChanged = false;
+    if (!hasAcceptedScore) timelineDuration = 1;
     inputPeak = 0;
     updateInputLevel([], true);
     $("live-events").textContent = "Waiting for realtime note events.";
@@ -1077,11 +1326,15 @@
     $("preview-badge").className = "preview-badge active";
     setStatus(mode === "asio" ? "Connecting to ASIO input..." : "Preparing audio...", 0);
     setCaptureState(mode === "asio" ? "Starting capture" : "Loading audio", "busy");
-    setBusy(true, hasAcceptedScore, mode === "asio");
+    setBusy(true, hasAcceptedScore, mode === "asio", true);
     send("transcribe", {
       mode,
       input: inputs.input.value,
       duration: $("capture-seconds").value,
+      isolated: inputs.isolated.value,
+      isolation_enabled: mode === "file" && $("isolation-enabled").checked ? "1" : "0",
+      isolation_reviewed: $("isolation-reviewed").checked ? "1" : "0",
+      preprocessing_fallback: $("preprocessing-fallback").checked ? "1" : "0",
       latency_ms: $("latency-ms").value,
       device_id: $("asio-device").value,
       sample_rate: $("asio-sample-rate").value,
@@ -1091,6 +1344,9 @@
       capo: $("capo-fret").value,
       alternatives: $("tab-alternatives").value,
       preserve_timing: $("preserve-timing").checked ? "1" : "0",
+      quantization: $("quantization-mode").value,
+      quantization_strength: $("quantization-strength").value,
+      minimum_rhythm_evidence: $("rhythm-evidence").value,
       instrument: $("instrument-prior").value,
       quality: $("quality-mode").value,
       tempo: $("tempo-auto").checked ? "auto" : $("tempo-control").value,
@@ -1105,11 +1361,41 @@
       tab: inputs.tab.value,
       midi: inputs.midi.value,
       review_mode: mode === "file" && $("review-mode").checked ? "1" : "0",
+      bounded_inference: mode === "file" && window.transcribeConfig?.onnx &&
+        $("bounded-inference").checked ? "1" : "0",
     });
   });
-  $("cancel-button").addEventListener("click", () => send("cancel"));
+  $("cancel-button").addEventListener("click", () => {
+    if (cancelPending) return;
+    cancelPending = true;
+    $("cancel-button").disabled = true;
+    $("cancel-button").textContent = captureActive ? "Stopping capture…" : "Canceling…";
+    setActivity("canceling", captureActive ? "Stopping capture" : "Cancel requested",
+      "Waiting for the backend to reach a safe processing boundary. The application remains available.");
+    setStatus("Waiting for a safe cancellation boundary");
+    send("cancel");
+  });
+  ["input-path", "isolated-path", "instrument-prior"].forEach(id =>
+    $(id).addEventListener("change", () => {
+      $("isolation-reviewed").checked = false;
+      send("stop-playback");
+    }));
+  ["preview-mixture", "preview-isolated"].forEach(id =>
+    $(id).addEventListener("click", () => {
+      const start = Number($("isolation-preview-start").value);
+      if (!Number.isFinite(start) || start < 0) {
+        setStatus("Choose a nonnegative audition position.", 0);
+        return;
+      }
+      send("audition-source", { path: id === "preview-mixture" ? inputs.input.value : inputs.isolated.value,
+        start: String(start), end: String(start + 30) });
+    }));
+  $("stop-isolation-preview").addEventListener("click", () => send("stop-playback"));
   $("accept-proposal").addEventListener("click", () => {
     if (!hasPendingProposal) return;
+    if (hasUnexportedEdits && !window.confirm(
+      "Replace your unexported edits with this transcription proposal? Undo history for the current score will be discarded."
+    )) return;
     $("accept-proposal").disabled = true;
     setBusy(true, true);
     setCaptureState("Applying proposal", "busy");
@@ -1156,8 +1442,8 @@
     }
   });
   window.addEventListener("transcribe:edited", (event) => {
-    hasUnexportedEdits = Array.isArray(event.detail?.changes) &&
-      event.detail.changes.length > 0;
+    hasUnexportedEdits = hasUnexportedEdits || Boolean(event.detail?.dirty) ||
+      (Array.isArray(event.detail?.changes) && event.detail.changes.length > 0);
     $("undo-refinement").disabled = hasUnexportedEdits;
     $("undo-refinement").title = hasUnexportedEdits
       ? "Export or discard edits before undoing refinement"
@@ -1167,8 +1453,10 @@
       updateProjectTitle();
       scheduleProjectAutosave();
     }
+    updateProjectTitle();
   });
-  $("open-folder-button").addEventListener("click", () => send("open-output", { path: inputs.musicxml.value }));
+  ["open-folder-button", "status-output-folder"].forEach((id) =>
+    $(id).addEventListener("click", () => send("open-output", { path: inputs.musicxml.value })));
   $("drop-zone").addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
@@ -1179,7 +1467,13 @@
     if (event.key === "Enter") $("transcribe-button").click();
   });
   Object.values(inputs).forEach((input) => input.addEventListener("change", savePaths));
-  inputs.input.addEventListener("change", updateProjectTitle);
+  inputs.input.addEventListener("change", () => {
+    updateProjectTitle();
+    sourceChanged = true;
+    clearQueuedPreviews();
+    timelineDuration = 1;
+    window.dispatchEvent(new CustomEvent("transcribe:source-changed"));
+  });
   inputs.model.addEventListener("input", updateAnalysisControlState);
   inputs.model.addEventListener("input", updateModelStatus);
   $("latency-ms").addEventListener("change", savePaths);
@@ -1200,13 +1494,19 @@
     savePaths();
     updateReviewModeState();
   });
+  $("pause-analysis").addEventListener("click", () => {
+    if (!captureActive) return;
+    $("pause-analysis").disabled = true;
+    send("pause-analysis", { paused: analysisPaused ? "0" : "1" });
+  });
   $("instrument-prior").addEventListener("change", savePaths);
   $("quality-mode").addEventListener("change", savePaths);
   $("tempo-auto").addEventListener("change", () => {
     updateTempoControlState();
     savePaths();
   });
-  ["key-control", "minor-control", "pickup-control",
+  ["key-control", "minor-control", "pickup-control", "quantization-mode",
+    "quantization-strength", "rhythm-evidence",
     "written-transposition-control"].forEach((id) => {
     $(id).addEventListener("change", savePaths);
   });
@@ -1215,15 +1515,49 @@
   window.addEventListener("transcribe:edited", (event) => {
     renderNotes(event.detail.notes, false, false);
     if (captureActive && Array.isArray(event.detail.changes)) {
-      event.detail.changes.forEach((change) => send("live-edit", change));
+      if (event.detail.changes.length) send("live-edit", {
+        batch: event.detail.changes.map(change => new URLSearchParams(change).toString()).join(";"),
+      });
     }
   });
   window.addEventListener("transcribe:export-started", () => setBusy(true, true));
+  window.addEventListener("transcribe:timeline", (event) => {
+    timelineDuration = event.detail.duration;
+    duration = Math.max(timelineDuration, 1);
+    drawRoll();
+  });
+  window.addEventListener("transcribe:playback-time", (event) => {
+    cursorTime = Number(event.detail);
+  });
+  window.addEventListener("transcribe:playback-stop", () => {
+    cursorTime = null;
+  });
+  window.addEventListener("transcribe:score-selection", (event) => {
+    selectedNoteId = event.detail?.id || "";
+    drawRoll();
+  });
+  $("piano-roll").addEventListener("click", (event) => {
+    if (!notes.length) return;
+    const rect = $("piano-roll").getBoundingClientRect();
+    const seconds = window.TranscribeTimeline.time(event.clientX - rect.left, duration, rect.width);
+    const low = pitchLow;
+    const high = pitchHigh;
+    const range = Math.max(12, high - low + 2);
+    const minimum = low - Math.max(0, (range - (high - low + 2)) / 2);
+    const pitch = minimum + (1 - (event.clientY - rect.top) / rect.height) * range - .5;
+    const note = rollIndex(duration).find(({ note: item }) =>
+      seconds >= item.start && seconds <= item.start + item.duration &&
+      Math.abs(item.midi - pitch) <= .75)?.note;
+    window.dispatchEvent(new CustomEvent("transcribe:engraving-select", { detail: { id: note?.id || "" } }));
+  });
   window.addEventListener("resize", drawRoll);
+  window.addEventListener("transcribe:viewport", drawRoll);
+  window.addEventListener("transcribe:theme", drawRoll);
   window.addEventListener("DOMContentLoaded", () => {
     loadSavedPaths();
     updateReviewModeState();
     updateProjectTitle();
+    updateJourney();
     if (window.chrome && window.chrome.webview) {
       window.chrome.webview.addEventListener("message", handleMessage);
       send("ready");

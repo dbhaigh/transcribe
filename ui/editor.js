@@ -1,5 +1,6 @@
 (() => {
   const $ = (id) => document.getElementById(id);
+  const timeline = window.TranscribeTimeline;
   const semitoneNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
   const tuningPitches = {
     standard: [64, 59, 55, 50, 45, 40],
@@ -25,6 +26,9 @@
   let waveform = [];
   let spectrum = [];
   let spectrumBands = 40;
+  let spectrumMinimum = 0;
+  let spectrumMaximum = 0;
+  let audioColumns = [];
   let history = [];
   let redoHistory = [];
   let dragState = null;
@@ -39,6 +43,8 @@
   let pausedMode = "";
   let pausedAt = 0;
   let playbackStarted = 0;
+  let playbackGeneration = 0;
+  let originalPosition = 0;
   let playbackEnd = 0;
   let playbackFrame = 0;
   let audioContext = null;
@@ -52,6 +58,8 @@
   let nextUserNoteId = 1;
   let rejectedFingeringCorrectionCount = 0;
   let fingeringSearchTruncated = false;
+  let phraseFingerings = [];
+  let phraseFingeringSignature = "";
   let reviewEnabled = false;
   let reviewByNote = new Map();
   let prioritizedReviewNotes = [];
@@ -62,6 +70,13 @@
     "pickup-control", "written-transposition-control", "guitar-tuning", "capo-fret",
   ];
   let contextBeforeLastChange = null;
+  let paintFrame = 0;
+  let visibleEntries = [];
+  let noteIndex = timeline.index([]);
+  let paintedDuration = -1;
+  let audioDirty = true;
+  let scoreDirty = true;
+  let noteIndexDirty = true;
 
   function send(action, values = {}) {
     if (window.chrome && window.chrome.webview) {
@@ -83,12 +98,53 @@
   }
 
   function totalDuration() {
-    const noteEnd = notes.reduce((end, note) =>
-      Math.max(end, note.start + note.duration), 1);
-    return Math.max(noteEnd, audioEnd, 1);
+    return Math.max(duration, audioEnd, 1);
+  }
+
+  function noteColor(note) {
+    if (document.body.dataset.theme === "light") {
+      if (note.user_authored || note.state === "manually_corrected") return "#805a00";
+      if (note.uncertain) return "#ab3527";
+      if (note.state === "provisional") return "#345d9a";
+      return note.finalized ? "#16705c" : "#6653a4";
+    }
+    if (note.user_authored || note.state === "manually_corrected") return "#c39b35";
+    if (note.uncertain) return "#e27467";
+    if (note.state === "provisional") return "#819ee5";
+    return note.finalized ? "#32ae8c" : "#8b83d0";
+  }
+
+  function tempoMap() {
+    const overridden = !$("tempo-auto").checked &&
+      Math.abs(Number($("tempo-control").value) - currentMetadata.tempo) > .5;
+    return overridden ? [] : currentMetadata.tempo_map || [];
+  }
+
+  function currentTempo() {
+    return $("tempo-auto").checked && Number.isFinite(currentMetadata.tempo)
+      ? currentMetadata.tempo : Number($("tempo-control").value) || 120;
+  }
+
+  function quartersAt(seconds) {
+    return timeline.quarters(seconds, tempoMap(), currentTempo());
+  }
+
+  function remapTempo(previous) {
+    const before = previous["tempo-auto"] && Number.isFinite(currentMetadata.tempo)
+      ? currentMetadata.tempo : Number(previous["tempo-control"]) || 120;
+    const after = currentTempo();
+    const oldMap = !previous["tempo-auto"] && Math.abs(before - currentMetadata.tempo) > .5
+      ? [] : currentMetadata.tempo_map || [];
+    notes.forEach((note) => {
+      const start = timeline.quarters(note.start, oldMap, before);
+      const end = timeline.quarters(note.start + note.duration, oldMap, before);
+      note.start = timeline.seconds(start, tempoMap(), after);
+      note.duration = timeline.seconds(end, tempoMap(), after) - note.start;
+    });
   }
 
   function fitCanvas(canvas) {
+    canvas.dataset.paintCount = String(Number(canvas.dataset.paintCount || 0) + 1);
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     const ratio = window.devicePixelRatio || 1;
@@ -124,6 +180,55 @@
     return { y: baseY - (degree - 30) * step, accidental: naturalMidi !== midi };
   }
 
+    function writtenPosition(note, baseY, step) {
+      const degree = ["C", "D", "E", "F", "G", "A", "B"].indexOf(note.spelling_step);
+      if (degree < 0 || !Number.isInteger(note.spelling_octave) || note.user_authored)
+        return staffPosition(note.midi, baseY, step);
+      return { y: baseY - (note.spelling_octave * 7 + degree - 30) * step,
+        accidental: note.accidental_required, alter: note.spelling_alter };
+    }
+
+    function drawAccidental(context, x, y, alter = 1) {
+      context.save();
+      context.translate(x, y);
+      context.lineWidth = 1.3;
+      context.beginPath();
+      if (alter < 0) {
+        context.moveTo(0, -11); context.lineTo(0, 6);
+        context.bezierCurveTo(12, -1, 4, -7, 0, -1);
+      } else {
+        context.moveTo(-2, -8); context.lineTo(-2, alter ? 8 : 3);
+        context.moveTo(2, alter ? -8 : -3); context.lineTo(2, 8);
+        context.moveTo(-4, -2); context.lineTo(4, -4);
+        context.moveTo(-4, 4); context.lineTo(4, 2);
+      }
+      context.stroke();
+      context.restore();
+    }
+
+    function drawBarLines(context, width, top, bottom) {
+      const view = timeline.bounds(totalDuration());
+      const meter = ($("meter-control").value === "auto"
+        ? `${currentMetadata.time_numerator || 4}/${currentMetadata.time_denominator || 4}`
+        : $("meter-control").value).split("/").map(Number);
+      const bar = meter[0] * 4 / meter[1];
+      const first = Math.max(0, Math.floor(quartersAt(view.start) / bar));
+      const last = Math.ceil(quartersAt(view.end) / bar);
+      context.save();
+      context.strokeStyle = canvasColor("--muted", "#81919b");
+      context.fillStyle = context.strokeStyle;
+      context.font = "10px Segoe UI";
+      // At full-take zoom retain at most one barline per eight screen pixels.
+      const stride = Math.max(1, Math.ceil((last - first) * 8 / width));
+      for (let number = first; number <= last; number += stride) {
+        const seconds = timeline.seconds(number * bar, tempoMap(), currentTempo());
+        const x = timeline.x(seconds, totalDuration(), width);
+        if (x < 36 || x > width) continue;
+        context.beginPath(); context.moveTo(x, top); context.lineTo(x, bottom); context.stroke();
+        context.fillText(String(number + 1), x + 3, top - 5);
+      }
+      context.restore();
+    }
   function naturalPitch(degree) {
     const pitchClasses = [0, 2, 4, 5, 7, 9, 11];
     const octave = Math.floor(degree / 7);
@@ -137,37 +242,20 @@
   }
 
   function noteX(note, width) {
-    const margin = 36;
-    return margin + note.start / totalDuration() * Math.max(1, width - margin - 12);
-  }
-
-  function drawPlayhead(context, x, height) {
-    if (!playbackMode) return;
-    const margin = 36;
-    const point = margin + playbackTime() / totalDuration() * Math.max(1, x - margin - 12);
-    context.save();
-    context.strokeStyle = "#ff8e78";
-    context.globalAlpha = 0.86;
-    context.lineWidth = 1.5;
-    context.beginPath();
-    context.moveTo(point, 0);
-    context.lineTo(point, height);
-    context.stroke();
-    context.restore();
+    return timeline.x(note.start, totalDuration(), width);
   }
 
   function playbackTime() {
-    if (playbackMode) {
-      return Math.max(0, (performance.now() - playbackStarted) / 1000);
-    }
+    if (playbackMode === "midi") return Math.max(0, audioContext.currentTime - playbackStarted);
+    if (playbackMode === "original") return originalPosition;
     return pausedMode ? pausedAt : 0;
   }
 
   function drawStaff() {
     const canvas = $("staff-view");
-    const widestRange = notes.length
-      ? Math.max(...notes.map((note) => note.midi)) - Math.min(...notes.map((note) => note.midi))
-      : 0;
+    const low = visibleEntries.reduce((value, { note }) => Math.min(value, note.midi), 127);
+    const high = visibleEntries.reduce((value, { note }) => Math.max(value, note.midi), 0);
+    const widestRange = Math.max(0, high - low);
     canvas.style.height = `${Math.max(190, Math.min(380, 150 + widestRange * 2.2))}px`;
     const frame = fitCanvas(canvas);
     if (!frame) return;
@@ -192,24 +280,46 @@
     }
     context.fillStyle = muted;
     context.font = '10px "DM Mono", Consolas, monospace';
-    context.fillText("G", 12, baseY - lineGap * 2 + 4);
+    // Vector treble clef: no font-dependent musical text substitutes.
+    context.save();
+    context.translate(21, baseY - lineGap * 2);
+    context.strokeStyle = muted; context.lineWidth = 1.7;
+    context.beginPath();
+    context.moveTo(0, 29);
+    context.bezierCurveTo(16, 32, -10, -37, 2, -30);
+    context.bezierCurveTo(17, -16, -19, -5, -8, 11);
+    context.bezierCurveTo(6, 26, 18, 4, 3, 0);
+    context.bezierCurveTo(-6, -2, -6, 9, 0, 10);
+    context.stroke(); context.restore();
+    drawBarLines(context, width, baseY - 44, baseY);
+    if (visibleEntries.length > 1500) {
+      context.fillStyle = muted;
+      context.fillText(`${visibleEntries.length} notes in overview · zoom the timeline for readable notation`, 40, 35);
+      return;
+    }
     if (!notes.length) {
       context.fillStyle = "#6e8089";
       context.font = "11px Segoe UI, sans-serif";
       context.fillText("Detected notes will be placed on the staff as they stabilize.", margin, height / 2);
       return;
     }
-    const colors = ["#74e4bd", "#a994ff", "#e9c578", "#6ccfe0", "#ff9b8e", "#96b5ff"];
-    notes.forEach((note, index) => {
+    const beams = new Map();
+    const beamCounts = new Map();
+    const tieEnds = new Map();
+    visibleEntries.forEach(({ note }) => {
+      const beats = note.rhythm_denominator > 0 && !note.user_authored
+        ? 4 / note.rhythm_denominator
+        : quartersAt(note.start + note.duration) - quartersAt(note.start);
+      const key = `${note.voice || 1}:${Math.floor(quartersAt(note.start) + 1e-6)}`;
+      if (beats <= .5) beamCounts.set(key, (beamCounts.get(key) || 0) + 1);
+      if (note.tie_stop) tieEnds.set(`${note.voice || 1}:${note.midi}:${note.start.toFixed(3)}`, note);
+    });
+    visibleEntries.forEach(({ note, index }) => {
       const x = noteX(note, width);
-      const { y, accidental } = staffPosition(note.midi, baseY, step);
+      const { y, accidental, alter } = writtenPosition(note, baseY, step);
       const radius = index === selectedIndex ? 6 : 5;
       const selected = index === selectedIndex;
-      const stateColor = note.user_authored || note.state === "manually_corrected"
-        ? "#e9c578" : note.uncertain ? "#ff9b8e"
-          : note.state === "provisional" ? "#96b5ff"
-            : note.state === "stabilized" ? "#74e4bd"
-              : colors[index % colors.length];
+      const stateColor = noteColor(note);
       context.save();
       context.strokeStyle = "rgba(207, 223, 225, .4)";
       const diatonic = 30 + Math.round((baseY - y) / step);
@@ -223,49 +333,100 @@
           context.stroke();
         }
       }
-      context.fillStyle = selected ? "#fff2bd" : stateColor;
+      context.fillStyle = selected ? canvasColor("--text", "#ecf2f4") : stateColor;
       context.globalAlpha = note.state === "provisional" ? .68 : .88;
       if (note.state === "provisional") context.setLineDash([2, 2]);
       context.beginPath();
       context.ellipse(x, y, radius, radius * .72, -.28, 0, Math.PI * 2);
       context.globalAlpha = 1;
       context.strokeStyle = selected ? "#fff2bd" : stateColor;
-      const beats = note.duration * (Number($("tempo-control").value) || 120) / 60;
+      const beats = note.rhythm_denominator > 0 && !note.user_authored
+        ? 4 / note.rhythm_denominator
+        : quartersAt(note.start + note.duration) - quartersAt(note.start);
       if (beats < 1.8) context.fill();
       else context.stroke();
       if (beats < 3.8) {
-        const stemUp = y >= baseY - lineGap * 2;
+        const stemUp = note.voice > 1 ? note.voice % 2 === 1 : y >= baseY - lineGap * 2;
         const stemX = stemUp ? x + radius - 1 : x - radius + 1;
         const stemEnd = y + (stemUp ? -25 : 25);
         context.beginPath();
         context.moveTo(stemX, y);
         context.lineTo(stemX, stemEnd);
         context.stroke();
-        if (beats < .55) {
+        const beamKey = `${note.voice || 1}:${Math.floor(quartersAt(note.start) + 1e-6)}`;
+        const previous = beams.get(beamKey);
+        const beamed = beats <= .5 && previous &&
+          Math.abs(previous.end - note.start) < .035 && previous.up === stemUp;
+        if (beamed) {
+          context.lineWidth = 3;
+          context.beginPath();
+          context.moveTo(previous.x, previous.y);
+          context.lineTo(stemX, stemEnd);
+          context.stroke();
+        } else if (beats < .55 && (beamCounts.get(beamKey) || 0) < 2) {
           context.beginPath();
           context.moveTo(stemX, stemEnd);
           context.quadraticCurveTo(stemX + 12, stemEnd + 4, stemX + 6, stemEnd + 11);
           context.stroke();
         }
+        if (beats <= .5) beams.set(beamKey, { x: stemX, y: stemEnd,
+          up: stemUp, end: note.start + note.duration });
       }
       if (accidental) {
-        context.fillStyle = "#d4dee0";
-        context.font = '10px "DM Mono", Consolas, monospace';
-        context.fillText("#", x - 12, y + 4);
+        drawAccidental(context, x - 12, y, alter);
+      }
+      const dotted = !note.user_authored && note.rhythm_denominator
+        ? note.rhythm_dots > 0 : [.75, 1.5, 3, 6].some(value => Math.abs(beats - value) < .03);
+      if (dotted) {
+        context.beginPath(); context.arc(x + 10, y - 2, 1.7, 0, Math.PI * 2); context.fill();
+      }
+      if (note.tuplet_actual > 0 && !note.user_authored) {
+        context.fillStyle = muted; context.font = "10px Segoe UI";
+        context.fillText(String(note.tuplet_actual), x, y - 35);
+      }
+      if (note.tie_start) {
+        const next = tieEnds.get(`${note.voice || 1}:${note.midi}:${(note.start + note.duration).toFixed(3)}`);
+        if (next) {
+          const endX = noteX(next, width);
+          context.beginPath(); context.moveTo(x + 4, y + 8);
+          context.quadraticCurveTo((x + endX) / 2, y + 23, endX - 4, y + 8);
+          context.stroke();
+        }
       }
       if (selected) {
-        context.fillStyle = "#f2f6f6";
+        context.fillStyle = canvasColor("--text", "#ecf2f4");
         context.font = '8px "DM Mono", Consolas, monospace';
         context.fillText(noteName(note.midi), x - 12, y - 10);
       }
       context.setLineDash([]);
       context.restore();
     });
+    const view = timeline.bounds(totalDuration());
+    // Rests come only from the canonical score, never guessed from a display gap.
+    for (const rest of edited ? [] : currentMetadata.rests || []) {
+      if (rest.start < view.start || rest.start > view.end) continue;
+      const x = timeline.x(rest.start, totalDuration(), width);
+      const y = baseY - 22 + (rest.voice > 1 ? 10 : 0);
+      context.strokeStyle = muted; context.fillStyle = muted; context.lineWidth = 2;
+      if (rest.denominator === 1 || rest.denominator === 2) {
+        context.fillRect(x - 5, y + (rest.denominator === 1 ? -11 : -4), 10, 4);
+      } else if (rest.denominator >= 8) {
+        context.beginPath(); context.arc(x - 3, y - 4, 2.5, 0, Math.PI * 2); context.fill();
+        context.beginPath(); context.moveTo(x - 2, y - 3);
+        context.lineTo(x + 4, y - 6); context.lineTo(x, y + 8); context.stroke();
+      } else {
+        context.beginPath(); context.moveTo(x - 2, baseY - 32);
+        context.lineTo(x + 3, baseY - 25); context.lineTo(x - 3, baseY - 18);
+        context.quadraticCurveTo(x - 6, baseY - 15, x, baseY - 12); context.stroke();
+      }
+      if (rest.dots) { context.beginPath(); context.arc(x + 8, y, 1.5, 0, Math.PI * 2); context.fill(); }
+    }
     context.fillStyle = muted;
-    context.font = '8px "DM Mono", Consolas, monospace';
-    context.fillText("0s", margin, height - 8);
-    context.fillText(`${totalDuration().toFixed(1)}s`, Math.max(margin, width - 44), height - 8);
-    drawPlayhead(context, width, height);
+    context.font = '10px "Segoe UI", sans-serif';
+    context.fillText(`${view.start.toFixed(1)}s`, margin, height - 8);
+    context.textAlign = "right";
+    context.fillText(`${view.end.toFixed(1)}s`, width - 12, height - 8);
+    context.textAlign = "left";
   }
 
   function assignTabPositions() {
@@ -280,24 +441,19 @@
       for (let index = active.length - 1; index >= 0; index -= 1) {
         if (active[index].end <= note.start) active.splice(index, 1);
       }
-      const candidates = tuning.map((open, stringIndex) => ({
-        string: stringIndex + 1,
-        fret: note.midi - open - capo,
-      })).filter((position) => position.fret >= 0 && position.fret <= 24 &&
-        !active.some((item) => item.string === position.string));
-      candidates.sort((left, right) => left.fret - right.fret);
       const prior = previous[noteIndex];
-      const priorIsValid = prior && prior.manual &&
-        prior.string > 0 && prior.fret >= 0 && prior.fret <= 24 &&
+      const priorIsValid = prior &&
+        prior.string > 0 && prior.fret >= 0 && prior.fret <= 36 &&
         tuning[prior.string - 1] + capo + prior.fret === note.midi &&
         !active.some((item) => item.string === prior.string);
       const position = priorIsValid
-        ? { string: prior.string, fret: prior.fret, manual: true }
-        : candidates[0] || { string: 0, fret: -1, manual: false };
+        ? { ...prior }
+        : { string: 0, fret: -1, manual: false };
       if (position.string) {
         active.push({ string: position.string, end: note.start + note.duration });
       }
       tabPositions[noteIndex] = {
+        ...position,
         noteIndex, string: position.string, fret: position.fret,
         manual: Boolean(position.manual),
         correctionRejected: Boolean(prior && prior.manual && !priorIsValid),
@@ -316,10 +472,11 @@
     context.fillRect(0, 0, width, height);
     const margin = 36;
     const top = 20;
-    const gap = Math.min(15, (height - 38) / 5);
+    const stringCount = currentTuning().length;
+    const gap = Math.min(15, (height - 38) / Math.max(1, stringCount - 1));
     context.strokeStyle = "rgba(123, 148, 157, .42)";
     context.lineWidth = 1;
-    for (let string = 0; string < 6; string += 1) {
+    for (let string = 0; string < stringCount; string += 1) {
       const y = top + string * gap;
       context.beginPath();
       context.moveTo(margin, y + .5);
@@ -329,28 +486,44 @@
       context.font = '8px "DM Mono", Consolas, monospace';
       context.fillText(String(string + 1), 14, y + 3);
     }
+    drawBarLines(context, width, top, top + (stringCount - 1) * gap);
+    if (visibleEntries.length > 1500) {
+      context.fillStyle = canvasColor("--muted", "#81919b");
+      context.fillText("Zoom the timeline for individual frets and durations", 40, height - 12);
+      return;
+    }
     const tuning = currentTuning();
     $("tab-tuning-label").textContent =
       `${tuningLabels[$("guitar-tuning").value] || tuningLabels.standard} · capo ${currentCapo()}`;
-    const colors = ["#74e4bd", "#a994ff", "#e9c578", "#6ccfe0", "#ff9b8e", "#96b5ff"];
-    notes.forEach((note, index) => {
+    visibleEntries.forEach(({ note, index }) => {
       const position = tabPositions[index] || { string: 0, fret: -1 };
       if (!position.string) return;
       const y = top + (position.string - 1) * gap;
       const x = noteX(note, width);
-      context.fillStyle = index === selectedIndex ? "#fff2bd" : colors[index % colors.length];
+      context.fillStyle = index === selectedIndex
+        ? canvasColor("--text", "#ecf2f4") : noteColor(note);
       context.font = index === selectedIndex
         ? 'bold 10px "DM Mono", Consolas, monospace'
         : '9px "DM Mono", Consolas, monospace';
       context.textAlign = "center";
       context.fillText(String(position.fret), x, y + 4);
+      const endX = timeline.x(note.start + note.duration, totalDuration(), width);
+      context.strokeStyle = noteColor(note);
+      context.setLineDash(note.state === "provisional" ? [3, 3] : []);
+      context.beginPath();
+      context.moveTo(x + 6, y + 6);
+      context.lineTo(Math.max(x + 7, endX), y + 6);
+      context.stroke();
+      context.setLineDash([]);
       context.textAlign = "left";
     });
     context.fillStyle = "#768992";
-    context.font = '8px "DM Mono", Consolas, monospace';
-    context.fillText("0s", margin, height - 8);
-    context.fillText(`${totalDuration().toFixed(1)}s`, Math.max(margin, width - 44), height - 8);
-    drawPlayhead(context, width, height);
+    const view = timeline.bounds(totalDuration());
+    context.font = '10px "Segoe UI", sans-serif';
+    context.fillText(`${view.start.toFixed(1)}s`, margin, height - 8);
+    context.textAlign = "right";
+    context.fillText(`${view.end.toFixed(1)}s`, width - 12, height - 8);
+    context.textAlign = "left";
   }
 
   function drawWaveform() {
@@ -363,11 +536,15 @@
     context.strokeStyle = "rgba(116, 228, 189, .76)";
     context.lineWidth = 1;
     context.beginPath();
-    const middle = height / 2;
+    const plotHeight = height - 20;
+    const middle = plotHeight / 2;
     if (waveform.length) {
       waveform.forEach((peak, index) => {
-        const x = index * width / Math.max(1, waveform.length - 1);
-        const amplitude = Math.max(1, peak * height * .44);
+        const column = audioColumns[index];
+        const view = timeline.bounds(totalDuration());
+        if (column.end < view.start || column.start > view.end) return;
+        const x = timeline.x((column.start + column.end) / 2, totalDuration(), width);
+        const amplitude = Math.max(1, peak * plotHeight * .44);
         context.moveTo(x, middle - amplitude);
         context.lineTo(x, middle + amplitude);
       });
@@ -376,6 +553,44 @@
       context.lineTo(width, middle);
     }
     context.stroke();
+    drawAudioAxes(frame, false);
+  }
+
+  function drawAudioAxes({ context, width, height }, frequency) {
+    const plotHeight = height - 20;
+    const view = timeline.bounds(totalDuration());
+    context.fillStyle = canvasColor("--field", "#0c1319");
+    context.fillRect(0, 0, 36, height);
+    context.fillRect(0, plotHeight, width, 20);
+    context.fillStyle = canvasColor("--muted", "#a4b4be");
+    context.font = '10px "Segoe UI", sans-serif';
+    context.textBaseline = "middle";
+    context.textAlign = "left";
+    if (frequency && spectrumMaximum > spectrumMinimum && spectrumMinimum > 0) {
+      for (const hz of [55, 100, 1000, 10000]) {
+        if (hz < spectrumMinimum || hz > spectrumMaximum) continue;
+        const y = plotHeight * (1 - Math.log(hz / spectrumMinimum) /
+          Math.log(spectrumMaximum / spectrumMinimum));
+        context.fillText(hz >= 1000 ? `${hz / 1000}k` : String(hz), 1, Math.max(7, Math.min(plotHeight - 6, y)));
+      }
+    } else if (!frequency) {
+      context.fillText("1", 4, 8);
+      context.fillText("0", 4, plotHeight / 2);
+      context.fillText("−1", 1, plotHeight - 8);
+    } else {
+      context.fillText("Hz ?", 1, 10);
+    }
+    for (let tick = 0; tick <= 4; tick += 1) {
+      const seconds = view.start + tick * (view.end - view.start) / 4;
+      const x = timeline.x(seconds, totalDuration(), width);
+      context.textAlign = tick === 4 ? "right" : tick === 0 ? "left" : "center";
+      context.fillText(`${seconds.toFixed(view.end - view.start < 5 ? 2 : 1)}s`, x, height - 8);
+    }
+    context.textAlign = "left";
+    context.textBaseline = "alphabetic";
+    $(frequency ? "spectrogram" : "waveform").setAttribute("aria-label",
+      `${frequency ? "Log-frequency relative-energy spectrogram" : "Normalized peak-envelope waveform"}, ${view.start.toFixed(2)} to ${view.end.toFixed(2)} seconds` +
+      (frequency && spectrumMaximum > 0 ? `, ${spectrumMinimum} to ${spectrumMaximum} Hz` : ""));
   }
 
   function drawSpectrogram() {
@@ -385,18 +600,25 @@
     context.clearRect(0, 0, width, height);
     context.fillStyle = canvasColor("--field", "#0c1319");
     context.fillRect(0, 0, width, height);
-    if (!spectrum.length || !spectrumBands) return;
+    if (!spectrum.length || !spectrumBands) { drawAudioAxes(frame, true); return; }
     const columns = spectrum.length / spectrumBands;
-    const cellWidth = width / Math.max(1, columns);
-    const cellHeight = height / spectrumBands;
+    const plotHeight = height - 20;
+    const cellHeight = plotHeight / spectrumBands;
     for (let column = 0; column < columns; column += 1) {
+      const span = audioColumns[column];
+      if (!span) continue;
+      const view = timeline.bounds(totalDuration());
+      if (span.end < view.start || span.start > view.end) continue;
+      const x = timeline.x(span.start, totalDuration(), width);
+      const cellWidth = timeline.x(span.end, totalDuration(), width) - x;
       for (let band = 0; band < spectrumBands; band += 1) {
         const strength = spectrum[column * spectrumBands + band];
         if (strength < .05) continue;
         context.fillStyle = `rgba(${Math.round(36 + strength * 80)},${Math.round(93 + strength * 162)},${Math.round(115 + strength * 97)},${Math.min(.95, .18 + strength * .82)})`;
-        context.fillRect(column * cellWidth, height - (band + 1) * cellHeight,
+        context.fillRect(x, plotHeight - (band + 1) * cellHeight,
           Math.ceil(cellWidth), Math.ceil(cellHeight));
       }
+      drawAudioAxes(frame, true);
     }
   }
 
@@ -408,10 +630,9 @@
     context.fillStyle = canvasColor("--field", "#0c1319");
     context.fillRect(0, 0, width, height);
     if (!notes.length) return;
-    const scale = Math.max(1, width - 8) / totalDuration();
-    notes.forEach((note) => {
-      const x = 4 + note.start * scale;
-      const w = Math.max(2, note.duration * scale);
+    visibleEntries.forEach(({ note }) => {
+      const x = timeline.x(note.start, totalDuration(), width);
+      const w = Math.max(2, timeline.x(note.start + note.duration, totalDuration(), width) - x);
       if (!Number.isFinite(note.calibrated_confidence)) {
         context.fillStyle = "rgba(120, 137, 145, .38)";
         context.fillRect(x, height * .25, w, height * .5);
@@ -424,27 +645,36 @@
     });
   }
 
-  function drawAll() {
-    drawStaff();
-    drawTab();
-    drawWaveform();
-    drawSpectrogram();
-    drawConfidence();
+  function drawAll(score = true) {
+    scoreDirty ||= Boolean(score);
+    if (paintFrame) return;
+    paintFrame = requestAnimationFrame(() => {
+      paintFrame = 0;
+      if (noteIndexDirty) duration = notes.reduce((end, note) => Math.max(end, note.start + note.duration), 1);
+      if (paintedDuration !== totalDuration()) scoreDirty = true;
+      if (scoreDirty) {
+        if (noteIndexDirty) {
+          noteIndex = timeline.index(notes);
+          noteIndexDirty = false;
+        }
+        visibleEntries = noteIndex(totalDuration());
+        drawStaff();
+        drawTab();
+        drawConfidence();
+        scoreDirty = false;
+      }
+      if (audioDirty || paintedDuration !== totalDuration()) {
+        drawWaveform();
+        drawSpectrogram();
+        audioDirty = false;
+        paintedDuration = totalDuration();
+      }
+    });
   }
 
   function computeTabPosition(note, noteIndex) {
-    const tuning = currentTuning();
-    const capo = currentCapo();
-    let best = null;
-    tuning.forEach((open, index) => {
-      const fret = note.midi - open - capo;
-      if (fret < 0 || fret > 24) return;
-      const score = fret + Math.abs(index - 2) * .1;
-      if (!best || score < best.score) best = { noteIndex, string: index + 1, fret, score };
-    });
-    return best
-      ? { ...best, manual: false, candidates: [] }
-      : { noteIndex, string: 0, fret: -1, manual: false, candidates: [] };
+    return { noteIndex, string: 0, fret: -1, manual: false, candidates: [],
+      explanation: "Unresolved after editing; select a pitch-compatible fingering." };
   }
 
   function readScoreContext() {
@@ -458,22 +688,61 @@
   }
 
   function saveSnapshot(target = history, source = notes, settings = readScoreContext()) {
-    target.push({
-      notes: source.map((note) => ({ ...note })),
-      positions: tabPositions.map((position) => ({ ...position })),
-      settings: { ...settings },
-      reviewDecisions: reviewDecisions.map((decision) => ({ ...decision })),
+    if (target === history) stopPlayback();
+    target.push(structuredClone({
+      notes: source,
+      positions: tabPositions,
+      selectedId: notes[selectedIndex]?.id || null,
+      pendingLiveDeletes: [...pendingLiveDeletes],
+      settings,
+      reviewDecisions,
       dismissedReviewSuggestions: [...dismissedReviewSuggestions],
-    });
+    }));
     if (target.length > 100) target.shift();
   }
 
   function updateHistoryButtons() {
-    $("undo-button").disabled = history.length === 0;
-    $("redo-button").disabled = redoHistory.length === 0;
+    const locked = transcriptionBusy && !liveCaptureActive;
+    $("undo-button").disabled = locked || history.length === 0;
+    $("redo-button").disabled = locked || redoHistory.length === 0;
   }
 
-  function markEdited() {
+  function markEdited(restoring = false) {
+    noteIndexDirty = true;
+    const assigned = new Map();
+    let error = "";
+    for (let index = 0; index < notes.length; index += 1) {
+      const note = notes[index];
+      const position = tabPositions[index];
+      if (!Number.isInteger(note.midi) || note.midi < 0 || note.midi > 127 ||
+          !Number.isFinite(note.start) || note.start < 0 ||
+          !Number.isFinite(note.duration) || note.duration <= 0) {
+        error = "Edit rejected: invalid pitch or timing."; break;
+      }
+      if (!position?.string) continue;
+      if (currentTuning()[position.string - 1] + currentCapo() + position.fret !== note.midi) {
+        error = "Edit rejected: string/fret must preserve pitch."; break;
+      }
+      const previous = assigned.get(position.string) || [];
+      if (previous.some((other) => note.start < other.start + other.duration - 1e-9 &&
+          other.start < note.start + note.duration - 1e-9)) {
+        error = "Edit rejected: overlapping notes cannot occupy the same string."; break;
+      }
+      previous.push(note);
+      assigned.set(position.string, previous);
+    }
+    if (error) {
+      const before = history.pop();
+      if (before) restoreSnapshot(before, false);
+      $("edit-instructions").textContent = error;
+      $("status-text").textContent = error;
+      updateHistoryButtons();
+      return;
+    }
+    redoHistory = [];
+    stopPlayback();
+    exportReady = Boolean(scoreId);
+    $("play-midi").disabled = !exportReady || notes.length === 0;
     edited = true;
     $("export-edits").textContent = "Apply edits & export";
     $("export-edits").disabled = !exportReady;
@@ -488,6 +757,10 @@
       if (!previous || previous.midi !== note.midi ||
           Math.abs(previous.start - note.start) > .0001 ||
           Math.abs(previous.duration - note.duration) > .0001) {
+        if (!restoring) {
+          note.user_authored = true;
+          note.state = "manually_corrected";
+        }
         changes.push({
           kind: previous || !id.startsWith("user-") ? "update" : "add",
           note_id: id,
@@ -509,23 +782,26 @@
       const [string, fret] = value.split(":").map(Number);
       changes.push({ kind: "fingering", note_id: id, string, fret });
     });
+    editBaselineFingerings.forEach((_, id) => {
+      if (current.has(id) && !currentFingerings.has(id)) {
+        changes.push({ kind: "fingering", note_id: id, string: 0, fret: -1 });
+      }
+    });
     editBaselineNotes = new Map([...current].map(([id, note]) =>
       [id, { midi: note.midi, start: note.start, duration: note.duration }]));
     editBaselineFingerings = currentFingerings;
     window.dispatchEvent(new CustomEvent("transcribe:edited", {
-      detail: { notes, changes },
+      detail: { notes, changes, dirty: true },
     }));
   }
 
-  function updateMeasureDisplay(time = selectedIndex >= 0
-    ? notes[selectedIndex].start : playbackTime()) {
-    const tempo = Math.max(1, Number($("tempo-control").value) || 120);
+  function updateMeasureDisplay(time = notes[selectedIndex]?.start ?? playbackTime()) {
     const [numerator, denominator] = ($("meter-control").value === "auto"
       ? `${currentMetadata.time_numerator || 4}/${currentMetadata.time_denominator || 4}`
       : $("meter-control").value).split("/").map(Number);
     const barQuarters = Math.max(.25, numerator * 4 / denominator);
     const pickup = Math.max(0, Number($("pickup-control").value) || 0);
-    const quarters = Math.max(0, time * tempo / 60);
+    const quarters = Math.max(0, quartersAt(time));
     const measure = pickup > 0 && quarters < pickup
       ? 1
       : Math.floor(Math.max(0, quarters - pickup) / barQuarters) +
@@ -551,7 +827,6 @@
     if (!notes.length) return;
     const currentMeasure = updateMeasureDisplay();
     const nextMeasure = Math.max(1, currentMeasure + direction);
-    const tempo = Math.max(1, Number($("tempo-control").value) || 120);
     const [numerator, denominator] = ($("meter-control").value === "auto"
       ? `${currentMetadata.time_numerator || 4}/${currentMetadata.time_denominator || 4}`
       : $("meter-control").value).split("/").map(Number);
@@ -562,12 +837,12 @@
     const endQuarters = nextMeasure === 1 && pickup > 0
       ? pickup : startQuarters + barQuarters;
     const noteIndex = notes.findIndex((note) => {
-      const quarters = note.start * tempo / 60;
+      const quarters = quartersAt(note.start);
       return quarters >= startQuarters && quarters < endQuarters;
     });
     const fallback = notes.reduce((best, note, index) =>
-      Math.abs(note.start * tempo / 60 - startQuarters) <
-        Math.abs(notes[best].start * tempo / 60 - startQuarters)
+      Math.abs(quartersAt(note.start) - startQuarters) <
+        Math.abs(quartersAt(notes[best].start) - startQuarters)
         ? index : best, 0);
     chooseNote(noteIndex >= 0 ? noteIndex : fallback);
     $("measure-display").textContent = `Measure ${nextMeasure}`;
@@ -583,6 +858,8 @@
     fields.forEach((id) => { $(id).disabled = !note || editDisabled; });
     $("apply-note-edit").disabled = !note || editDisabled;
     $("delete-note").disabled = !note || editDisabled;
+    $("split-note").disabled = !note || editDisabled || note.duration < .1;
+    $("merge-note").disabled = !note || editDisabled;
     if (!note) {
       $("selection-label").textContent = "No selection";
       $("edit-instructions").textContent = "Click a note to inspect it";
@@ -591,6 +868,7 @@
         "Select a note in notation, tablature, or the timeline.";
       $("detected-onset").textContent = "—";
       $("detected-offset").textContent = "—";
+      $("detected-duration").textContent = "—";
       $("detected-confidence").textContent = "—";
       $("detected-evidence").textContent = "—";
       $("alternatives-list").textContent =
@@ -613,6 +891,7 @@
     const position = tabPositions[selectedIndex] || computeTabPosition(note, selectedIndex);
     $("selection-label").textContent = `${noteName(note.midi)} · ${note.start.toFixed(2)}s`;
     $("detected-pitch").textContent = `${noteName(note.midi)} · MIDI ${note.midi}`;
+    $("detected-duration").textContent = `${note.duration.toFixed(3)} s`;
     const detectedPitch = Number.isFinite(note.detected_midi)
       ? `Detected ${noteName(Math.round(note.detected_midi))} · MIDI ${note.detected_midi.toFixed(2)}`
       : note.user_authored ? "User-authored · no detector evidence" : "Detected pitch unavailable";
@@ -626,6 +905,7 @@
         ? ` · UNCERTAIN (${lifecycle}; onset crosses an audio gap)`
         : ` · ${lifecycle}`;
     }
+    if (note.finalized) $("detected-source").textContent += " · finalized (no further live revisions)";
     $("detected-onset").textContent = Number.isFinite(note.measured_start)
       ? `${note.measured_start.toFixed(3)} s` : "Not measured";
     $("detected-offset").textContent = Number.isFinite(note.measured_end)
@@ -649,10 +929,15 @@
     $("edit-instructions").textContent = Number.isFinite(note.calibrated_confidence)
       ? `Calibrated correctness estimate ${Math.round(note.calibrated_confidence * 100)}%`
       : "No calibrated correctness estimate is available";
+    if (note.guitar_technique) {
+      $("edit-instructions").textContent +=
+        ` · Guitar contour: ${note.guitar_technique.gesture}. ${note.guitar_technique.explanation}` +
+        " Technique confidence is uncalibrated; original fingering is unknown.";
+    }
     $("edit-pitch").value = note.midi;
     $("edit-start").value = note.start.toFixed(2);
     $("edit-duration").value = note.duration.toFixed(2);
-    $("edit-string").value = position.string || "1";
+    $("edit-string").value = position.string || "0";
     $("edit-fret").value = Math.max(0, position.fret);
     $("alternative-note").textContent = noteName(note.midi);
     const container = $("alternatives-list");
@@ -673,6 +958,7 @@
       suggestion.textContent = `${noteName(candidate.midi)} · MIDI ${candidate.midi}${Number.isFinite(rawValue) ? ` · raw ${rawValue.toFixed(3)}` : ""}`;
       suggestion.title = "Alternative raw backend activation. It is not a probability of correctness.";
       suggestion.addEventListener("click", () => {
+        if (transcriptionBusy && !liveCaptureActive) return;
         saveSnapshot();
         notes[selectedIndex].midi = candidate.midi;
         notes[selectedIndex].name = noteName(candidate.midi);
@@ -689,6 +975,10 @@
     const fingeringContainer = $("fingering-alternatives");
     fingeringContainer.replaceChildren();
     $("fingering-note").textContent = noteName(note.midi);
+    const uncertainty = document.createElement("span");
+    uncertainty.textContent =
+      "Suggested positions, not detected strings. Fingering costs are not calibrated confidence.";
+    fingeringContainer.appendChild(uncertainty);
     if (fingeringSearchTruncated) {
       const warning = document.createElement("span");
       warning.textContent = "Fingering search bound reached; review these suggestions.";
@@ -712,7 +1002,7 @@
     if (!position.string) {
       const warning = document.createElement("span");
       warning.textContent =
-        "No playable string/fret assignment is available under the current tuning and capo.";
+        position.explanation || "Unresolved string/fret assignment under the current tuning and capo.";
       fingeringContainer.appendChild(warning);
     }
     (position.candidates || []).forEach((candidate) => {
@@ -723,11 +1013,21 @@
         `S${candidate.string} · F${candidate.fret} · ${candidate.sequenceCost.toFixed(1)}`;
       const costs = candidate.costComponents;
       suggestion.title = costs && Number.isFinite(costs.total)
-        ? `Sequence cost: fret ${costs.fret_height.toFixed(2)}, preferred ${costs.preferred_position.toFixed(2)}, hand movement ${costs.hand_movement.toFixed(2)}, string preference ${costs.string_preference.toFixed(2)}, chord stretch ${costs.chord_stretch.toFixed(2)}, unassigned ${costs.unassigned_notes.toFixed(2)}. Choose without changing pitch.`
+        ? `Sequence cost: fret ${costs.fret_height.toFixed(2)}, preferred ${costs.preferred_position.toFixed(2)}, hand movement ${costs.hand_movement.toFixed(2)}, string preference ${costs.string_preference.toFixed(2)}, chord stretch ${costs.chord_stretch.toFixed(2)}, repeated strings ${(costs.repeated_strings || 0).toFixed(2)}, crossings ${(costs.string_crossings || 0).toFixed(2)}, awkward transitions ${(costs.awkward_transitions || 0).toFixed(2)}, unassigned ${costs.unassigned_notes.toFixed(2)}. Choose without changing pitch.`
         : "Choose this fingering without changing the sounding pitch.";
       suggestion.addEventListener("click", () => {
+        if (transcriptionBusy && !liveCaptureActive) return;
         const open = currentTuning()[candidate.string - 1] + currentCapo();
         if (open + candidate.fret !== notes[selectedIndex].midi) return;
+        const selected = notes[selectedIndex];
+        if (notes.some((other, index) => index !== selectedIndex &&
+            tabPositions[index]?.string === candidate.string &&
+            other.start < selected.start + selected.duration &&
+            selected.start < other.start + other.duration)) {
+          $("edit-instructions").textContent =
+            "That string is occupied by another note. Choose a complete phrase alternative instead.";
+          return;
+        }
         saveSnapshot();
         redoHistory = [];
         tabPositions[selectedIndex] = {
@@ -745,6 +1045,40 @@
       });
       fingeringContainer.appendChild(suggestion);
     });
+    if (phraseFingeringSignature === fingeringSignature()) {
+      phraseFingerings.forEach((alternative, rank) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "alternative-pitch phrase-fingering";
+        button.textContent = `Phrase option ${rank + 1} · cost ${Number(alternative.cost?.total || 0).toFixed(1)}`;
+        button.title = "Apply this joint string/fret assignment without changing any pitch or timing.";
+        button.addEventListener("click", () => {
+          if ((transcriptionBusy && !liveCaptureActive) ||
+              phraseFingeringSignature !== fingeringSignature()) return;
+          const positions = alternative.positions;
+          if (!Array.isArray(positions) || positions.length !== notes.length ||
+              positions.some((p, index) => p.note_index !== index ||
+                !Number.isInteger(p.string) || !Number.isInteger(p.fret) ||
+                p.string < 1 || p.string > currentTuning().length || p.fret < 0 || p.fret > 36 ||
+                currentTuning()[p.string - 1] + currentCapo() + p.fret !== notes[index].midi ||
+                positions.some((other, otherIndex) => otherIndex !== index && other.string === p.string &&
+                  notes[index].start < notes[otherIndex].start + notes[otherIndex].duration &&
+                  notes[otherIndex].start < notes[index].start + notes[index].duration))) {
+            $("edit-instructions").textContent = "Phrase alternative is stale or unresolved; regenerate guitar suggestions.";
+            return;
+          }
+          saveSnapshot();
+          redoHistory = [];
+          tabPositions = positions.map((p, index) => ({ ...tabPositions[index],
+            noteIndex: index, string: p.string, fret: p.fret, manual: true }));
+          drawAll();
+          renderSelected();
+          markEdited();
+          updateHistoryButtons();
+        });
+        fingeringContainer.appendChild(button);
+      });
+    }
     renderReview(note);
   }
 
@@ -1036,6 +1370,7 @@
   }
 
   function beginDrag(event, canvas, type) {
+    if (transcriptionBusy && !liveCaptureActive) return;
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
@@ -1053,7 +1388,7 @@
       type, index, x, y, lastX: x, lastY: y, changed: false,
       resize: type === "staff" && Math.abs(x - endX) < 8,
       start: note.start, duration: note.duration, midi: note.midi,
-      position: { ...tabPositions[index] },
+      position: { ...tabPositions[index] }, timelineDuration: totalDuration(),
     };
     canvas.setPointerCapture(event.pointerId);
   }
@@ -1072,7 +1407,7 @@
     }
     if (!dragState.changed) return;
     const note = notes[dragState.index];
-    const deltaTime = deltaX / Math.max(1, rect.width - 48) * totalDuration();
+    const deltaTime = deltaX / Math.max(1, rect.width - 48) * dragState.timelineDuration;
     if (dragState.resize) {
       note.duration = Math.max(.05, dragState.duration + deltaTime);
     } else {
@@ -1087,7 +1422,7 @@
       const string = Math.max(1, Math.min(6, Math.round((y - 20) / gap) + 1));
       const open = currentTuning()[string - 1] + currentCapo();
       const fret = note.midi - open;
-      if (fret < 0 || fret > 24) {
+      if (fret < 0 || fret > (liveCaptureActive ? 24 : 36)) {
         $("edit-instructions").textContent =
           "That string cannot play the selected pitch; choose another string.";
       } else {
@@ -1100,17 +1435,27 @@
     drawAll();
   }
 
-  function endDrag() {
+  function endDrag(event) {
     if (!dragState) return;
     const changed = dragState.changed;
     dragState = null;
     if (changed) {
+      if (event?.type === "pointercancel") {
+        restoreSnapshot(history.pop(), false);
+        updateHistoryButtons();
+        return;
+      }
       markEdited();
       updateHistoryButtons();
     }
   }
 
   function insertNote(event) {
+    if (transcriptionBusy && !liveCaptureActive) return;
+    if (!scoreId && !liveCaptureActive) {
+      $("status-text").textContent = "Create a project or transcribe audio before inserting notes.";
+      return;
+    }
     const canvas = $("staff-view");
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
@@ -1136,6 +1481,7 @@
   }
 
   function removeSelected() {
+    if (transcriptionBusy && !liveCaptureActive) return;
     if (selectedIndex < 0 || selectedIndex >= notes.length) return;
     saveSnapshot();
     redoHistory = [];
@@ -1152,6 +1498,7 @@
   }
 
   function applySelectedEdit() {
+    if (transcriptionBusy && !liveCaptureActive) return;
     if (selectedIndex < 0) return;
     const midi = Number($("edit-pitch").value);
     const start = Number($("edit-start").value);
@@ -1161,8 +1508,8 @@
     if (!Number.isInteger(midi) || midi < 0 || midi > 127 ||
         !Number.isFinite(start) || start < 0 ||
         !Number.isFinite(noteDuration) || noteDuration < .05 ||
-        !Number.isInteger(string) || string < 1 || string > 6 ||
-        !Number.isInteger(fret) || fret < 0 || fret > 24) {
+        !Number.isInteger(string) || string < 0 || string > currentTuning().length ||
+        !Number.isInteger(fret) || fret < 0 || fret > (liveCaptureActive ? 24 : 36)) {
       $("edit-instructions").textContent = "Check pitch, time, duration, string, and fret ranges";
       return;
     }
@@ -1174,7 +1521,7 @@
       previousPosition.string !== string || previousPosition.fret !== fret;
     const selectedPositionPitch =
       currentTuning()[string - 1] + currentCapo() + fret;
-    if (!pitchChanged && selectedPositionPitch !== note.midi) {
+    if (string > 0 && !pitchChanged && selectedPositionPitch !== note.midi) {
       $("edit-instructions").textContent =
         "String and fret must preserve the selected pitch. Change Pitch explicitly to retune.";
       return;
@@ -1188,7 +1535,7 @@
     note.user_authored = true;
     note.state = "manually_corrected";
     const expectedFret = note.midi - currentTuning()[string - 1] - currentCapo();
-    if (expectedFret === fret && expectedFret >= 0) {
+    if (string > 0 && expectedFret === fret && expectedFret >= 0) {
       tabPositions[selectedIndex] = {
         noteIndex: selectedIndex, string, fret,
         manual: positionChanged || (!pitchChanged && previousPosition.manual),
@@ -1202,9 +1549,14 @@
     updateHistoryButtons();
   }
 
-  function restoreSnapshot(snapshot) {
-    notes = snapshot.notes.map((note) => ({ ...note }));
-    tabPositions = snapshot.positions.map((position) => ({ ...position }));
+  function restoreSnapshot(snapshot, notify = true) {
+    stopPlayback();
+    snapshot = structuredClone(snapshot);
+    notes = snapshot.notes;
+    noteIndexDirty = true;
+    tabPositions = snapshot.positions;
+    selectedIndex = notes.findIndex((note) => note.id === snapshot.selectedId);
+    pendingLiveDeletes = new Set(snapshot.pendingLiveDeletes || []);
     reviewDecisions = (snapshot.reviewDecisions || [])
       .map((decision) => ({ ...decision }));
     dismissedReviewSuggestions = new Set(
@@ -1222,23 +1574,28 @@
       updateContextSummary();
     }
     if (reviewEnabled) rebuildReviewQueue();
-    selectedIndex = Math.min(selectedIndex, notes.length - 1);
-    renderSelected();
-    drawAll();
-    markEdited();
+    chooseNote(selectedIndex);
+    if (notify) markEdited(true);
   }
 
   function undo() {
+    if (transcriptionBusy && !liveCaptureActive) return;
     if (!history.length) return;
     saveSnapshot(redoHistory);
+    const redo = redoHistory;
     restoreSnapshot(history.pop());
+    redoHistory = redo;
     updateHistoryButtons();
   }
 
   function redo() {
+    if (transcriptionBusy && !liveCaptureActive) return;
     if (!redoHistory.length) return;
+    const remaining = redoHistory;
+    const snapshot = remaining.pop();
     saveSnapshot(history);
-    restoreSnapshot(redoHistory.pop());
+    restoreSnapshot(snapshot);
+    redoHistory = remaining;
     updateHistoryButtons();
   }
 
@@ -1260,7 +1617,7 @@
         ...incoming,
         amplitude: Number.isFinite(incoming.amplitude) ? incoming.amplitude : null,
       };
-      if (prior?.user_authored && !incoming.user_authored) {
+      if (liveCaptureActive && prior?.user_authored && !incoming.user_authored) {
         note.midi = prior.midi;
         note.name = prior.name;
         note.start = prior.start;
@@ -1300,15 +1657,22 @@
         ? [[note.id, `${position.string}:${position.fret}`]] : [];
     }));
     if (reviewEnabled) rebuildReviewQueue();
-    duration = totalDuration();
+    duration = notes.reduce((end, note) => Math.max(end, note.start + note.duration), 1);
     renderSelected();
     drawAll();
     $("export-edits").disabled = transcriptionBusy || !exportReady;
   }
 
+  function fingeringSignature() {
+    return JSON.stringify([currentTuning(), currentCapo(),
+      notes.map(note => [note.id, note.midi, note.start, note.duration])]);
+  }
+
   function acceptFingering(fingering) {
     if (!fingering || !Array.isArray(fingering.notes) ||
         fingering.notes.length !== notes.length) return;
+    phraseFingerings = Array.isArray(fingering.alternatives) ? fingering.alternatives : [];
+    phraseFingeringSignature = fingeringSignature();
     rejectedFingeringCorrectionCount =
       Array.isArray(fingering.rejected_corrections)
         ? fingering.rejected_corrections.length : 0;
@@ -1318,6 +1682,8 @@
       string: item.string,
       fret: item.fret,
       manual: Boolean(item.manual),
+      explanation: item.explanation || "",
+      suggestedFinger: item.suggested_finger,
       ambiguous: Boolean(item.ambiguous),
       correctionRejected: Boolean(item.correction_rejected),
       candidates: Array.isArray(item.candidates)
@@ -1334,6 +1700,7 @@
   }
 
   function acceptMetadata(metadata) {
+    stopPlayback();
     currentMetadata = metadata || {};
     if (currentMetadata.score_id) scoreId = currentMetadata.score_id;
     if (Number.isInteger(currentMetadata.score_revision)) {
@@ -1362,14 +1729,15 @@
     $("key-value").textContent = currentMetadata.key || "—";
     $("tab-tuning-label").textContent =
       `${tuningLabels[$("guitar-tuning").value] || tuningLabels.standard} · capo ${currentCapo()}`;
-    exportReady = notes.length > 0;
-    $("play-midi").disabled = !exportReady;
+    exportReady = Boolean(scoreId);
+    $("play-midi").disabled = !exportReady || notes.length === 0;
     const fileMode = document.querySelector(".segment.selected")?.dataset.mode === "file";
     $("play-original").disabled =
       !exportReady || !fileMode || !/\.wav$/i.test($("input-path").value);
     edited = false;
     history = [];
     redoHistory = [];
+    pendingLiveDeletes.clear();
     $("export-edits").disabled = !exportReady;
     $("export-edits").textContent = "Apply edits & export";
     contextBeforeLastChange = readScoreContext();
@@ -1383,35 +1751,58 @@
   function acceptAudioPreview(message) {
     const nextWaveform = Array.isArray(message.waveform) ? message.waveform : [];
     const nextSpectrum = Array.isArray(message.spectrogram) ? message.spectrogram : [];
-    spectrumBands = Number(message.bands) || spectrumBands;
+    const bands = Number(message.bands) || spectrumBands;
+    const offset = Number(message.offset);
+    const length = Number(message.duration);
+    if (!Number.isFinite(offset) || offset < 0 || !Number.isFinite(length) || length < 0 ||
+        nextSpectrum.length !== nextWaveform.length * bands) {
+      $("status-text").textContent = "Audio preview rejected: invalid timing or dimensions.";
+      return;
+    }
+    if (message.replace || bands !== spectrumBands) {
+      waveform = [];
+      spectrum = [];
+      audioColumns = [];
+    }
+    spectrumBands = bands;
+    spectrumMinimum = Number(message.minimum_frequency_hz) || 0;
+    spectrumMaximum = Number(message.maximum_frequency_hz) || 0;
+    const spans = nextWaveform.map((_, index) => ({
+      start: offset + index * length / nextWaveform.length,
+      end: offset + (index + 1) * length / nextWaveform.length,
+    }));
     if (message.replace) {
       waveform = nextWaveform.slice();
       spectrum = nextSpectrum.slice();
-      audioStart = Number(message.offset) || 0;
-      audioEnd = audioStart + (Number(message.duration) || 0);
+      audioColumns = spans;
+      audioStart = offset;
+      audioEnd = audioStart + length;
     } else {
       const columns = Number(message.columns) || nextWaveform.length;
       const chunkDuration = Number(message.duration) || 0;
       const chunkOffset = Number(message.offset) || 0;
-      const secondsPerColumn = columns > 0 ? chunkDuration / columns : 0;
       waveform.push(...nextWaveform);
       spectrum.push(...nextSpectrum);
+      audioColumns.push(...spans);
       const maximumColumns = 512;
       if (waveform.length > maximumColumns) {
         const remove = waveform.length - maximumColumns;
         waveform.splice(0, remove);
         spectrum.splice(0, remove * spectrumBands);
-        audioStart += remove * secondsPerColumn;
+        audioColumns.splice(0, remove);
       }
       if (audioEnd === 0) audioStart = chunkOffset;
       audioEnd = Math.max(audioEnd, chunkOffset + chunkDuration);
       if (columns === 0) return;
     }
+    audioStart = audioColumns[0]?.start ?? offset;
     $("audio-time").textContent = waveform.length
       ? `${audioStart.toFixed(1)}–${audioEnd.toFixed(1)}s` : "Waiting for audio";
-    drawWaveform();
-    drawSpectrogram();
-    drawConfidence();
+    audioDirty = true;
+    drawAll(false);
+    window.dispatchEvent(new CustomEvent("transcribe:timeline", {
+      detail: { duration: totalDuration() },
+    }));
   }
 
   function drawPlaybackFrame() {
@@ -1421,7 +1812,7 @@
       detail: time,
     }));
     updateMeasureDisplay(time);
-    if (time >= playbackEnd) {
+    if (playbackMode === "midi" && time >= playbackEnd) {
       if ($("loop-toggle").getAttribute("aria-pressed") === "true") {
         if (playbackMode === "midi") {
           playMidi().catch((error) => {
@@ -1436,26 +1827,32 @@
       stopPlayback();
       return;
     }
-    drawStaff();
-    drawTab();
     playbackFrame = requestAnimationFrame(drawPlaybackFrame);
   }
 
   async function playMidi(fromTime = 0) {
     stopPlayback();
+    const generation = playbackGeneration;
     const AudioContextType = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextType) {
       $("status-text").textContent = "Web Audio is unavailable for note playback";
       return;
     }
     if (!audioContext) audioContext = new AudioContextType();
-    await audioContext.resume();
+    $("stop-playback").disabled = false;
+    try {
+      await audioContext.resume();
+    } catch (error) {
+      if (generation !== playbackGeneration) return;
+      throw error;
+    }
+    if (generation !== playbackGeneration) return;
     const startAt = audioContext.currentTime + .08;
     playbackEnd = totalDuration();
     playbackMode = "midi";
     pausedMode = "";
     pausedAt = 0;
-    playbackStarted = performance.now() - fromTime * 1000;
+    playbackStarted = startAt - fromTime;
     activeOscillators = [];
     notes.forEach((note) => {
       const noteEnd = note.start + note.duration;
@@ -1478,6 +1875,11 @@
       gain.connect(audioContext.destination);
       oscillator.start(scheduledStart);
       oscillator.stop(end + .18);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        gain.disconnect();
+        activeOscillators = activeOscillators.filter((item) => item !== oscillator);
+      };
       activeOscillators.push(oscillator);
     });
     $("stop-playback").disabled = false;
@@ -1491,7 +1893,7 @@
     pausedAt = playbackTime();
     pausedMode = "midi";
     activeOscillators.forEach((oscillator) => {
-      try { oscillator.stop(); } catch { }
+      oscillator.stop();
     });
     activeOscillators = [];
     playbackMode = "";
@@ -1502,6 +1904,7 @@
     $("play-midi").textContent = "▶";
     $("play-midi").title = "Resume score playback (Space)";
     $("stop-playback").disabled = false;
+    drawAll();
   }
 
   function toggleMidiPlayback() {
@@ -1521,19 +1924,20 @@
   function playOriginal() {
     stopPlayback();
     playbackMode = "original";
-    playbackStarted = performance.now();
+    originalPosition = 0;
     playbackEnd = Math.max(totalDuration(), audioEnd);
     $("stop-playback").disabled = false;
     $("play-midi").textContent = "▶";
     $("play-midi").title = "Play or pause the score (Space)";
-    send("play-original");
+    send("play-original", { token: String(playbackGeneration) });
     drawPlaybackFrame();
   }
 
   function stopPlayback() {
+    playbackGeneration += 1;
     if (playbackMode === "original") send("stop-playback");
     activeOscillators.forEach((oscillator) => {
-      try { oscillator.stop(); } catch { }
+      oscillator.stop();
     });
     activeOscillators = [];
     playbackMode = "";
@@ -1567,7 +1971,10 @@
     return {
       notes: notesPayload,
       tab_positions: positionsPayload,
-      tempo: $("tempo-control").value,
+      tab_assignments: tabPositions.map((position, index) =>
+        position.string > 0 ? `${index},${position.string},${position.fret}` : ""
+      ).filter(Boolean).join(";"),
+      tempo: String(currentTempo()),
       tempo_auto: $("tempo-auto").checked ? "1" : "0",
       key_fifths: $("key-control").value,
       key_auto: $("key-control").value === "auto" ? "1" : "0",
@@ -1577,6 +1984,7 @@
       pickup: $("pickup-control").value,
       written_transposition: $("written-transposition-control").value,
       base_revision: String(scoreRevision),
+      score_id: scoreId,
       review_decisions: reviewDecisions.map((decision) =>
         [decision.id, decision.note_id, decision.outcome].join(",")).join(";"),
       tuning: $("guitar-tuning").value,
@@ -1588,6 +1996,12 @@
       polyphonic: $("polyphonic").checked ? "1" : "0",
       preserve_timing: $("preserve-timing").checked ? "1" : "0",
       latency_ms: $("latency-ms").value,
+      quantization: $("quantization-mode").value,
+      quantization_strength: $("quantization-strength").value,
+      minimum_rhythm_evidence: $("rhythm-evidence").value,
+      retain_review_evidence: $("review-mode").checked ? "1" : "0",
+      bounded_inference: $("bounded-inference").checked ? "1" : "0",
+      annotation_text: $("project-annotation").value,
       musicxml: $("musicxml-path").value,
       tab: $("tab-path").value,
       midi: $("midi-path").value,
@@ -1610,6 +2024,42 @@
   });
   $("apply-note-edit").addEventListener("click", applySelectedEdit);
   $("delete-note").addEventListener("click", removeSelected);
+  $("split-note").addEventListener("click", () => {
+    const note = notes[selectedIndex];
+    if (!note || note.duration < .1 || (transcriptionBusy && !liveCaptureActive)) return;
+    saveSnapshot();
+    const half = note.duration / 2;
+    const continuation = { ...note, id: `user-${scoreId || "score"}-${nextUserNoteId++}`,
+      start: note.start + half, duration: half, user_authored: true };
+    note.duration = half;
+    notes.splice(selectedIndex + 1, 0, continuation);
+    tabPositions.splice(selectedIndex + 1, 0, { ...tabPositions[selectedIndex] });
+    markEdited();
+    renderSelected();
+    drawAll();
+    updateHistoryButtons();
+  });
+  $("merge-note").addEventListener("click", () => {
+    const note = notes[selectedIndex];
+    if (!note || (transcriptionBusy && !liveCaptureActive)) return;
+    const next = notes.reduce((candidate, item, index) =>
+      item.midi === note.midi && item.start >= note.start + note.duration - 1e-6 &&
+      (candidate < 0 || item.start < notes[candidate].start) ? index : candidate, -1);
+    if (next < 0) {
+      $("edit-instructions").textContent = "No following same-pitch note is available to merge.";
+      return;
+    }
+    saveSnapshot();
+    note.duration = notes[next].start + notes[next].duration - note.start;
+    if (liveCaptureActive) pendingLiveDeletes.add(notes[next].id);
+    notes.splice(next, 1);
+    tabPositions.splice(next, 1);
+    selectedIndex = notes.indexOf(note);
+    markEdited();
+    renderSelected();
+    drawAll();
+    updateHistoryButtons();
+  });
   $("undo-button").addEventListener("click", undo);
   $("redo-button").addEventListener("click", redo);
   $("export-edits").addEventListener("click", exportEdits);
@@ -1631,6 +2081,9 @@
     if (!exportReady) {
       if (projectActive) {
         saveSnapshot(history, notes, contextBeforeLastChange || readScoreContext());
+        if (id === "tempo-control" || id === "tempo-auto") {
+          remapTempo(contextBeforeLastChange || readScoreContext());
+        }
         redoHistory = [];
         contextBeforeLastChange = readScoreContext();
         if (id === "guitar-tuning" || id === "capo-fret") {
@@ -1649,6 +2102,9 @@
       return;
     }
     saveSnapshot(history, notes, contextBeforeLastChange || readScoreContext());
+    if (id === "tempo-control" || id === "tempo-auto") {
+      remapTempo(contextBeforeLastChange || readScoreContext());
+    }
     redoHistory = [];
     contextBeforeLastChange = readScoreContext();
     if (id === "guitar-tuning" || id === "capo-fret") {
@@ -1663,7 +2119,7 @@
   }));
   function refreshStringOptions() {
     const selected = $("edit-string").value;
-    $("edit-string").innerHTML = currentTuning().map((pitch, index) =>
+    $("edit-string").innerHTML = '<option value="0">Unassigned</option>' + currentTuning().map((pitch, index) =>
       `<option value="${index + 1}">${index + 1} · ${noteName(pitch)}</option>`
     ).join("");
     if (selected) $("edit-string").value = selected;
@@ -1674,10 +2130,20 @@
   });
 
   document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || document.querySelector("dialog[open]")) return;
+    if (event.target instanceof Element &&
+        event.target.closest("button, a, summary, [role=separator], [contenteditable=true]")) return;
+    if (transcriptionBusy && !liveCaptureActive) return;
     const target = event.target;
     const typing = target instanceof HTMLInputElement ||
       target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement;
-    if (event.code === "Space" && !typing) {
+    if (!typing && !event.ctrlKey && !event.metaKey && ["+", "=", "-", "0", "PageUp", "PageDown"].includes(event.key)) {
+      event.preventDefault();
+      const control = { "+": "timeline-zoom-in", "=": "timeline-zoom-in",
+        "-": "timeline-zoom-out", "0": "timeline-fit",
+        PageUp: "timeline-prev", PageDown: "timeline-next" }[event.key];
+      $(control).click();
+    } else if (event.code === "Space" && !typing) {
       event.preventDefault();
       toggleMidiPlayback();
     } else if (event.key === "Delete" && !typing) {
@@ -1723,19 +2189,32 @@
       renderSelected();
       drawAll();
       markEdited();
+    } else if (!typing && !event.ctrlKey && !event.metaKey && selectedIndex >= 0 &&
+        ["ArrowLeft", "ArrowRight"].includes(event.key)) {
+      event.preventDefault();
+      chooseNote(Math.max(0, Math.min(notes.length - 1,
+        selectedIndex + (event.key === "ArrowRight" ? 1 : -1))));
+      const view = timeline.bounds(totalDuration());
+      const note = notes[selectedIndex];
+      if (note.start < view.start || note.start > view.end) {
+        timeline.setView(note.start, view.end - view.start, totalDuration());
+      }
     }
     updateHistoryButtons();
   });
 
-  window.addEventListener("transcribe:notes", (event) => acceptNotes(event.detail));
+  window.addEventListener("transcribe:notes", (event) => {
+    noteIndexDirty = true;
+    acceptNotes(event.detail);
+  });
   window.addEventListener("transcribe:project-active", (event) => {
     projectActive = Boolean(event.detail?.active);
   });
   window.addEventListener("transcribe:project-settings", (event) => {
     currentProjectSettings = event.detail || null;
     const tuning = currentProjectSettings?.tuning;
-    currentTuningOverride = Array.isArray(tuning) && tuning.length === 6 &&
-      tuning.every((pitch) => Number.isInteger(pitch))
+    currentTuningOverride = Array.isArray(tuning) && tuning.length >= 1 && tuning.length <= 12 &&
+      tuning.every((pitch) => Number.isInteger(pitch) && pitch >= 0 && pitch <= 127)
       ? tuning.map(Number) : null;
     refreshStringOptions();
     updateContextSummary();
@@ -1744,7 +2223,15 @@
   window.addEventListener("transcribe:project-save", (event) => {
     const detail = event.detail || {};
     window.dispatchEvent(new CustomEvent("transcribe:export-started"));
-    send("save-project", scoreWriteFields({ project_path: detail.path || "" }));
+    send("save-project", scoreWriteFields({
+      project_path: detail.path || "", copy_audio: detail.copyAudio ? "1" : "0",
+    }));
+  });
+  window.addEventListener("transcribe:project-relink", (event) => {
+    const detail = event.detail || {};
+    send("autosave-project", scoreWriteFields({
+      relink_audio: detail.path || "", generation: String(detail.generation || 0),
+    }));
   });
   window.addEventListener("transcribe:project-copy", (event) => {
     const detail = event.detail || {};
@@ -1796,6 +2283,7 @@
   $("audition-event").addEventListener("click", () => {
     const note = notes[selectedIndex];
     if (!note) return;
+    stopPlayback();
     const start = Math.max(0, Number.isFinite(note.measured_start)
       ? note.measured_start - 0.18 : note.start - 0.18);
     const end = Math.max(start + 0.05,
@@ -1810,6 +2298,29 @@
   window.addEventListener("transcribe:fingering", (event) => acceptFingering(event.detail));
   window.addEventListener("transcribe:metadata", (event) => acceptMetadata(event.detail));
   window.addEventListener("transcribe:audio-preview", (event) => acceptAudioPreview(event.detail));
+  window.addEventListener("transcribe:playback-state", (event) => {
+    const state = event.detail || {};
+    if (Number(state.token) !== playbackGeneration || playbackMode !== "original") return;
+    originalPosition = Math.max(0, Number(state.seconds) || 0);
+    if (state.state === "ended" && $("loop-toggle").getAttribute("aria-pressed") === "true") {
+      playOriginal();
+    } else if (state.state !== "playing") {
+      stopPlayback();
+    }
+  });
+  window.addEventListener("transcribe:source-changed", () => {
+    stopPlayback();
+    waveform = [];
+    spectrum = [];
+    audioColumns = [];
+    audioStart = 0;
+    audioEnd = 0;
+    audioDirty = true;
+    $("audio-time").textContent = "Waiting for audio";
+    $("play-original").disabled = true;
+    drawAll();
+  });
+  window.addEventListener("transcribe:playback-error", stopPlayback);
   window.addEventListener("transcribe:busy", (event) => {
     const state = event.detail;
     const disabled = typeof state === "object"
@@ -1818,17 +2329,19 @@
     liveCaptureActive = typeof state === "object" &&
       Boolean(state.liveCapture);
     transcriptionBusy = disabled;
+    if (disabled) stopPlayback();
     if (disabled && !preserveScore) {
       exportReady = false;
       edited = false;
       waveform = [];
       spectrum = [];
+      audioColumns = [];
       audioStart = 0;
       audioEnd = 0;
       drawWaveform();
       drawSpectrogram();
     }
-    $("play-midi").disabled = disabled || !exportReady;
+    $("play-midi").disabled = disabled || !exportReady || notes.length === 0;
     const fileMode = document.querySelector(".segment.selected")?.dataset.mode === "file";
     $("play-original").disabled =
       disabled || !exportReady || !fileMode || !/\.wav$/i.test($("input-path").value);
@@ -1837,6 +2350,7 @@
     $("delete-note").disabled = (disabled && !liveCaptureActive) ||
       selectedIndex < 0;
     $("export-edits").disabled = disabled || !exportReady;
+    updateHistoryButtons();
     renderSelected();
   });
   window.addEventListener("transcribe:edited-export", (event) => {
@@ -1854,7 +2368,10 @@
       ? "Edited notation, tablature, and MIDI exported"
       : `Export failed: ${message.error || "Unknown error"}`;
   });
-  window.addEventListener("resize", drawAll);
+  function invalidateLayout() { audioDirty = true; drawAll(); }
+  window.addEventListener("resize", invalidateLayout);
+  window.addEventListener("transcribe:viewport", invalidateLayout);
+  window.addEventListener("transcribe:theme", invalidateLayout);
   window.addEventListener("pagehide", () => {
     stopPlayback();
     if (audioContext && audioContext.state !== "closed") {

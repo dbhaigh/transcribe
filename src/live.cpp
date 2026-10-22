@@ -42,6 +42,7 @@ public:
         };
         result.p50_seconds = rank(0.5);
         result.p95_seconds = rank(0.95);
+        result.p99_seconds = rank(0.99);
         return result;
     }
 
@@ -69,8 +70,16 @@ void validate(const LiveOptions& options, bool has_model) {
     }
     if (!std::isfinite(options.max_analysis_lag_seconds) || options.max_analysis_lag_seconds <= 0 ||
         !finite_nonnegative(options.max_recording_seconds) ||
+        !std::isfinite(options.target_provisional_seconds) || options.target_provisional_seconds <= 0 ||
+        !std::isfinite(options.target_stabilized_seconds) ||
+        options.target_stabilized_seconds < options.target_provisional_seconds ||
         options.ingest_poll_interval.count() <= 0) {
         throw std::invalid_argument("Live lag, recording and polling limits must be positive and finite");
+    }
+    if ((format.layout == ChannelLayout::Mono && format.channels != 1) ||
+        (format.layout == ChannelLayout::Stereo && format.channels != 2) ||
+        format.layout < ChannelLayout::DiscreteInterleaved || format.layout > ChannelLayout::Stereo) {
+        throw std::invalid_argument("Live channel layout must match interleaved mono/stereo or discrete channels");
     }
     if (options.backend == LiveBackendKind::IncrementalYin) {
         if (has_model) {
@@ -102,6 +111,30 @@ void validate(const LiveOptions& options, bool has_model) {
 }
 
 } // namespace
+
+LatencyBudget latency_budget(const LiveOptions& options, std::size_t capture_block_frames) {
+    validate(options, options.backend == LiveBackendKind::OverlappingWindow);
+    LatencyBudget budget;
+    budget.capture_block_seconds = double(capture_block_frames) / options.format.sample_rate;
+    budget.ingest_poll_seconds = std::chrono::duration<double>(options.ingest_poll_interval).count();
+    if (options.backend == LiveBackendKind::IncrementalYin) {
+        const auto& yin = options.yin.realtime;
+        budget.analysis_context_seconds = yin.latency_ms / 1000;
+        budget.update_wait_seconds = double(yin.onset_stability_frames) / yin.update_rate_hz;
+        budget.stabilization_seconds = options.yin.stabilization_seconds;
+    } else {
+        budget.analysis_context_seconds = options.window.right_guard_seconds;
+        budget.update_wait_seconds = options.window.hop_seconds;
+        budget.stabilization_seconds =
+            (options.window.confirmations - 1) * options.window.hop_seconds;
+    }
+    budget.provisional_estimate_seconds = budget.capture_block_seconds + budget.ingest_poll_seconds +
+        budget.analysis_context_seconds + budget.update_wait_seconds;
+    budget.stabilized_estimate_seconds = budget.provisional_estimate_seconds + budget.stabilization_seconds;
+    budget.provisional_estimate_within_target = budget.provisional_estimate_seconds <= options.target_provisional_seconds;
+    budget.stabilized_estimate_within_target = budget.stabilized_estimate_seconds <= options.target_stabilized_seconds;
+    return budget;
+}
 
 double LiveNote::onset_seconds() const noexcept {
     return sample_rate ? static_cast<double>(onset_frame) / sample_rate : 0.0;
@@ -137,6 +170,7 @@ struct LiveTranscriptionSession::Impl {
         std::uint64_t offset_context{};
         bool seen{};
         Nanoseconds onset_capture{};
+        Nanoseconds first_emitted{};
     };
     struct Candidate {
         int midi{};
@@ -192,20 +226,32 @@ struct LiveTranscriptionSession::Impl {
 
     // ---------------- producer (real-time thread) ----------------
     PushStatus push(const AudioFrameBlock& block) noexcept {
-        if (closed.load(std::memory_order_acquire)) return PushStatus::Closed;
+        producer_active.store(true);
+        struct Exit {
+            std::atomic<bool>& active;
+            ~Exit() { active.store(false, std::memory_order_release); }
+        } exit{producer_active};
+        if (closed.load()) return PushStatus::Closed;
         if (block.format.sample_rate != rate || block.format.channels != channels ||
+            block.format.layout != options.format.layout ||
             block.interleaved.size() % channels != 0) {
             blocks_rejected.fetch_add(1, std::memory_order_relaxed);
             return PushStatus::InvalidFormat;
         }
         const std::size_t count = block.interleaved.size() / channels;
-        if ((producer_has_frame && block.first_frame < producer_next_frame) ||
-            block.first_frame > no_frame - count) {
+        if (block.first_frame < minimum_first_frame ||
+            block.stream_epoch != options.stream_epoch ||
+            (producer_sequence && (!block.sequence || *block.sequence <= *producer_sequence)) ||
+            (producer_has_frame && block.first_frame < producer_next_frame) ||
+            block.first_frame > no_frame - count || block.capture_time.count() < 0 ||
+            (block.capture_time.count() && producer_capture.count() &&
+                block.capture_time < producer_capture)) {
             blocks_rejected.fetch_add(1, std::memory_order_relaxed);
             return PushStatus::InvalidTimestamp;
         }
         if (count == 0) return PushStatus::Accepted;
-        const std::size_t needed = (count + options.max_block_frames - 1) / options.max_block_frames;
+        const std::size_t needed = count / options.max_block_frames +
+            (count % options.max_block_frames != 0);
         const auto write = write_index.load(std::memory_order_relaxed);
         const auto read = read_index.load(std::memory_order_acquire);
         if (slots.size() - (write - read) < needed) {
@@ -214,41 +260,83 @@ struct LiveTranscriptionSession::Impl {
             return PushStatus::QueueFull;
         }
         for (std::size_t part = 0; part < needed; ++part) {
-            auto& slot = slots[(write + part) % slots.size()];
+            auto& slot = slots[producer_slot];
             const std::size_t first = part * options.max_block_frames;
             slot.frames = std::min(options.max_block_frames, count - first);
             std::copy_n(block.interleaved.data() + first * channels, slot.frames * channels,
                         slot.samples.data());
             slot.first_frame = block.first_frame + first;
             slot.capture_time = block.capture_time;
-            slot.discontinuity = part == 0 && block.discontinuity;
+            slot.discontinuity = part == 0 && (block.discontinuity ||
+                (producer_sequence && block.sequence && *block.sequence - *producer_sequence > 1));
             slot.continuation = part > 0;
+            if (++producer_slot == slots.size()) producer_slot = 0;
         }
         write_index.store(write + needed, std::memory_order_release);
         const auto used = write + needed - read;
-        auto high = queue_high_water.load(std::memory_order_relaxed);
-        while (used > high && !queue_high_water.compare_exchange_weak(high, used,
-                                                                       std::memory_order_relaxed)) {}
+        queue_high_water.store(std::max(used, queue_high_water.load(std::memory_order_relaxed)),
+                               std::memory_order_relaxed);
         producer_has_frame = true;
+        if (producer_sequence && block.sequence && *block.sequence - *producer_sequence > 1)
+            sequence_gaps.fetch_add(*block.sequence - *producer_sequence - 1, std::memory_order_relaxed);
+        producer_sequence = block.sequence;
         producer_next_frame = block.first_frame + count;
+        if (block.capture_time.count()) producer_capture = block.capture_time;
         return PushStatus::Accepted;
     }
 
     // ---------------- ingest worker ----------------
+    void queue_marker(Marker marker) {
+        // Keep the front stable while analysis processes its copied marker outside data_mutex.
+        if (markers.size() >= 1024) {
+            auto& tail = markers.back();
+            const auto skipped = marker.end_frame > tail.resume_frame ?
+                marker.end_frame - tail.resume_frame : 0;
+            tail.kind = MarkerKind::Gap;
+            tail.resume_frame = marker.resume_frame;
+            tail.message = "input discontinuities coalesced under overload";
+            std::lock_guard lock(metrics_mutex);
+            ++counters.input_markers_coalesced;
+            counters.skipped_frames += skipped;
+        } else markers.push_back(std::move(marker));
+    }
+
     std::size_t ingest_available(bool may_wait) {
         std::size_t processed = 0;
         while (!stop.stop_requested()) {
             const auto read = read_index.load(std::memory_order_relaxed);
             if (read == write_index.load(std::memory_order_acquire)) break;
-            if (!ingest_slot(slots[read % slots.size()], may_wait)) break;
+            if (!ingest_slot(slots[consumer_slot], may_wait)) break;
+            if (++consumer_slot == slots.size()) consumer_slot = 0;
             read_index.store(read + 1, std::memory_order_release);
             ++processed;
         }
         if (input_lost.exchange(false, std::memory_order_acq_rel)) {
             std::lock_guard lock(data_mutex);
-            markers.push_back({MarkerKind::Interrupt, ring_end, ring_end, "input interrupted"});
+            queue_marker({MarkerKind::Interrupt, ring_end, ring_end, "input interrupted"});
             interrupted = true;
             ++processed;
+        }
+        if (read_index.load(std::memory_order_relaxed) == write_index.load(std::memory_order_acquire)) {
+            const auto end = input_end.exchange(no_frame, std::memory_order_acq_rel);
+            if (end != no_frame) {
+                std::lock_guard lock(data_mutex);
+                const auto frame = have_origin && end >= origin ? end - origin : end;
+                if (frame > ring_end) {
+                    queue_marker({MarkerKind::Gap, ring_end, frame, "input tail frames missing"});
+                    {
+                        std::lock_guard metrics_lock(metrics_mutex);
+                        counters.gap_frames += frame - ring_end;
+                        ++counters.discontinuities;
+                    }
+                    if (recording_limit) {
+                        recorded.resize(static_cast<std::size_t>(std::min<std::uint64_t>(frame, recording_limit)), 0);
+                        if (frame > recording_limit) recording_truncated = true;
+                    }
+                    ring_end = frame;
+                    ++processed;
+                }
+            }
         }
         if (processed) data_cv.notify_all();
         return processed;
@@ -265,7 +353,7 @@ struct LiveTranscriptionSession::Impl {
         if (!slot.continuation && (frame != ring_end || slot.discontinuity || interrupted)) {
             std::string message = interrupted ? "input resumed" :
                 frame > ring_end ? "input frames missing" : "input discontinuity";
-            markers.push_back({MarkerKind::Gap, ring_end, frame, std::move(message)});
+            queue_marker({MarkerKind::Gap, ring_end, frame, std::move(message)});
             {
                 std::lock_guard metrics_lock(metrics_mutex);
                 ++counters.discontinuities;
@@ -303,10 +391,10 @@ struct LiveTranscriptionSession::Impl {
                 else recording_truncated = true;
             }
         }
-        capture_map.emplace_back(ring_end, slot.capture_time);
+        capture_map.push_back({ring_end, slot.capture_time, ingested_at});
         const auto oldest = ring_end > ring.size() ? ring_end - ring.size() : 0;
         while (capture_map.size() > 1 &&
-               (capture_map.size() > 65536 || capture_map[1].first <= oldest)) {
+               (capture_map.size() > 65536 || capture_map[1].frame <= oldest)) {
             capture_map.pop_front();
         }
         ring_end += slot.frames;
@@ -362,10 +450,16 @@ struct LiveTranscriptionSession::Impl {
         std::lock_guard metrics_lock(metrics_mutex);
         counters.snapshot_notes_evicted += evicted;
         if (kind == LiveEventKind::NoteOn) {
-            if (onset_capture.count() != 0) end_to_end.add(seconds(emitted - onset_capture));
+            if (onset_capture.count() != 0) {
+                const auto delay = seconds(emitted - onset_capture);
+                end_to_end.add(delay);
+                if (delay > options.target_provisional_seconds) ++counters.provisional_target_misses;
+            }
             algorithmic.add(seconds(evidence_end > onset ? evidence_end - onset : 0));
         } else if (kind == LiveEventKind::NoteStabilized && onset_capture.count() != 0) {
-            stabilization.add(seconds(emitted - onset_capture));
+            const auto delay = seconds(emitted - onset_capture);
+            stabilization.add(delay);
+            if (delay > options.target_stabilized_seconds) ++counters.stabilized_target_misses;
         }
     }
 
@@ -379,19 +473,21 @@ struct LiveTranscriptionSession::Impl {
     Nanoseconds capture_time_for(std::uint64_t frame) {
         std::lock_guard lock(data_mutex);
         auto it = std::upper_bound(capture_map.begin(), capture_map.end(), frame,
-            [](std::uint64_t value, const auto& entry) { return value < entry.first; });
+            [](std::uint64_t value, const auto& entry) { return value < entry.frame; });
         if (it == capture_map.begin()) return {};
-        return std::prev(it)->second;
+        return std::prev(it)->capture;
     }
 
     Tracked make_note(int midi, std::uint64_t onset, double strength, bool truncated) {
         Tracked tracked;
         tracked.serial = ++serial;
-        tracked.note.id = "live-" + std::to_string(tracked.serial);
+        tracked.note.id = (options.stream_id.empty() ? "" : options.stream_id + "/") +
+            "live-" + std::to_string(tracked.serial);
         tracked.note.midi_pitch = midi;
         tracked.note.sample_rate = rate;
         tracked.note.onset_frame = onset;
         tracked.note.raw_strength = strength;
+        tracked.first_emitted = clock();
         tracked.note.source_model = model_id;
         tracked.note.detection_method = detection_method;
         tracked.note.onset_truncated = truncated;
@@ -406,6 +502,8 @@ struct LiveTranscriptionSession::Impl {
         tracked.note.state = EventLifecycle::Stabilized;
         ++tracked.note.revision;
         emit(LiveEventKind::NoteStabilized, &tracked, previous);
+        std::lock_guard lock(metrics_mutex);
+        confirmation.add(seconds(clock() - tracked.first_emitted));
     }
 
     void retract(Tracked& tracked, const std::string& reason) {
@@ -422,6 +520,15 @@ struct LiveTranscriptionSession::Impl {
         tracked.note.offset_frame = std::max(frame, tracked.note.onset_frame + 1);
         ++tracked.note.revision;
         emit(LiveEventKind::NoteOff, &tracked, previous);
+    }
+
+    void finalize_note(Tracked& tracked) {
+        if (tracked.note.finalized || tracked.note.state == EventLifecycle::Rejected ||
+            !tracked.note.offset_frame || tracked.note.state == EventLifecycle::Provisional) return;
+        auto previous = tracked.note;
+        tracked.note.finalized = true;
+        ++tracked.note.revision;
+        emit(LiveEventKind::NoteFinalized, &tracked, previous);
     }
 
     // Segment-final decision for a note that can receive no further evidence.
@@ -450,6 +557,7 @@ struct LiveTranscriptionSession::Impl {
         } else {
             stabilize(tracked);
             close(tracked, end);
+            finalize_note(tracked);
         }
         yin_active.reset();
     }
@@ -730,6 +838,7 @@ struct LiveTranscriptionSession::Impl {
                 if (t.note.state == EventLifecycle::Provisional) {
                     retract(t, "too few overlapping-window confirmations");
                 }
+                finalize_note(t);
                 remove[ti] = true;
             }
         }
@@ -801,10 +910,19 @@ struct LiveTranscriptionSession::Impl {
             model_failure(error.what());
         }
         const auto elapsed = seconds(clock() - started);
+        Nanoseconds queued_at{};
+        {
+            std::lock_guard lock(data_mutex);
+            const auto frame = evidence_end ? evidence_end - 1 : 0;
+            const auto found = std::upper_bound(capture_map.begin(), capture_map.end(), frame,
+                [](std::uint64_t value, const auto& entry) { return value < entry.frame; });
+            if (found != capture_map.begin()) queued_at = std::prev(found)->ingested;
+        }
         std::lock_guard lock(metrics_mutex);
         ++counters.analysis_steps;
         counters.analysis_busy_seconds += elapsed;
         analysis_latency.add(elapsed);
+        if (queued_at.count()) analysis_wait.add(std::max(0.0, seconds(started - queued_at)));
     }
 
     void close_open_notes(std::uint64_t end, bool allow_stabilize) {
@@ -824,6 +942,7 @@ struct LiveTranscriptionSession::Impl {
                 close(t, std::min(std::max(t.active_until, t.note.onset_frame + 1), std::max(end, t.note.onset_frame + 1)));
             }
             settle(t, minimum, allow_stabilize && t.seen);
+            finalize_note(t);
         }
         tracked.clear();
         retired.clear();
@@ -924,6 +1043,7 @@ struct LiveTranscriptionSession::Impl {
     }
 
     bool analyse_ready() {
+        if (analysis_paused.load(std::memory_order_acquire)) return false;
         bool progress = false;
         while (!failed && !stop.stop_requested()) {
             std::uint64_t available;
@@ -1024,10 +1144,27 @@ struct LiveTranscriptionSession::Impl {
     }
 
     void join() noexcept {
+        if (ingest_thread.joinable()) ingest_thread.join();
+        if (analysis_thread.joinable()) analysis_thread.join();
+    }
+
+    void wait_for_producer() {
+        while (producer_active.load()) std::this_thread::yield();
+    }
+
+    template<class Function>
+    void worker_entry(Function&& work) {
         try {
-            if (ingest_thread.joinable()) ingest_thread.join();
-            if (analysis_thread.joinable()) analysis_thread.join();
-        } catch (...) {
+            work();
+        } catch (const std::exception& exception) {
+            {
+                std::lock_guard lock(error_mutex);
+                error = exception.what();
+            }
+            state.store(LiveState::AnalysisFailed);
+            closed.store(true);
+            stop.request_stop();
+            data_cv.notify_all();
         }
     }
 
@@ -1041,10 +1178,18 @@ struct LiveTranscriptionSession::Impl {
 
     std::vector<Slot> slots;
     std::atomic<std::size_t> write_index{0}, read_index{0}, queue_high_water{0};
+    std::size_t producer_slot{}, consumer_slot{};
+    std::atomic<bool> producer_active{false};
     bool producer_has_frame{};
     std::uint64_t producer_next_frame{};
+    std::uint64_t minimum_first_frame{};
+    Nanoseconds producer_capture{};
+    std::optional<std::uint64_t> producer_sequence;
     std::atomic<bool> closed{false}, input_lost{false}, ingest_exit{false}, analysis_exit{false};
+    std::atomic<bool> analysis_paused{false};
     std::atomic<std::uint64_t> blocks_refused{0}, frames_refused{0}, blocks_rejected{0};
+    std::atomic<std::uint64_t> sequence_gaps{0};
+    std::atomic<std::uint64_t> input_end{no_frame};
 
     mutable std::mutex data_mutex;
     std::condition_variable data_cv;
@@ -1053,7 +1198,8 @@ struct LiveTranscriptionSession::Impl {
     std::vector<float> recorded;
     std::size_t recording_limit{};
     bool recording_truncated{};
-    std::deque<std::pair<std::uint64_t, Nanoseconds>> capture_map;
+    struct CaptureStamp { std::uint64_t frame; Nanoseconds capture, ingested; };
+    std::deque<CaptureStamp> capture_map;
     std::deque<Marker> markers;
     bool have_origin{}, interrupted{};
     std::uint64_t origin{};
@@ -1061,6 +1207,7 @@ struct LiveTranscriptionSession::Impl {
 
     mutable std::mutex metrics_mutex;
     Reservoir capture_latency, analysis_latency, end_to_end, stabilization, algorithmic;
+    Reservoir analysis_wait, confirmation, publication_wait;
     LiveMetrics counters;
 
     mutable std::mutex events_mutex;
@@ -1112,14 +1259,51 @@ ModelOperation LiveTranscriptionSession::start() {
     }
     impl_->state.store(LiveState::Running);
     if (impl_->options.threaded) {
-        impl_->ingest_thread = std::thread([this] { impl_->ingest_loop(); });
-        impl_->analysis_thread = std::thread([this] { impl_->analysis_loop(); });
+        try {
+            impl_->ingest_thread = std::thread([this] {
+                impl_->worker_entry([this] { impl_->ingest_loop(); });
+            });
+            impl_->analysis_thread = std::thread([this] {
+                impl_->worker_entry([this] { impl_->analysis_loop(); });
+            });
+        } catch (const std::exception& exception) {
+            impl_->closed.store(true);
+            impl_->stop.request_stop();
+            impl_->data_cv.notify_all();
+            impl_->join();
+            impl_->state.store(LiveState::AnalysisFailed);
+            std::lock_guard lock(impl_->error_mutex);
+            impl_->error = exception.what();
+            return InferenceError{InferenceErrorCode::Inference, impl_->error};
+        }
     }
     return std::monostate{};
 }
 
 PushStatus LiveTranscriptionSession::push(const AudioFrameBlock& block) noexcept {
     return impl_->push(block);
+}
+
+void LiveTranscriptionSession::begin_input(std::uint64_t first_frame) {
+    std::lock_guard control(impl_->control_mutex);
+    if (impl_->state.load() != LiveState::Running || impl_->producer_active.load() ||
+        impl_->write_index.load() != 0) {
+        throw std::logic_error("Declare input origin before delivering audio to a running session");
+    }
+    std::lock_guard lock(impl_->data_mutex);
+    impl_->origin = first_frame;
+    impl_->minimum_first_frame = first_frame;
+    impl_->have_origin = true;
+}
+
+void LiveTranscriptionSession::end_input(std::uint64_t end_frame) {
+    std::lock_guard control(impl_->control_mutex);
+    if (impl_->producer_active.load() ||
+        (impl_->producer_has_frame && end_frame < impl_->producer_next_frame)) {
+        throw std::logic_error("Seal input only after the producer stops, at or after its last frame");
+    }
+    impl_->input_end.store(end_frame, std::memory_order_release);
+    impl_->data_cv.notify_all();
 }
 
 void LiveTranscriptionSession::report_input_lost() noexcept {
@@ -1143,7 +1327,9 @@ void LiveTranscriptionSession::finish() {
     const auto state = impl_->state.load();
     if (state == LiveState::Finished || state == LiveState::Cancelled) return;
     if (state == LiveState::Created) throw std::logic_error("Call start() before finish()");
-    impl_->closed.store(true, std::memory_order_release);
+    impl_->analysis_paused.store(false, std::memory_order_release);
+    impl_->closed.store(true);
+    impl_->wait_for_producer();
     if (impl_->options.threaded) {
         impl_->ingest_exit.store(true, std::memory_order_release);
         if (impl_->ingest_thread.joinable()) impl_->ingest_thread.join();
@@ -1158,7 +1344,21 @@ void LiveTranscriptionSession::finish() {
         }
         impl_->finalize();
     }
-    if (!impl_->failed && !impl_->stop.stop_requested()) impl_->state.store(LiveState::Finished);
+    if (!impl_->failed && !impl_->stop.stop_requested() &&
+        impl_->state.load() != LiveState::AnalysisFailed) impl_->state.store(LiveState::Finished);
+}
+
+void LiveTranscriptionSession::request_cancel() noexcept {
+    impl_->closed.store(true);
+    impl_->stop.request_stop();
+    impl_->data_cv.notify_all();
+}
+
+void LiveTranscriptionSession::pause_analysis(bool paused) {
+    if (impl_->options.lag_policy != LagPolicy::SkipAhead)
+        throw std::logic_error("Pausing analysis requires SkipAhead; lossless input must keep draining");
+    impl_->analysis_paused.store(paused, std::memory_order_release);
+    impl_->data_cv.notify_all();
 }
 
 void LiveTranscriptionSession::cancel() noexcept {
@@ -1167,10 +1367,9 @@ void LiveTranscriptionSession::cancel() noexcept {
         if (state == LiveState::Finished || state == LiveState::Cancelled) return;
     }
     // Stop first so a concurrent finish() aborts inference instead of holding the control lock.
-    impl_->closed.store(true, std::memory_order_release);
-    impl_->stop.request_stop();
-    impl_->data_cv.notify_all();
+    request_cancel();
     std::lock_guard control(impl_->control_mutex);
+    impl_->wait_for_producer();
     const auto state = impl_->state.load();
     if (state == LiveState::Finished || state == LiveState::Cancelled) return;
     impl_->join();
@@ -1182,8 +1381,16 @@ void LiveTranscriptionSession::cancel() noexcept {
 }
 
 EventBatch LiveTranscriptionSession::poll_events(std::size_t maximum) {
+    return poll_events_impl(maximum, false);
+}
+
+EventBatch LiveTranscriptionSession::poll_events_with_snapshot() {
+    return poll_events_impl(std::numeric_limits<std::size_t>::max(), true);
+}
+
+EventBatch LiveTranscriptionSession::poll_events_impl(std::size_t maximum, bool include_snapshot) {
     EventBatch batch;
-    std::lock_guard lock(impl_->events_mutex);
+    std::unique_lock lock(impl_->events_mutex);
     const auto count = std::min(maximum, impl_->events.size());
     batch.events.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
@@ -1192,8 +1399,23 @@ EventBatch LiveTranscriptionSession::poll_events(std::size_t maximum) {
     }
     batch.resync_required = impl_->resync_required;
     batch.dropped_events = impl_->dropped_since_poll;
+    if (batch.resync_required || include_snapshot) {
+        for (const auto& [serial, note] : impl_->notes) batch.resync_snapshot.push_back(note);
+    }
+    if (batch.resync_required) {
+        // The snapshot covers events beyond 'maximum' as well; do not replay older revisions later.
+        impl_->events.clear();
+    }
     impl_->resync_required = false;
     impl_->dropped_since_poll = 0;
+    lock.unlock();
+    const auto polled = impl_->clock();
+    {
+        std::lock_guard metrics_lock(impl_->metrics_mutex);
+        for (const auto& event : batch.events) {
+            impl_->publication_wait.add(std::max(0.0, impl_->seconds(polled - event.timing.emitted_time)));
+        }
+    }
     return batch;
 }
 
@@ -1215,6 +1437,11 @@ LiveMetrics LiveTranscriptionSession::metrics() const {
         result.end_to_end_latency = impl_->end_to_end.summary();
         result.stabilization_delay = impl_->stabilization.summary();
         result.algorithmic_latency = impl_->algorithmic.summary();
+        result.analysis_queue_latency = impl_->analysis_wait.summary();
+        result.confirmation_latency = impl_->confirmation.summary();
+        result.publication_queue_latency = impl_->publication_wait.summary();
+        result.target_provisional_seconds = impl_->options.target_provisional_seconds;
+        result.target_stabilized_seconds = impl_->options.target_stabilized_seconds;
     }
     {
         std::lock_guard lock(impl_->events_mutex);
@@ -1222,19 +1449,29 @@ LiveMetrics LiveTranscriptionSession::metrics() const {
         result.event_queue_high_water = impl_->events_high_water;
         result.events_emitted = impl_->events_emitted;
         result.events_dropped = impl_->events_dropped;
+        result.event_queue_depth = impl_->events.size();
     }
     {
         std::lock_guard lock(impl_->data_mutex);
         result.rolling_capacity_frames = impl_->ring.size();
         result.recording_frames = impl_->recorded.size();
         result.recording_truncated = impl_->recording_truncated;
+        const auto analysed = impl_->analysed_frames.load(std::memory_order_relaxed);
+        result.current_lag_frames = impl_->ring_end - std::min(impl_->ring_end, analysed);
     }
     result.blocks_refused = impl_->blocks_refused.load(std::memory_order_relaxed);
     result.frames_refused = impl_->frames_refused.load(std::memory_order_relaxed);
     result.blocks_rejected = impl_->blocks_rejected.load(std::memory_order_relaxed);
     result.input_queue_capacity = impl_->slots.size();
     result.input_queue_high_water = impl_->queue_high_water.load(std::memory_order_relaxed);
+    const auto read = impl_->read_index.load(std::memory_order_acquire);
+    const auto write = impl_->write_index.load(std::memory_order_acquire);
+    result.input_queue_depth = std::min(write - read, impl_->slots.size());
+    result.sequence_gaps = impl_->sequence_gaps.load(std::memory_order_relaxed);
     result.analysed_audio_seconds = impl_->seconds(impl_->analysed_frames.load(std::memory_order_relaxed));
+    result.overloaded = result.blocks_refused > 0 || result.skipped_frames > 0 ||
+        result.windows_coalesced > 0 || result.events_dropped > 0 ||
+        result.input_markers_coalesced > 0;
     return result;
 }
 

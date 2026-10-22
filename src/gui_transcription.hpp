@@ -21,6 +21,7 @@ struct Request {
     bool fast_preview{};
     bool proposal_only{};
     bool retain_review_evidence{};
+    bool bounded_inference{};
     bool tempo_automatic{true};
     bool meter_automatic{true};
     bool key_automatic{true};
@@ -33,6 +34,8 @@ struct Request {
     InterpretationOptions interpretation_options;
     bool preserve_expressive_timing{};
     std::filesystem::path input_path;
+    std::filesystem::path isolated_audio_path;
+    bool preprocessing_fallback{};
     std::filesystem::path model_path;
     std::filesystem::path musicxml_path;
     std::filesystem::path tab_path;
@@ -48,6 +51,7 @@ struct Result {
     std::uint32_t audio_channels{1};
     std::uint64_t audio_frame_count{};
     bool review_evidence_truncated{};
+    std::string preprocessing_diagnostic;
 #ifdef TRANSCRIBE_ENABLE_VEROVIO
     std::string musicxml_source;
 #endif

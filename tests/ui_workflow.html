@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Transcriber editing and playback regression tests</title>
+<body>
+<pre id="result">Running...</pre>
+<iframe id="studio" title="Transcriber test workspace" style="width:1400px;height:1000px"></iframe>
+<script>
+(async () => {
+  const result = document.getElementById("result");
+  try {
+    const response = await fetch("../ui/index.html");
+    if (!response.ok) throw new Error(`UI fetch failed: ${response.status}`);
+    const base = new URL("../ui/", location.href).href;
+    const bootstrap = `<base href="${base}"><script>
+      window.__messages = [];
+      window.__errors = [];
+      window.requestAnimationFrame = callback => setTimeout(() => callback(performance.now()), 16);
+      window.cancelAnimationFrame = clearTimeout;
+      window.addEventListener("error", event => window.__errors.push(event.message));
+      window.addEventListener("unhandledrejection", event => window.__errors.push(String(event.reason)));
+      window.chrome = {webview: {
+        postMessage(message) { window.__messages.push(message); },
+        addEventListener(type, callback) { window.__host = callback; }
+      }};
+    <\/script>`;
+    const frame = document.getElementById("studio");
+    const html = await response.text();
+    await new Promise(resolve => {
+      frame.onload = resolve;
+      frame.srcdoc = html.replace("<head>", "<head>" + bootstrap);
+    });
+    const script = document.createElement("script");
+    script.src = "ui_workflow.js";
+    await new Promise((resolve, reject) => { script.onload = resolve; script.onerror = reject; document.head.append(script); });
+    const checks = await runTranscriberWorkflowTests(frame.contentWindow);
+    result.textContent = JSON.stringify({passed: true, checks}, null, 2);
+    document.body.dataset.result = "passed";
+  } catch (error) {
+    result.textContent = String(error.stack || error);
+    document.body.dataset.result = "failed";
+  }
+})();
+</script>

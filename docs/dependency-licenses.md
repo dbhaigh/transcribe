@@ -16,8 +16,16 @@ the terms for the exact build must be checked again for every release.
 | Verovio | Optional local `verovio@6.3.0` npm package used by the WebView2 UI | LGPL-3.0-or-later; the package is only enabled when its metadata matches the pinned version/license. `COPYING`, `COPYING.LESSER`, and `NOTICE.txt` are installed beside its assets. The renderer is not included in the default build. |
 | Catch2 | Test-only FetchContent dependency pinned to `v3.7.1` in CMake | Boost Software License 1.0. It is fetched for test builds and is not installed in product packages. |
 | GuitarSet | External real-audio evaluation dataset, v1.1.0 | CC BY 4.0. Dataset archives are not included. Evaluation results and potential Basic Pitch training-data overlap are discussed in [the evaluation documentation](evaluation.md) and [the model evaluation notes](../python/README.md). |
+| Python separation worker | Optional manually installed environment from `python/requirements-separation.txt`; not imported by the C++ application or included in default packages | NumPy (BSD-3-Clause), ONNX (Apache-2.0), ONNX Runtime (MIT), plus their distributions' transitive notices. No new separation weights are bundled or approved; exact weight/license hashes and provenance are required by the local model manifest. See [instrument isolation](instrument-isolation.md). |
 
 ## Release audit rules
+
+The Basic Pitch [provenance manifest](../python/models/basic_pitch.provenance.json)
+is installed beside the model. `dependency_manifest_smoke` checks its source
+commit/license against this inventory and the model catalog and hashes the
+bundled model; optional model package smoke checks the extracted bytes again.
+This catches accidental replacement, not independent upstream authentication
+or legal clearance.
 
 - Keep model weights and external recordings out of packages unless their
   exact source, license, attribution, and redistribution rights are reviewed.

@@ -1,4 +1,5 @@
 #include "transcribe/musicxml.hpp"
+#include "transcribe/output.hpp"
 
 #include <algorithm>
 #include <array>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <sstream>
 #include <unordered_map>
@@ -89,6 +91,7 @@ struct ScoreToken {
     int spelling_octave{};
     std::string spelling_step;
     std::optional<double> tempo_change;
+    int tempo_offset_ticks{};
     std::optional<int> tablature_pitch;
     std::optional<int> explicit_velocity;
     std::optional<std::string> explicit_articulation;
@@ -100,6 +103,10 @@ struct ScoreToken {
     int dots{};
     int tuplet_actual{};
     int tuplet_normal{};
+    bool tuplet_start{};
+    bool tuplet_stop{};
+    int stem_direction{};
+    std::vector<std::string> beams;
     double expressive_offset_seconds{};
     bool staccato{};
     bool accent{};
@@ -239,11 +246,13 @@ void write_measure_start(std::ostream& output, int measure_number, bool first,
                << "</beat-type></time>";
     }
     if (tablature) {
-        output << "<clef><sign>TAB</sign><line>5</line></clef>"
-                  "<staff-details><staff-lines>6</staff-lines>";
-        for (std::size_t string = 0; string < tab_options.tuning.size(); ++string) {
-            const auto pitch = spell_pitch(tab_options.tuning[string]);
-            output << "<staff-tuning line=\"" << 6 - string << "\"><tuning-step>"
+        const auto tuning = configured_tuning(tab_options);
+        output << "<clef><sign>TAB</sign><line>"
+               << std::min<std::size_t>(5, tuning.size()) << "</line></clef>"
+                  "<staff-details><staff-lines>" << tuning.size() << "</staff-lines>";
+        for (std::size_t string = 0; string < tuning.size(); ++string) {
+            const auto pitch = spell_pitch(tuning[string]);
+            output << "<staff-tuning line=\"" << tuning.size() - string << "\"><tuning-step>"
                    << pitch.step << "</tuning-step>";
             if (pitch.alter != 0) {
                 output << "<tuning-alter>" << pitch.alter << "</tuning-alter>";
@@ -257,7 +266,11 @@ void write_measure_start(std::ostream& output, int measure_number, bool first,
                   "<staff-details><staff-lines>5</staff-lines></staff-details>";
     }
     if (!tablature && written_transposition != 0) {
-        output << "<transpose><chromatic>" << -written_transposition
+        output << "<transpose>";
+        if (written_transposition % 12 == 0) {
+            output << "<diatonic>" << -written_transposition / 12 * 7 << "</diatonic>";
+        }
+        output << "<chromatic>" << -written_transposition
                << "</chromatic></transpose>";
     }
     output << "</attributes>\n";
@@ -302,8 +315,11 @@ void write_score_token(std::ostream& output, const ScoreToken& token,
     if (token.tempo_change) {
         output << "      <direction><direction-type><words>Tempo "
                << std::fixed << std::setprecision(1) << *token.tempo_change
-               << " BPM</words></direction-type><sound tempo=\""
-               << *token.tempo_change << "\"/></direction>\n";
+               << " BPM</words></direction-type>";
+        if (token.tempo_offset_ticks) {
+            output << "<offset sound=\"yes\">" << token.tempo_offset_ticks << "</offset>";
+        }
+        output << "<sound tempo=\"" << *token.tempo_change << "\"/></direction>\n";
         return;
     }
     if (!tablature && token.explicit_velocity && !token.tie_in) {
@@ -379,8 +395,10 @@ void write_score_token(std::ostream& output, const ScoreToken& token,
         output << "<dot/>";
     }
     if (!tablature && token.spelling_override && token.accidental_required) {
-        const char* accidental = token.spelling_alter > 0 ? "sharp" :
-                                 token.spelling_alter < 0 ? "flat" : "natural";
+        const char* accidental = token.spelling_alter == 2 ? "double-sharp" :
+                                 token.spelling_alter == -2 ? "flat-flat" :
+                                 token.spelling_alter == 1 ? "sharp" :
+                                 token.spelling_alter == -1 ? "flat" : "natural";
         output << "<accidental>" << accidental << "</accidental>";
     }
     if (token.tuplet_actual > 0) {
@@ -388,7 +406,15 @@ void write_score_token(std::ostream& output, const ScoreToken& token,
                << "</actual-notes><normal-notes>" << token.tuplet_normal
                << "</normal-notes></time-modification>";
     }
-    if (pitch >= 0) {
+    if (token.stem_direction != 0 && pitch >= 0 && token.include_type &&
+        std::string_view(token.type) != "whole") {
+        output << "<stem>" << (token.stem_direction > 0 ? "up" : "down") << "</stem>";
+    }
+    for (std::size_t level = 0; level < token.beams.size(); ++level) {
+        output << "<beam number=\"" << level + 1 << "\">"
+               << token.beams[level] << "</beam>";
+    }
+    if (pitch >= 0 || token.tuplet_start || token.tuplet_stop) {
         const bool technical = tablature && tab_position != nullptr &&
                                tab_position->string_number > 0 &&
                                tab_position->fret >= 0;
@@ -396,8 +422,10 @@ void write_score_token(std::ostream& output, const ScoreToken& token,
         const bool explicit_staccato = articulation == "staccato";
         const bool explicit_accent = articulation == "accent";
         const bool explicit_tenuto = articulation == "tenuto";
+        const bool unresolved = pitch >= 0 && tablature && !technical && !token.tie_in;
         if (token.tie_in || token.tie_out || token.staccato || token.accent ||
-            explicit_staccato || explicit_accent || explicit_tenuto || technical) {
+            explicit_staccato || explicit_accent || explicit_tenuto || technical || unresolved ||
+            token.tuplet_start || token.tuplet_stop) {
             output << "<notations>";
             if (token.tie_in) {
                 output << "<tied type=\"stop\"/>";
@@ -405,6 +433,8 @@ void write_score_token(std::ostream& output, const ScoreToken& token,
             if (token.tie_out) {
                 output << "<tied type=\"start\"/>";
             }
+            if (token.tuplet_start) output << "<tuplet type=\"start\" number=\"1\"/>";
+            if (token.tuplet_stop) output << "<tuplet type=\"stop\" number=\"1\"/>";
             if (token.staccato || token.accent || explicit_staccato || explicit_accent ||
                 explicit_tenuto) {
                 output << "<articulations>";
@@ -416,7 +446,12 @@ void write_score_token(std::ostream& output, const ScoreToken& token,
             if (technical) {
                 output << "<technical><string>" << tab_position->string_number
                        << "</string><fret>" << tab_position->fret
-                       << "</fret></technical>";
+                       << "</fret>";
+                output << "</technical>";
+            }
+            if (unresolved) {
+                output << "<other-notation type=\"single\">"
+                          "Unresolved fingering: no assigned string/fret</other-notation>";
             }
             output << "</notations>";
         }
@@ -484,7 +519,7 @@ struct SymbolicRhythm {
     bool symbolic{};
 };
 
-SymbolicRhythm notation_for_quarters(double quarters) {
+SymbolicRhythm notation_for_quarters(double quarters, double tolerance) {
     SymbolicRhythm best;
     double best_error = std::numeric_limits<double>::infinity();
     for (const int denominator : {1, 2, 4, 8, 16, 32, 64, 128}) {
@@ -496,14 +531,123 @@ SymbolicRhythm notation_for_quarters(double quarters) {
                 const double duration = base * multiplier *
                     (actual == 0 ? 1.0 : static_cast<double>(normal) / actual);
                 const double error = std::abs(duration - quarters);
-                if (error < best_error) {
-                    best = {denominator, dots, actual, normal, error < 0.008};
+                if (error < best_error - 1e-9 ||
+                    (std::abs(error - best_error) < 1e-9 &&
+                     ((best.tuplet_actual != 0 && actual == 0) ||
+                      (best.tuplet_actual == actual && dots < best.dots)))) {
+                    best = {denominator, dots, actual, normal, error <= tolerance};
                     best_error = error;
                 }
             }
         }
     }
     return best;
+}
+
+int beam_level(const ScoreToken& token) {
+    if (!token.include_type || token.midi_pitch < 0) return 0;
+    constexpr std::array<std::string_view, 6> types{
+        "eighth", "16th", "32nd", "64th", "128th", "256th"};
+    const auto found = std::find(types.begin(), types.end(), token.type);
+    return found == types.end() ? 0 :
+        static_cast<int>(std::distance(types.begin(), found)) + 1;
+}
+
+void group_notation(Score& score, const MeterHypothesis& meter, int divisions,
+                    const std::vector<int>& measure_lengths, int pickup_ticks) {
+    std::vector<int> grouping = meter.grouping;
+    int grouping_total = 0;
+    for (const int group : grouping) {
+        if (group < 1 || group > meter.numerator) {
+            throw std::invalid_argument("MusicXML meter grouping contains an invalid beat group.");
+        }
+        grouping_total += group;
+    }
+    if (!grouping.empty() && grouping_total != meter.numerator) {
+        throw std::invalid_argument("MusicXML meter grouping must fill the measure.");
+    }
+    if (grouping.empty()) {
+        const int unit = meter.denominator == 8 && meter.numerator > 3 &&
+            meter.numerator % 3 == 0 ? 3 : 1;
+        grouping.assign(static_cast<std::size_t>(meter.numerator / unit), unit);
+    }
+    for (std::size_t measure = 0; measure < score.size(); ++measure) {
+        std::vector<int> boundaries{0};
+        int beat = 0;
+        for (const int group : grouping) {
+            beat += group * 4 * divisions / meter.denominator;
+            boundaries.push_back(beat);
+        }
+        const int pickup_shift = measure == 0 && pickup_ticks > 0
+            ? boundaries.back() - pickup_ticks : 0;
+        for (auto& voice : score[measure]) {
+            std::vector<ScoreToken*> events;
+            std::vector<int> starts;
+            int cursor = 0;
+            for (auto& token : voice) {
+                if (token.tempo_change) continue;
+                if (score[measure].size() > 1) {
+                    token.stem_direction = token.voice % 2 == 1 ? 1 : -1;
+                }
+                if (token.chord_member) continue;
+                events.push_back(&token);
+                starts.push_back(cursor);
+                cursor += token.duration;
+            }
+            for (std::size_t first = 0; first < events.size();) {
+                const auto& token = *events[first];
+                if (token.tuplet_actual == 0) { ++first; continue; }
+                const std::size_t end = first +
+                    static_cast<std::size_t>(token.tuplet_actual);
+                bool complete = end <= events.size();
+                for (std::size_t i = first; complete && i < end; ++i) {
+                    complete = events[i]->tuplet_actual == token.tuplet_actual &&
+                        events[i]->tuplet_normal == token.tuplet_normal &&
+                        events[i]->duration == token.duration;
+                }
+                const int span = token.duration * token.tuplet_actual;
+                complete = complete && starts[first] + span <= measure_lengths[measure] &&
+                    (starts[first] + pickup_shift) % span == 0;
+                if (complete) {
+                    events[first]->tuplet_start = true;
+                    events[end - 1]->tuplet_stop = true;
+                    first = end;
+                } else {
+                    std::size_t partial_end = first + 1;
+                    while (partial_end < std::min(end, events.size()) &&
+                           events[partial_end]->tuplet_actual == token.tuplet_actual &&
+                           events[partial_end]->tuplet_normal == token.tuplet_normal &&
+                           events[partial_end]->duration == token.duration) ++partial_end;
+                    events[first]->tuplet_start = true;
+                    events[partial_end - 1]->tuplet_stop = true;
+                    first = partial_end;
+                }
+            }
+            for (std::size_t first = 0; first < events.size();) {
+                if (beam_level(*events[first]) == 0) { ++first; continue; }
+                const auto group = std::upper_bound(boundaries.begin(), boundaries.end(),
+                                                     starts[first] + pickup_shift);
+                const int group_end = group == boundaries.end() ? measure_lengths[measure] :
+                    *group - pickup_shift;
+                std::size_t end = first + 1;
+                while (end < events.size() && beam_level(*events[end]) > 0 &&
+                       starts[end] < group_end) ++end;
+                if (end - first > 1) {
+                    for (std::size_t i = first; i < end; ++i) {
+                        auto& token = *events[i];
+                        const int levels = beam_level(token);
+                        for (int level = 1; level <= levels; ++level) {
+                            const bool left = i > first && beam_level(*events[i - 1]) >= level;
+                            const bool right = i + 1 < end && beam_level(*events[i + 1]) >= level;
+                            token.beams.emplace_back(left ? (right ? "continue" : "end") :
+                                right ? "begin" : i == first ? "forward hook" : "backward hook");
+                        }
+                    }
+                }
+                first = end;
+            }
+        }
+    }
 }
 
 void write_interpretation_note(std::ostream& output, const ScoreToken& token,
@@ -534,10 +678,7 @@ void write_musicxml(const std::filesystem::path& path, const std::vector<Note>& 
     for (const auto& position : tab_positions) {
         position_by_note.emplace(&notes[position.note_index], position);
     }
-    std::ofstream output(path, std::ios::binary);
-    if (!output) {
-        throw std::runtime_error("Could not create MusicXML output: " + path.string());
-    }
+    std::ostringstream output;
     ScoreMetadata metadata = requested_metadata;
     if (metadata.time_numerator <= 0 ||
         (metadata.time_denominator != 4 && metadata.time_denominator != 8)) {
@@ -648,13 +789,15 @@ void write_musicxml(const std::filesystem::path& path, const std::vector<Note>& 
     if (!output) {
         throw std::runtime_error("Failed while writing MusicXML output.");
     }
+    write_output_atomic(path, output.str());
 }
 
 std::string render_musicxml(const ScoreInterpretation& interpretation,
                             std::size_t hypothesis_index,
                             const GuitarTabOptions& tab_options,
                             bool preserve_expressive_timing,
-                            const std::vector<std::string>* score_note_ids) {
+                            const std::vector<std::string>* score_note_ids,
+                            const std::vector<GuitarTabPosition>* canonical_positions = nullptr) {
     if (hypothesis_index >= interpretation.hypotheses.size()) {
         throw std::out_of_range("MusicXML hypothesis index is out of range.");
     }
@@ -675,7 +818,10 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
     if (hypothesis.tempo_map.empty()) {
         throw std::invalid_argument("MusicXML interpretation has no tempo map.");
     }
-    constexpr int divisions = 960;
+    const int divisions = std::any_of(hypothesis.notes.begin(), hypothesis.notes.end(),
+        [](const auto& note) { return note.rhythm.tuplet_actual == 7; }) ||
+        std::any_of(hypothesis.rests.begin(), hypothesis.rests.end(),
+        [](const auto& rest) { return rest.rhythm.tuplet_actual == 7; }) ? 6720 : 960;
     const double maximum_score_position = static_cast<double>(
         (std::numeric_limits<int>::max() - 1) / divisions);
     double total_quarters = std::max(hypothesis.total_quarters,
@@ -737,7 +883,7 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
 
     std::vector<int> measure_starts;
     std::vector<int> measure_ends;
-    const auto to_tick = [](double quarters) {
+    const auto to_tick = [divisions](double quarters) {
         return static_cast<int>(std::llround(quarters * divisions));
     };
     int current_tick = 0;
@@ -790,7 +936,19 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
         tab_note.confidence = source.calibrated_confidence.value_or(0.0);
         tab_note.amplitude = source.intensity_rms.value_or(0.0);
     }
-    const auto tab_positions = assign_guitar_tab_positions(tab_notes, tab_options);
+    FingeringResult fingering;
+    if (!canonical_positions) fingering = assign_guitar_tab_fingerings(tab_notes, tab_options);
+    const auto tab_positions = canonical_positions ? *canonical_positions : fingering.positions;
+    if (canonical_positions) {
+        auto constraints = tab_options.search;
+        constraints.tuning = tab_options.tuning;
+        constraints.string_tuning = tab_options.string_tuning;
+        constraints.capo_fret = tab_options.capo_fret;
+        constraints.maximum_fret = 36;
+        constraints.maximum_chord_fret_span = 36;
+        constraints.simultaneous_onset_tolerance_seconds = 0;
+        validate_fingering_assignment(tab_notes, tab_positions, constraints);
+    }
     std::unordered_map<const Note*, GuitarTabPosition> position_by_note;
     position_by_note.reserve(tab_notes.size());
     for (const auto& position : tab_positions) {
@@ -806,13 +964,24 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
         int cursor = start_tick;
         while (cursor < end_tick) {
             const std::size_t measure = measure_for_tick(cursor);
-            const int fragment_end = std::min(end_tick, measure_ends[measure]);
+            int fragment_end = std::min(end_tick, measure_ends[measure]);
             if (fragment_end <= cursor) {
                 throw std::logic_error("MusicXML rest could not advance to the next measure.");
             }
-            const int duration = fragment_end - cursor;
-            const auto rhythm = notation_for_quarters(
-                static_cast<double>(duration) / divisions);
+            int duration = fragment_end - cursor;
+            auto rhythm = notation_for_quarters(
+                static_cast<double>(duration) / divisions, 0.5 / divisions + 1e-9);
+            if (!rhythm.symbolic) {
+                for (const int denominator : {1, 2, 4, 8, 16, 32, 64, 128}) {
+                    const int candidate = 4 * divisions / denominator;
+                    if (candidate <= duration && candidate > 0) {
+                        duration = candidate;
+                        fragment_end = cursor + duration;
+                        rhythm = {denominator, 0, 0, 0, true};
+                        break;
+                    }
+                }
+            }
             ScoreToken token;
             token.duration = duration;
             token.midi_pitch = -1;
@@ -845,7 +1014,7 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
             }
             const int duration = fragment_end - cursor;
             const auto rhythm = notation_for_quarters(
-                static_cast<double>(duration) / divisions);
+                static_cast<double>(duration) / divisions, 0.5 / divisions + 1e-9);
             ScoreToken token;
             token.duration = duration;
             token.midi_pitch = interpreted.written_midi_pitch;
@@ -855,8 +1024,8 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
             token.tie_out = fragment_end < end_tick ||
                 (fragment_end == end_tick && interpreted.tie_start);
             token.chord_member = chord_member;
-            token.include_type = rhythm.symbolic;
-            if (rhythm.symbolic) {
+            token.include_type = rhythm.symbolic && interpreted.rhythm.symbolic;
+            if (token.include_type) {
                 token.type = xml_type_for_denominator(rhythm.denominator);
                 token.dots = rhythm.dots;
                 token.tuplet_actual = rhythm.tuplet_actual;
@@ -922,6 +1091,13 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
                    note_start_tick(voice_notes[end]) == start_tick) {
                 ++end;
             }
+            for (std::size_t item = first + 1; item < end; ++item) {
+                if (to_tick(hypothesis.notes[voice_notes[item]].duration_quarters) !=
+                    to_tick(hypothesis.notes[voice_notes[first]].duration_quarters)) {
+                    throw std::invalid_argument(
+                        "MusicXML chord members with different durations require independent voices.");
+                }
+            }
             if (start_tick < cursor) {
                 throw std::invalid_argument(
                     "MusicXML score hypothesis contains overlapping notes in one voice.");
@@ -943,6 +1119,13 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
         append_rest_interval(cursor, measure_ends.back(),
                              static_cast<int>(voice_index + 1));
     }
+    std::vector<int> measure_lengths;
+    measure_lengths.reserve(measure_starts.size());
+    for (std::size_t measure = 0; measure < measure_starts.size(); ++measure) {
+        measure_lengths.push_back(measure_ends[measure] - measure_starts[measure]);
+    }
+    group_notation(score, hypothesis.meter, divisions, measure_lengths,
+                   to_tick(hypothesis.pickup_quarters));
 
     const bool emit_tempo_map = !hypothesis.tempo_ambiguous ||
                                 hypothesis.tempo_map.front().user_constrained;
@@ -954,11 +1137,13 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
             int elapsed = measure_starts[measure];
             auto insertion = tokens.begin();
             for (; insertion != tokens.end(); ++insertion) {
-                if (elapsed >= target_tick) break;
+                if (elapsed >= target_tick ||
+                    (!insertion->chord_member && elapsed + insertion->duration > target_tick)) break;
                 if (!insertion->chord_member) elapsed += insertion->duration;
             }
             ScoreToken tempo_token;
             tempo_token.tempo_change = segment.beats_per_minute;
+            tempo_token.tempo_offset_ticks = target_tick - elapsed;
             tempo_token.suppress_heuristics = true;
             tokens.insert(insertion, std::move(tempo_token));
         }
@@ -967,6 +1152,48 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
     const auto metadata = metadata_for_hypothesis(hypothesis);
     const bool include_key = !hypothesis.key_ambiguous || hypothesis.key.user_constrained;
     const bool include_time = !hypothesis.meter_ambiguous || hypothesis.meter.user_constrained;
+    int active_fifths = include_key ? hypothesis.key.fifths : 0;
+    for (std::size_t measure = 0; measure < score.size(); ++measure) {
+        for (const auto& region : hypothesis.local_tonal_context) {
+            if (region.first_measure == measure && region.key.confidence >= 0.5) {
+                active_fifths = region.key.fifths;
+            }
+        }
+        std::vector<std::pair<int, ScoreToken*>> attacks;
+        for (auto& voice : score[measure]) {
+            int cursor = 0, chord_start = 0;
+            for (auto& token : voice) {
+                if (token.tempo_change) continue;
+                if (!token.chord_member) chord_start = cursor;
+                if (token.midi_pitch >= 0 && !token.spelling_override) {
+                    const auto spelling = spell_written_pitch(token.midi_pitch, active_fifths);
+                    token.spelling_override = true;
+                    token.spelling_step = spelling.step;
+                    token.spelling_alter = spelling.alter;
+                    token.spelling_octave = spelling.octave;
+                }
+                if (token.midi_pitch >= 0 && token.spelling_override && !token.tie_in) {
+                    attacks.emplace_back(token.chord_member ? chord_start : cursor, &token);
+                } else if (token.tie_in) token.accidental_required = false;
+                if (!token.chord_member) cursor += token.duration;
+            }
+        }
+        std::stable_sort(attacks.begin(), attacks.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+        std::map<std::pair<std::string, int>, int> accidental_state;
+        const std::string order = active_fifths < 0 ? "BEADGCF" : "FCGDAEB";
+        for (const auto& [tick, token] : attacks) {
+            (void)tick;
+            const auto key = std::pair{token->spelling_step, token->spelling_octave};
+            const auto at = order.find(token->spelling_step);
+            const int signature = at < static_cast<std::size_t>(std::abs(active_fifths)) ?
+                (active_fifths < 0 ? -1 : 1) : 0;
+            const auto [state, inserted] = accidental_state.emplace(key, signature);
+            (void)inserted;
+            token->accidental_required = state->second != token->spelling_alter;
+            state->second = token->spelling_alter;
+        }
+    }
     const std::string part_name = xml_escape(
         hypothesis.instrument.empty() ? "Transcription" : hypothesis.instrument);
     std::ostringstream output;
@@ -987,12 +1214,24 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
                                 measure == 0 && hypothesis.pickup_quarters > 0.0,
                                 false, include_key, include_time,
                                 hypothesis.written_transposition_semitones);
-            if (!tablature && measure > 0) {
+            if (tablature && measure == 0) {
+                output << "      <direction><direction-type><words>Suggested string/fret realization; "
+                          "performed fingering unknown.</words></direction-type></direction>\n";
+                if (!fingering.explanation.empty()) {
+                    output << "      <direction><direction-type><words>"
+                           << xml_escape(fingering.explanation)
+                           << "</words></direction-type></direction>\n";
+                }
+                if (fingering.search_truncated) {
+                    output << "      <direction><direction-type><words>"
+                              "Bounded fingering search: alternatives are not exhaustive."
+                              "</words></direction-type></direction>\n";
+                }
+            }
+            if (!tablature) {
                 for (const auto& region : hypothesis.local_tonal_context) {
                     if (region.first_measure == measure &&
-                        region.key.confidence >= 0.5 &&
-                        (region.key.fifths != hypothesis.key.fifths ||
-                         region.key.minor != hypothesis.key.minor)) {
+                        region.key.confidence >= 0.5) {
                         output << "      <attributes><key><fifths>"
                                << std::clamp(region.key.fifths, -7, 7)
                                << "</fifths><mode>"
@@ -1033,6 +1272,9 @@ std::string render_musicxml(const ScoreInterpretation& interpretation,
                            << "</duration></backup>\n";
                 }
             }
+            if (measure + 1 == score.size()) {
+                output << "      <barline location=\"right\"><bar-style>light-heavy</bar-style></barline>\n";
+            }
             output << "    </measure>\n";
         }
         output << "  </part>\n";
@@ -1053,14 +1295,7 @@ void write_musicxml(const std::filesystem::path& path,
                     bool preserve_expressive_timing) {
     const auto xml = render_musicxml(interpretation, hypothesis_index, tab_options,
                                      preserve_expressive_timing, nullptr);
-    std::ofstream output(path, std::ios::binary);
-    if (!output) {
-        throw std::runtime_error("Could not create MusicXML output: " + path.string());
-    }
-    output << xml;
-    if (!output) {
-        throw std::runtime_error("Failed while writing MusicXML output: " + path.string());
-    }
+    write_output_atomic(path, xml);
 }
 
 void write_musicxml(const std::filesystem::path& path,
@@ -1074,15 +1309,12 @@ void write_musicxml(const std::filesystem::path& path,
                     bool preserve_expressive_timing,
                     std::string* rendered_musicxml) {
     validate_score_document(score);
-    if (score.instrument.tuning.size() != 6) {
-        throw std::invalid_argument(
-            "MusicXML tablature export requires exactly six configured guitar strings.");
-    }
     auto interpretation = to_score_interpretation(score);
     GuitarTabOptions options;
-    std::copy(score.instrument.tuning.begin(), score.instrument.tuning.end(),
-              options.tuning.begin());
+    options.string_tuning = score.instrument.tuning;
     options.capo_fret = score.instrument.capo_fret;
+    options.search.physical_fret_count = score.instrument.physical_fret_count;
+    std::vector<GuitarTabPosition> canonical_positions;
     for (std::size_t index = 0; index < score.notes.size(); ++index) {
         const auto found = std::find_if(score.tab_notes.begin(), score.tab_notes.end(),
             [&](const auto& tab) {
@@ -1092,6 +1324,10 @@ void write_musicxml(const std::filesystem::path& path,
             options.position_overrides.push_back(
                 {index, *found->string_number, *found->fret,
                  found->manually_corrected});
+            canonical_positions.push_back({index, *found->string_number, *found->fret,
+                                           found->manually_corrected});
+        } else {
+            canonical_positions.push_back({index, 0, -1, false});
         }
     }
     std::vector<std::string> score_note_ids;
@@ -1100,18 +1336,11 @@ void write_musicxml(const std::filesystem::path& path,
         score_note_ids.push_back(note.id);
     }
     const auto xml = render_musicxml(interpretation, 0, options,
-                                     preserve_expressive_timing, &score_note_ids);
+                                     preserve_expressive_timing, &score_note_ids, &canonical_positions);
     if (rendered_musicxml != nullptr) {
         *rendered_musicxml = xml;
     }
-    std::ofstream output(path, std::ios::binary);
-    if (!output) {
-        throw std::runtime_error("Could not create MusicXML output: " + path.string());
-    }
-    output << xml;
-    if (!output) {
-        throw std::runtime_error("Failed while writing MusicXML output: " + path.string());
-    }
+    write_output_atomic(path, xml);
 }
 
 void write_midi(const std::filesystem::path& path, const std::vector<Note>& notes,
@@ -1175,10 +1404,7 @@ void write_midi(const std::filesystem::path& path, const std::vector<Note>& note
     append_vlq(track, 0);
     track.insert(track.end(), {0xff, 0x2f, 0x00});
 
-    std::ofstream output(path, std::ios::binary);
-    if (!output) {
-        throw std::runtime_error("Could not create MIDI output: " + path.string());
-    }
+    std::ostringstream output;
     output.write("MThd", 4);
     write_be32(output, 6);
     output.put(0);
@@ -1195,6 +1421,7 @@ void write_midi(const std::filesystem::path& path, const std::vector<Note>& note
     if (!output) {
         throw std::runtime_error("Failed while writing MIDI output.");
     }
+    write_output_atomic(path, output.str());
 }
 
 void write_midi(const std::filesystem::path& path, const ScoreDocument& score) {
@@ -1270,10 +1497,7 @@ void write_midi(const std::filesystem::path& path, const ScoreDocument& score) {
     append_vlq(track, 0);
     track.insert(track.end(), {0xff, 0x2f, 0x00});
 
-    std::ofstream output(path, std::ios::binary);
-    if (!output) {
-        throw std::runtime_error("Could not create MIDI output: " + path.string());
-    }
+    std::ostringstream output;
     output.write("MThd", 4);
     write_be32(output, 6);
     output.put(0);
@@ -1286,6 +1510,7 @@ void write_midi(const std::filesystem::path& path, const ScoreDocument& score) {
     write_be32(output, static_cast<std::uint32_t>(track.size()));
     for (const auto byte : track) output.put(static_cast<char>(byte));
     if (!output) throw std::runtime_error("Failed while writing MIDI output.");
+    write_output_atomic(path, output.str());
 }
 
 } // namespace transcribe

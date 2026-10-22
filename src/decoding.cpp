@@ -32,14 +32,17 @@ namespace {
 void validate(const TemporalDecodingOptions& o) {
     for (const double value : {o.activation_on, o.activation_off, o.maximum_gap_seconds,
              o.minimum_duration_seconds, o.energy_floor_rms, o.energy_relative_threshold,
-             o.spectral_peak_fraction}) {
+             o.spectral_peak_fraction, o.pitch_stability_seconds, o.pitch_tolerance_semitones,
+             o.onset_threshold, o.minimum_onset_spacing_seconds, o.onset_energy_rise,
+             o.onset_state_drop}) {
         if (!std::isfinite(value) || value < 0) {
             throw std::invalid_argument("Temporal decoding parameters must be finite and nonnegative");
         }
     }
     if (o.activation_on > 1 || o.activation_off > o.activation_on ||
         o.minimum_duration_seconds <= 0 || o.energy_relative_threshold > 1 ||
-        o.spectral_peak_fraction > 1) {
+        o.spectral_peak_fraction > 1 || o.onset_threshold > 1 ||
+        o.pitch_tolerance_semitones > 1 || o.onset_state_drop > 1) {
         throw std::invalid_argument("Invalid temporal decoding thresholds");
     }
 }
@@ -79,7 +82,9 @@ struct Region { double start; double end; bool strong_at_start{true}; };
 
 bool strong(const FrameEvidenceTrack& track, std::size_t index, double threshold,
             const TemporalDecodingOptions& options) {
-    return track.frames[index].confidence >= threshold &&
+    const double strength = track.note_states.empty() ? track.frames[index].confidence :
+        std::clamp(track.note_states[index], 0.0, 1.0);
+    return strength >= threshold &&
         (track.spectral_peak_fractions.empty() ||
          track.spectral_peak_fractions[index] >= options.spectral_peak_fraction);
 }
@@ -111,17 +116,52 @@ std::vector<Region> energy_regions(const AudioBuffer& audio,
                                      peak * options.energy_relative_threshold);
     std::vector<Region> regions;
     for (std::size_t i = 0; i < rms.size();) {
-        if (rms[i] < threshold || rms[i] == 0) { ++i; continue; }
+        if (rms[i] < options.energy_floor_rms || rms[i] == 0) { ++i; continue; }
         const auto first = i++;
         while (i < rms.size() && rms[i] >= options.energy_floor_rms && rms[i] > 0) ++i;
         const Region region{static_cast<double>(first * block) / audio.sample_rate,
             static_cast<double>(std::min(i * block, audio.samples.size())) / audio.sample_rate,
-            rms[first] >= peak * .5};
+            rms[first] >= std::max(threshold, peak * .5)};
         if (!regions.empty() && region.start - regions.back().end <= options.maximum_gap_seconds) {
             regions.back().end = region.end;
         } else regions.push_back(region);
     }
     return regions;
+}
+
+void validate_track(const FrameEvidenceTrack& track) {
+    if (!std::isfinite(track.window_seconds) || track.window_seconds < 0 ||
+        !std::isfinite(track.hop_seconds) || track.hop_seconds <= 0 ||
+        track.method.empty() || track.evidence_kind.empty() ||
+        track.raw_midi_pitch < -1 || track.raw_midi_pitch > 127 ||
+        !valid_evidence_semantics(track.selected_strength_semantics) ||
+        !valid_evidence_semantics(track.raw_value_semantics)) {
+        throw std::invalid_argument("Invalid frame time geometry or evidence semantics");
+    }
+    for (const auto* values : {&track.raw_values, &track.spectral_peak_fractions,
+                              &track.onset_strengths, &track.note_states, &track.contour_midi}) {
+        if (!values->empty() && values->size() != track.frames.size()) {
+            throw std::invalid_argument("Evidence arrays must align with pitch frames");
+        }
+        for (const double value : *values) {
+            if (!std::isfinite(value)) throw std::invalid_argument("Nonfinite frame evidence");
+        }
+    }
+    double previous_time = -1;
+    for (const auto& frame : track.frames) {
+        if (!std::isfinite(frame.time_seconds) || frame.time_seconds < previous_time ||
+            frame.time_seconds < 0 || !std::isfinite(frame.confidence) ||
+            !std::isfinite(frame.voicing_probability) || frame.midi_pitch < -1 ||
+            frame.midi_pitch > 127 || (frame.fractional_midi &&
+                (!std::isfinite(*frame.fractional_midi) ||
+                 *frame.fractional_midi < 0 || *frame.fractional_midi > 127))) {
+            throw std::invalid_argument("Invalid frame evidence");
+        }
+        previous_time = frame.time_seconds;
+    }
+    for (const double value : track.spectral_peak_fractions) {
+        if (value < 0 || value > 1) throw std::invalid_argument("Invalid spectral evidence");
+    }
 }
 
 void set_times(CanonicalNoteEvent& event, double first, double last, const AudioBuffer& audio) {
@@ -139,6 +179,205 @@ void set_times(CanonicalNoteEvent& event, double first, double last, const Audio
 }
 }
 
+void validate_temporal_decoding_options(const TemporalDecodingOptions& options) {
+    validate(options);
+}
+
+std::vector<int> stabilize_pitch_activity(
+    const FrameEvidenceTrack& track, const TemporalDecodingOptions& options) {
+    validate(options);
+    validate_track(track);
+    std::vector<int> pitches;
+    pitches.reserve(track.frames.size());
+    int anchor = -1;
+    double excursion_start = -1;
+    for (std::size_t i = 0; i < track.frames.size(); ++i) {
+        const auto& frame = track.frames[i];
+        int pitch = frame.midi_pitch;
+        if (!track.note_states.empty() && track.raw_midi_pitch >= 0 &&
+            (pitch >= 0 || options.activation_off < options.activation_on) &&
+            strong(track, i, options.activation_off, options)) pitch = track.raw_midi_pitch;
+        if (track.method == "yin" && frame.fractional_midi && pitch >= 0 && anchor >= 0 &&
+            options.pitch_stability_seconds > 0 &&
+            std::abs(*frame.fractional_midi - anchor) <= options.pitch_tolerance_semitones) {
+            if (pitch != anchor) {
+                if (excursion_start < 0) excursion_start = frame.time_seconds;
+                if (frame.time_seconds - excursion_start < options.pitch_stability_seconds) {
+                    pitch = anchor;
+                }
+            } else excursion_start = -1;
+        } else {
+            excursion_start = -1;
+        }
+        pitches.push_back(pitch);
+        if (pitch != anchor) excursion_start = -1;
+        anchor = pitch;
+    }
+    return pitches;
+}
+
+std::vector<PitchActivitySegment> detect_pitch_activity_regions(
+    const FrameEvidenceTrack& track, const TemporalDecodingOptions& options) {
+    auto pitches = stabilize_pitch_activity(track, options);
+    std::map<int, std::vector<std::size_t>> active;
+    for (std::size_t i = 0; i < pitches.size(); ++i) {
+        if (pitches[i] >= 0 && strong(track, i, options.activation_off, options)) {
+            active[pitches[i]].push_back(i);
+        }
+    }
+    std::vector<PitchActivitySegment> segments;
+    const double center = track.window_seconds / 2;
+    for (const auto& [pitch, indices] : active) {
+        for (std::size_t begin = 0; begin < indices.size();) {
+            if (!strong(track, indices[begin], options.activation_on, options)) {
+                ++begin;
+                continue;
+            }
+            std::size_t end = begin + 1;
+            while (end < indices.size() &&
+                track.frames[indices[end]].time_seconds -
+                    track.frames[indices[end - 1]].time_seconds - track.hop_seconds <=
+                        options.maximum_gap_seconds + 1e-12) ++end;
+            PitchActivitySegment region;
+            region.midi_pitch = pitch;
+            region.frame_indices.assign(indices.begin() + begin, indices.begin() + end);
+            region.onset_seconds = track.frames[indices[begin]].time_seconds + center;
+            region.offset_seconds = track.frames[indices[end - 1]].time_seconds +
+                center + track.hop_seconds;
+            segments.push_back(std::move(region));
+            begin = end;
+        }
+    }
+    return segments;
+}
+
+std::vector<PitchActivitySegment> segment_pitch_activity(
+    const FrameEvidenceTrack& track, const TemporalDecodingOptions& options,
+    std::span<const OnsetEvidence> onsets) {
+    const auto regions = detect_pitch_activity_regions(track, options);
+    double previous_onset = -1;
+    for (const auto& onset : onsets) {
+        if (!std::isfinite(onset.time_seconds) || onset.time_seconds < 0 ||
+            onset.time_seconds < previous_onset || !std::isfinite(onset.strength) ||
+            onset.strength < 0 || !std::isfinite(onset.energy_rise) || onset.energy_rise < 0 ||
+            !std::isfinite(onset.spectral_flux) || onset.spectral_flux < 0 ||
+            !std::isfinite(onset.high_frequency_content) || onset.high_frequency_content < 0) {
+            throw std::invalid_argument("Invalid onset evidence");
+        }
+        previous_onset = onset.time_seconds;
+    }
+    std::vector<PitchActivitySegment> segments;
+    const double center = track.window_seconds / 2;
+    for (const auto& region : regions) {
+        const auto& indices = region.frame_indices;
+        bool starts_at_attack = false;
+        for (std::size_t begin = 0; begin < indices.size();) {
+            std::size_t end = begin + 1;
+            const double start = track.frames[indices[begin]].time_seconds + center;
+            double boundary = 0;
+            double peak_state = track.note_states.empty() ? 0 :
+                track.note_states[indices[begin]];
+            for (; end < indices.size(); ++end) {
+                const auto prior = indices[end - 1], next = indices[end];
+                const double left = track.frames[prior].time_seconds + center;
+                const double right = track.frames[next].time_seconds + center;
+                if (!track.note_states.empty()) {
+                    peak_state = std::max(peak_state, track.note_states[prior]);
+                }
+                if (right - start < std::max(options.minimum_onset_spacing_seconds,
+                                             options.minimum_duration_seconds)) continue;
+                if (region.offset_seconds - right < options.minimum_duration_seconds) continue;
+                bool attack = false;
+                if (options.use_model_onsets && !track.onset_strengths.empty()) {
+                    const double strength = track.onset_strengths[next];
+                    const double before = next ? track.onset_strengths[next - 1] : 0;
+                    const double after = next + 1 < track.frames.size() ?
+                        track.onset_strengths[next + 1] : 0;
+                    double trough = track.note_states.empty() ? 0 : track.note_states[next];
+                    if (!track.note_states.empty()) {
+                        for (std::size_t i = next; i > indices[begin];) {
+                            --i;
+                            if (track.frames[next].time_seconds - track.frames[i].time_seconds >
+                                std::max({options.minimum_onset_spacing_seconds,
+                                          options.minimum_duration_seconds,
+                                          track.hop_seconds})) break;
+                            trough = std::min(trough, track.note_states[i]);
+                        }
+                    }
+                    attack = strength >= options.onset_threshold && strength > before &&
+                        strength >= after &&
+                        (track.note_states.empty() ||
+                         (peak_state - trough >= options.onset_state_drop &&
+                          track.note_states[next] - trough >= options.onset_state_drop / 2)) &&
+                        strong(track, next, options.activation_on, options);
+                }
+                if (!attack && track.method == "yin") {
+                    const auto onset = std::upper_bound(onsets.begin(), onsets.end(), left,
+                        [](double time, const auto& candidate) {
+                            return time < candidate.time_seconds;
+                        });
+                    attack = onset != onsets.end() && onset->time_seconds <= right &&
+                        onset->energy_rise >= options.onset_energy_rise;
+                }
+                if (attack) { boundary = right; break; }
+            }
+            PitchActivitySegment segment;
+            segment.midi_pitch = region.midi_pitch;
+            segment.frame_indices.assign(indices.begin() + begin, indices.begin() + end);
+            segment.onset_seconds = start;
+            segment.offset_seconds = boundary > 0 ? boundary :
+                track.frames[indices[end - 1]].time_seconds + center + track.hop_seconds;
+            segment.onset_from_attack = starts_at_attack;
+            segment.offset_from_attack = boundary > 0;
+            segments.push_back(std::move(segment));
+            starts_at_attack = boundary > 0;
+            begin = end;
+        }
+    }
+    return segments;
+}
+
+EventDiagnostics summarize_event_evidence(const CanonicalNoteEvent& event, double hop_seconds,
+                                         double window_seconds) {
+    if (!std::isfinite(hop_seconds) || hop_seconds <= 0 ||
+        !std::isfinite(window_seconds) || window_seconds < 0 ||
+        !std::isfinite(event.onset_seconds) || event.onset_seconds < 0 ||
+        !std::isfinite(event.offset_seconds) || event.offset_seconds < event.onset_seconds ||
+        !std::isfinite(event.midi_pitch) || event.midi_pitch < 0 || event.midi_pitch > 127) {
+        throw std::invalid_argument("Invalid evidence summary geometry");
+    }
+    EventDiagnostics summary;
+    std::size_t stable = 0;
+    std::vector<double> times;
+    for (const auto& evidence : event.evidence) {
+        if (!std::isfinite(evidence.time_seconds) || evidence.time_seconds < 0 ||
+            (evidence.onset_strength && !std::isfinite(*evidence.onset_strength)) ||
+            (evidence.note_state && !std::isfinite(*evidence.note_state))) {
+            throw std::invalid_argument("Nonfinite or negative evidence timestamp");
+        }
+        times.push_back(evidence.time_seconds + window_seconds / 2);
+        if (evidence.midi_pitch == static_cast<int>(std::lround(event.midi_pitch))) ++stable;
+        if (evidence.onset_strength) summary.onset_strength =
+            std::max(summary.onset_strength.value_or(*evidence.onset_strength), *evidence.onset_strength);
+        if (evidence.note_state) summary.maximum_note_state =
+            std::max(summary.maximum_note_state.value_or(*evidence.note_state), *evidence.note_state);
+    }
+    if (!times.empty()) {
+        summary.pitch_stability = static_cast<double>(stable) / times.size();
+        std::sort(times.begin(), times.end());
+        double stop = -1;
+        for (const double time : times) {
+            const double first = std::max(time, event.onset_seconds);
+            const double last = std::min(time + hop_seconds, event.offset_seconds);
+            if (last > std::max(first, stop)) {
+                summary.activity_duration_seconds += last - std::max(first, stop);
+                stop = last;
+            }
+        }
+    }
+    return summary;
+}
+
 namespace {
 DecodedTranscription decode_note_events_impl(const AudioBuffer& audio,
     std::span<const FrameEvidenceTrack> tracks, const TemporalDecodingOptions& options,
@@ -148,41 +387,12 @@ DecodedTranscription decode_note_events_impl(const AudioBuffer& audio,
     DecodedTranscription result;
     result.raw_tracks.assign(tracks.begin(), tracks.end());
     const auto regions = energy_regions(audio, options);
-    auto onsets = (options.refine_with_audio || options.correct_isolated_octaves) ?
-        detect_onsets(audio) : std::vector<double>{};
-    // detect_onsets returns starts of 1024-sample windows, not their centers.
-    for (auto& onset : onsets) onset += 512.0 / audio.sample_rate;
+    auto onset_evidence = detect_onset_evidence(audio);
+    for (auto& onset : onset_evidence) onset.time_seconds += 512.0 / audio.sample_rate;
+    std::vector<double> onsets;
+    for (const auto& onset : onset_evidence) onsets.push_back(onset.time_seconds);
     const double duration = static_cast<double>(audio.samples.size()) / audio.sample_rate;
-    for (const auto& track : tracks) {
-        if (!std::isfinite(track.window_seconds) || track.window_seconds < 0 ||
-            !std::isfinite(track.hop_seconds) || track.hop_seconds <= 0 ||
-            track.method.empty() || track.evidence_kind.empty() ||
-            track.raw_midi_pitch < -1 || track.raw_midi_pitch > 127 ||
-            !valid_evidence_semantics(track.selected_strength_semantics) ||
-            !valid_evidence_semantics(track.raw_value_semantics) ||
-            (!track.raw_values.empty() && track.raw_values.size() != track.frames.size()) ||
-            (!track.spectral_peak_fractions.empty() &&
-             track.spectral_peak_fractions.size() != track.frames.size())) {
-            throw std::invalid_argument("Invalid frame time geometry or spectral evidence");
-        }
-        double previous_time = -1;
-        for (std::size_t i = 0; i < track.frames.size(); ++i) {
-            const auto& frame = track.frames[i];
-            if (!std::isfinite(frame.time_seconds) || frame.time_seconds < previous_time ||
-                frame.time_seconds < 0 || !std::isfinite(frame.confidence) ||
-                !std::isfinite(frame.voicing_probability) || frame.midi_pitch < -1 ||
-                frame.midi_pitch > 127) {
-                throw std::invalid_argument("Invalid frame evidence");
-            }
-            if ((!track.raw_values.empty() && !std::isfinite(track.raw_values[i])) ||
-                (!track.spectral_peak_fractions.empty() &&
-                 (!std::isfinite(track.spectral_peak_fractions[i]) ||
-                  track.spectral_peak_fractions[i] < 0 || track.spectral_peak_fractions[i] > 1))) {
-                throw std::invalid_argument("Invalid raw spectral/model evidence");
-            }
-            previous_time = frame.time_seconds;
-        }
-    }
+    for (const auto& track : tracks) validate_track(track);
     std::vector<std::map<int, std::pair<double, double>>> activity(regions.size());
     for (std::size_t r = 0; r < regions.size(); ++r) {
         for (const auto& track : tracks) {
@@ -202,7 +412,7 @@ DecodedTranscription decode_note_events_impl(const AudioBuffer& audio,
         }
     }
     for (const auto& track : tracks) {
-        std::map<int, std::vector<std::size_t>> active;
+        auto corrected_track = track;
         for (std::size_t i = 0; i < track.frames.size(); ++i) {
             const auto& frame = track.frames[i];
             int pitch = frame.midi_pitch;
@@ -223,28 +433,10 @@ DecodedTranscription decode_note_events_impl(const AudioBuffer& audio,
                     }
                 }
             }
-            if (pitch >= 0 && strong(track, i, options.activation_off, options)) {
-                active[pitch].push_back(i);
-            }
+            corrected_track.frames[i].midi_pitch = pitch;
         }
-        for (const auto& [pitch, indices] : active) {
-            std::size_t begin = 0;
-            while (begin < indices.size()) {
-                const auto is_strong = [&](std::size_t index, double threshold) {
-                    return strong(track, index, threshold, options);
-                };
-                if (!is_strong(indices[begin], options.activation_on)) { ++begin; continue; }
-                std::size_t end = begin + 1;
-                auto last = indices[begin];
-                while (end < indices.size()) {
-                    const auto next = indices[end];
-                    const double gap = track.frames[next].time_seconds -
-                        track.frames[last].time_seconds - track.hop_seconds;
-                    if (gap > options.maximum_gap_seconds + 1e-12 ||
-                        !is_strong(next, options.activation_off)) break;
-                    last = next;
-                    ++end;
-                }
+        for (const auto& segment : segment_pitch_activity(corrected_track, options, onset_evidence)) {
+                const int pitch = segment.midi_pitch;
                 CanonicalNoteEvent event;
                 event.source_sample_rate = audio.sample_rate;
                 event.audio_source_id = audio_source_id;
@@ -252,22 +444,36 @@ DecodedTranscription decode_note_events_impl(const AudioBuffer& audio,
                 event.detection_method = track.method;
                 event.evidence_kind = track.evidence_kind;
                 event.midi_pitch = pitch;
-                const auto first = indices[begin];
                 const double center = track.window_seconds / 2;
-                double start = track.frames[first].time_seconds + center;
-                double stop = track.frames[last].time_seconds + center + track.hop_seconds;
-                for (auto pos = begin; pos < end; ++pos) {
-                    const auto& f = track.frames[indices[pos]];
-                    const auto index = indices[pos];
+                double start = segment.onset_seconds;
+                double stop = segment.offset_seconds;
+                for (const auto index : segment.frame_indices) {
+                    const auto& f = track.frames[index];
                     event.evidence.push_back({f.time_seconds, f.midi_pitch, f.confidence,
-                        f.voicing_probability, std::nullopt,
+                        f.voicing_probability, f.fractional_midi,
                         track.raw_values.empty() ? std::nullopt :
                             std::optional<double>(track.raw_values[index]),
                             track.raw_midi_pitch < 0 ? f.midi_pitch : track.raw_midi_pitch,
                             track.selected_strength_semantics,
                             track.raw_value_semantics,
                             track.spectral_peak_fractions.empty() ? std::nullopt :
-                                std::optional<double>(track.spectral_peak_fractions[index])});
+                                std::optional<double>(track.spectral_peak_fractions[index]),
+                            track.onset_strengths.empty() ? std::nullopt :
+                                std::optional<double>(track.onset_strengths[index]),
+                            track.note_states.empty() ? std::nullopt :
+                                std::optional<double>(track.note_states[index])});
+                    if (track.onset_strengths.empty()) {
+                        const double time = f.time_seconds + center;
+                        const auto onset = std::lower_bound(onset_evidence.begin(),
+                            onset_evidence.end(), time - track.hop_seconds / 2,
+                            [](const auto& candidate, double at) {
+                                return candidate.time_seconds < at;
+                            });
+                        if (onset != onset_evidence.end() &&
+                            onset->time_seconds <= time + track.hop_seconds / 2) {
+                            event.evidence.back().onset_strength = onset->strength;
+                        }
+                    }
                 }
                 std::vector<Region> pieces;
                 if (options.refine_with_audio) {
@@ -297,9 +503,12 @@ DecodedTranscription decode_note_events_impl(const AudioBuffer& audio,
                                 refined_start = *onset;
                             }
                         }
-                        pieces.push_back({refined_start,
+                        const double refined_stop =
                             outer_end && std::abs(region.end - stop) <= tolerance ? region.end :
-                                                                      std::min(stop, region.end)});
+                                                                      std::min(stop, region.end);
+                        pieces.push_back({
+                            segment.onset_from_attack ? std::max(start, refined_start) : refined_start,
+                            segment.offset_from_attack ? std::min(stop, refined_stop) : refined_stop});
                     }
                 } else pieces.push_back({start, stop});
                 if (pieces.empty()) {
@@ -326,8 +535,6 @@ DecodedTranscription decode_note_events_impl(const AudioBuffer& audio,
                         result.rejected_events.push_back(std::move(refined));
                     } else result.events.push_back(std::move(refined));
                 }
-                begin = end;
-            }
         }
     }
     std::sort(result.events.begin(), result.events.end(), [](const auto& a, const auto& b) {

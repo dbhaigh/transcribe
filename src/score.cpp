@@ -120,6 +120,8 @@ void validate_evidence(const EventEvidence& evidence) {
          (!std::isfinite(*evidence.fractional_midi) ||
           *evidence.fractional_midi < 0.0 || *evidence.fractional_midi > 127.0)) ||
         (evidence.raw_model_value && !std::isfinite(*evidence.raw_model_value)) ||
+        (evidence.onset_strength && !std::isfinite(*evidence.onset_strength)) ||
+        (evidence.note_state && !std::isfinite(*evidence.note_state)) ||
         evidence.raw_midi_pitch < -1 || evidence.raw_midi_pitch > 127 ||
         (evidence.spectral_peak_fraction &&
          (!std::isfinite(*evidence.spectral_peak_fraction) ||
@@ -347,7 +349,10 @@ void apply_command(ScoreDocument& document, const ScoreEditCommand& command,
             if (operation.string_number) {
                 if (*operation.string_number < 1 ||
                     static_cast<std::size_t>(*operation.string_number) > document.instrument.tuning.size() ||
-                    *operation.fret < 0 || *operation.fret > 36) {
+                    *operation.fret < 0 || *operation.fret > 36 ||
+                    (document.instrument.physical_fret_count &&
+                     *operation.fret + document.instrument.capo_fret >
+                         *document.instrument.physical_fret_count)) {
                     throw std::invalid_argument("Score fingering is outside the configured instrument range.");
                 }
                 const auto open_pitch = document.instrument.tuning[
@@ -533,6 +538,12 @@ void write_evidence(std::ostream& output, const EventEvidence& evidence) {
     } else {
         output << "null";
     }
+    output << ",\"onset_strength\":";
+    if (evidence.onset_strength) json_number(output, *evidence.onset_strength);
+    else output << "null";
+    output << ",\"note_state\":";
+    if (evidence.note_state) json_number(output, *evidence.note_state);
+    else output << "null";
     output << '}';
 }
 
@@ -981,6 +992,8 @@ EventEvidence read_evidence(const JsonValue& value) {
     }
     result.spectral_peak_fraction =
         optional_number(fields, "spectral_peak_fraction");
+    result.onset_strength = optional_number(fields, "onset_strength");
+    result.note_state = optional_number(fields, "note_state");
     return result;
 }
 
@@ -1109,6 +1122,7 @@ ScoreDocument read_current_document(const JsonValue::Object& fields) {
         result.instrument.tuning.push_back(int_value(pitch, "tuning pitch"));
     }
     result.instrument.capo_fret = int_value(field(instrument, "capo_fret"), "capo_fret");
+    result.instrument.physical_fret_count = optional_int(instrument, "physical_fret_count");
 
     for (const auto& event : array(field(fields, "source_events"), "source_events")) {
         result.source_events.push_back(read_event(event));
@@ -1314,8 +1328,10 @@ ScoreDocument make_score_document(const ScoreInterpretation& interpretation,
     document.instrument.name = hypothesis.instrument;
     document.instrument.written_transposition_semitones =
         hypothesis.written_transposition_semitones;
-    document.instrument.tuning.assign(tab_options.tuning.begin(), tab_options.tuning.end());
+    const auto tuning = configured_tuning(tab_options);
+    document.instrument.tuning.assign(tuning.begin(), tuning.end());
     document.instrument.capo_fret = tab_options.capo_fret;
+    document.instrument.physical_fret_count = tab_options.search.physical_fret_count;
     document.tempo_map = hypothesis.tempo_map;
     document.beats = hypothesis.beats;
     document.meter = hypothesis.meter;
@@ -1438,6 +1454,22 @@ double score_position_seconds(const ScoreDocument& document, double quarter_posi
     const double bpm = std::clamp(selected->beats_per_minute, 1.0, 1000.0);
     return selected->start_seconds +
            (quarter_position - selected->start_quarters) * 60.0 / bpm;
+}
+
+double recording_sample_seconds(std::uint64_t frame, std::uint32_t sample_rate) {
+    if (sample_rate == 0) throw std::invalid_argument("Recording sample rate is unknown.");
+    return static_cast<double>(frame) / sample_rate;
+}
+
+std::uint64_t recording_sample_position(double seconds, std::uint32_t sample_rate) {
+    if (sample_rate == 0 || !std::isfinite(seconds) || seconds < 0) {
+        throw std::invalid_argument("Recording time requires finite nonnegative seconds and a known sample rate.");
+    }
+    const long double frame = std::floor(seconds * sample_rate + .5);
+    if (frame >= std::ldexp(1.0L, 64)) {
+        throw std::overflow_error("Recording sample position exceeds the frame counter.");
+    }
+    return static_cast<std::uint64_t>(frame);
 }
 
 double score_position_quarters(const ScoreDocument& document, double seconds) {
@@ -1615,7 +1647,10 @@ void validate_score_document(const ScoreDocument& document) {
         document.instrument.written_transposition_semitones < -48 ||
         document.instrument.written_transposition_semitones > 48 ||
         document.instrument.capo_fret < 0 || document.instrument.capo_fret > 24 ||
-        document.instrument.tuning.empty() || document.instrument.tuning.size() > 12) {
+        document.instrument.tuning.empty() || document.instrument.tuning.size() > 12 ||
+        (document.instrument.physical_fret_count &&
+         (*document.instrument.physical_fret_count < document.instrument.capo_fret ||
+          *document.instrument.physical_fret_count > 36))) {
         throw std::invalid_argument("Score metadata or instrument settings are invalid.");
     }
     for (const int pitch : document.instrument.tuning) {
@@ -1741,6 +1776,7 @@ void validate_score_document(const ScoreDocument& document) {
         }
     }
     std::unordered_set<std::string> tab_note_ids;
+    std::map<int, std::vector<const ScoreNote*>> string_notes;
     for (const auto& tab : document.tab_notes) {
         const auto* note = find_note(document, tab.notation_note_id);
         if (tab.id.empty() || !ids.insert(tab.id).second ||
@@ -1752,14 +1788,32 @@ void validate_score_document(const ScoreDocument& document) {
             if (*tab.string_number < 1 ||
                 static_cast<std::size_t>(*tab.string_number) > document.instrument.tuning.size() ||
                 *tab.fret < 0 || *tab.fret > 36 ||
+                (document.instrument.physical_fret_count &&
+                 *tab.fret + document.instrument.capo_fret > *document.instrument.physical_fret_count) ||
                 document.instrument.tuning[static_cast<std::size_t>(*tab.string_number - 1)] +
                     document.instrument.capo_fret + *tab.fret != note->sounding_midi_pitch) {
                 throw std::invalid_argument("Score tablature assignment does not match sounding pitch.");
             }
+            string_notes[*tab.string_number].push_back(note);
+        }
+    }
+    for (auto& [string, notes] : string_notes) {
+        (void)string;
+        std::stable_sort(notes.begin(), notes.end(), [](const auto* a, const auto* b) {
+            return a->onset_quarters < b->onset_quarters;
+        });
+        double end = -1.0;
+        for (const auto* note : notes) {
+            if (note->onset_quarters < end - 1e-9) {
+                throw std::invalid_argument(
+                    "Score tablature has overlapping notes on the same string; clear or change the fingering.");
+            }
+            end = note->onset_quarters + note->duration_quarters;
         }
     }
     double previous_start_seconds = -1.0;
     double previous_start_quarters = -1.0;
+    const TempoSegment* previous_segment = nullptr;
     for (const auto& segment : document.tempo_map) {
         if (!std::isfinite(segment.start_seconds) || !std::isfinite(segment.end_seconds) ||
             !std::isfinite(segment.start_quarters) ||
@@ -1773,6 +1827,20 @@ void validate_score_document(const ScoreDocument& document) {
             segment.confidence < 0.0 || segment.confidence > 1.0) {
             throw std::invalid_argument("Score tempo map contains an invalid segment.");
         }
+        if (!previous_segment) {
+            if (segment.start_seconds != 0 || segment.start_quarters != 0) {
+                throw std::invalid_argument("Score tempo map must begin at recording second and quarter zero.");
+            }
+        } else {
+            const double expected = previous_segment->start_quarters +
+                (segment.start_seconds - previous_segment->start_seconds) *
+                std::clamp(previous_segment->beats_per_minute, 1.0, 1000.0) / 60.0;
+            if (segment.start_seconds <= previous_segment->start_seconds ||
+                std::abs(segment.start_quarters - expected) > 1e-6) {
+                throw std::invalid_argument("Score tempo map must define a continuous invertible timeline.");
+            }
+        }
+        previous_segment = &segment;
         previous_start_seconds = segment.start_seconds;
         previous_start_quarters = segment.start_quarters;
     }
@@ -1869,21 +1937,22 @@ std::uint64_t ScoreEditor::undo(std::uint64_t expected_revision) {
         throw std::logic_error("Score undo conflicts with the current revision.");
     }
     if (undo_stack_.empty()) throw std::logic_error("No score edit is available to undo.");
-    auto snapshot = std::move(undo_stack_.back());
-    undo_stack_.pop_back();
+    auto snapshot = undo_stack_.back();
     const auto next_revision = document_.revision + 1;
     auto history = document_.history;
-    document_ = std::move(snapshot.before);
-    document_.revision = next_revision;
-    document_.history = std::move(history);
-    document_.history.push_back({next_revision, ScoreEditOrigin::Undo, "user",
+    auto candidate = snapshot.before;
+    candidate.revision = next_revision;
+    candidate.history = std::move(history);
+    candidate.history.push_back({next_revision, ScoreEditOrigin::Undo, "user",
                                  "Undo score transaction", {}});
-    for (auto& note : document_.notes) {
+    for (auto& note : candidate.notes) {
         if (note.revision > next_revision) note.revision = next_revision;
     }
-    sort_score(document_);
-    validate_score_document(document_);
+    sort_score(candidate);
+    validate_score_document(candidate);
     redo_stack_.push_back(std::move(snapshot));
+    undo_stack_.pop_back();
+    document_ = std::move(candidate);
     return document_.revision;
 }
 
@@ -1892,21 +1961,22 @@ std::uint64_t ScoreEditor::redo(std::uint64_t expected_revision) {
         throw std::logic_error("Score redo conflicts with the current revision.");
     }
     if (redo_stack_.empty()) throw std::logic_error("No score edit is available to redo.");
-    auto snapshot = std::move(redo_stack_.back());
-    redo_stack_.pop_back();
+    auto snapshot = redo_stack_.back();
     const auto next_revision = document_.revision + 1;
     auto history = document_.history;
-    document_ = std::move(snapshot.after);
-    document_.revision = next_revision;
-    document_.history = std::move(history);
-    document_.history.push_back({next_revision, ScoreEditOrigin::Redo, "user",
+    auto candidate = snapshot.after;
+    candidate.revision = next_revision;
+    candidate.history = std::move(history);
+    candidate.history.push_back({next_revision, ScoreEditOrigin::Redo, "user",
                                  "Redo score transaction", {}});
-    for (auto& note : document_.notes) {
+    for (auto& note : candidate.notes) {
         if (note.revision > next_revision) note.revision = next_revision;
     }
-    sort_score(document_);
-    validate_score_document(document_);
+    sort_score(candidate);
+    validate_score_document(candidate);
     undo_stack_.push_back(std::move(snapshot));
+    redo_stack_.pop_back();
+    document_ = std::move(candidate);
     return document_.revision;
 }
 
@@ -1948,7 +2018,10 @@ std::string serialize_score_document(const ScoreDocument& document) {
         if (i) output << ',';
         output << document.instrument.tuning[i];
     }
-    output << "],\"capo_fret\":" << document.instrument.capo_fret << "},\"source_events\":[";
+    output << "],\"capo_fret\":" << document.instrument.capo_fret << ",\"physical_fret_count\":";
+    if (document.instrument.physical_fret_count) output << *document.instrument.physical_fret_count;
+    else output << "null";
+    output << "},\"source_events\":[";
     for (std::size_t i = 0; i < document.source_events.size(); ++i) {
         if (i) output << ',';
         write_event(output, document.source_events[i]);
@@ -2185,19 +2258,59 @@ ScoreDocument deserialize_score_document(std::string_view json) {
     return result;
 }
 
+namespace {
+
+bool valid_project_path(std::string_view value) {
+    return value.size() <= 32768 &&
+        std::none_of(value.begin(), value.end(), [](unsigned char ch) { return ch < 32; }) &&
+        value.find("://") == std::string_view::npos &&
+        !value.starts_with("data:") && !value.starts_with("\\\\?\\") &&
+        !value.starts_with("\\\\.\\");
+}
+
+bool contained_project_path(std::string value) {
+    std::replace(value.begin(), value.end(), '\\', '/');
+    if (value.empty() || value.front() == '/' || value.find(':') != std::string::npos) return false;
+    std::istringstream parts(value);
+    std::string part;
+    while (std::getline(parts, part, '/')) if (part == "..") return false;
+    return true;
+}
+
+std::string project_checksum(std::string_view payload) {
+    std::uint32_t crc = 0xffffffffU;
+    for (const unsigned char byte : payload) {
+        crc ^= byte;
+        for (int bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ ((crc & 1U) ? 0xedb88320U : 0U);
+    }
+    std::ostringstream output;
+    output << std::hex << std::setfill('0') << std::setw(8) << (crc ^ 0xffffffffU);
+    return output.str();
+}
+
+} // namespace
+
 void validate_project_document(const ProjectDocument& project) {
     if (project.schema_version != project_schema_version ||
         project.id.empty() || project.id.size() > 256 ||
         project.title.empty() || project.title.size() > 4096 ||
-        project.last_saved_path.size() > 32768) {
+        !valid_project_path(project.last_saved_path)) {
         throw std::invalid_argument("Project identity or schema version is invalid.");
     }
     validate_score_document(project.score);
-    if (project.audio.policy == ProjectAudioPolicy::ExternalReference) {
+    if (project.audio.policy == ProjectAudioPolicy::ExternalReference ||
+        project.audio.policy == ProjectAudioPolicy::ProjectCopy) {
         if (project.audio.reference_path.empty() ||
-            project.audio.reference_path.size() > 32768) {
+            !valid_project_path(project.audio.reference_path) ||
+            (project.audio.relative_to_project && !contained_project_path(project.audio.reference_path))) {
             throw std::invalid_argument(
                 "A linked project must contain a valid source-audio reference.");
+        }
+        if (!valid_project_path(project.audio.original_reference) ||
+            (project.audio.policy == ProjectAudioPolicy::ProjectCopy &&
+             !project.audio.relative_to_project)) {
+            throw std::invalid_argument("Copied project audio must use a contained relative path.");
         }
     } else if (!project.audio.reference_path.empty() ||
                project.audio.relative_to_project) {
@@ -2214,14 +2327,62 @@ void validate_project_document(const ProjectDocument& project) {
         analysis.backend_identifier.size() > 1024 ||
         analysis.model_identifier.empty() ||
         analysis.model_identifier.size() > 1024 ||
-        analysis.model_reference.size() > 32768 ||
-        analysis.instrument_prior.empty() ||
-        analysis.instrument_prior.size() > 128 ||
-        analysis.live_backend.empty() ||
-        analysis.live_backend.size() > 128 ||
+        !valid_project_path(analysis.model_reference) ||
+        (analysis.instrument_prior != "auto" && analysis.instrument_prior != "none" &&
+         analysis.instrument_prior != "guitar" && analysis.instrument_prior != "bass" &&
+         analysis.instrument_prior != "piano" && analysis.instrument_prior != "voice") ||
+        (analysis.live_backend != "yin" && analysis.live_backend != "spectral" &&
+         analysis.live_backend != "onnx") ||
         !std::isfinite(analysis.latency_ms) ||
         analysis.latency_ms < 0.0 || analysis.latency_ms > 10000.0) {
         throw std::invalid_argument("Project analysis configuration is invalid.");
+    }
+    (void)parse_quantization_mode(analysis.quantization);
+    if (!std::isfinite(analysis.quantization_strength) || analysis.quantization_strength < 0 ||
+        analysis.quantization_strength > 1 || !std::isfinite(analysis.minimum_rhythm_evidence) ||
+        analysis.minimum_rhythm_evidence < 0 || analysis.minimum_rhythm_evidence > 1 ||
+        analysis.fingering_alternatives > 16 || analysis.maximum_fret < 0 ||
+        analysis.maximum_fret > 36 || analysis.preferred_position < 0 ||
+        analysis.preferred_position > analysis.maximum_fret ||
+        analysis.provider.empty() || analysis.provider.size() > 128 || analysis.model_version.size() > 1024) {
+        throw std::invalid_argument("Project rhythm, model or fingering settings are invalid.");
+    }
+    std::unordered_map<std::string, const ScoreNote*> notes;
+    for (const auto& note : project.score.notes) notes.emplace(note.id, &note);
+    if (project.annotations.size() > 4096 || project.fingering_alternatives.size() > 16)
+        throw std::length_error("Project annotation or fingering alternative limit exceeded.");
+    std::unordered_set<std::string> annotation_ids;
+    for (const auto& item : project.annotations) {
+        if (item.id.empty() || item.id.size() > 256 || !annotation_ids.insert(item.id).second ||
+            item.text.size() > 16384 || (!item.note_id.empty() && !notes.contains(item.note_id)))
+            throw std::invalid_argument("Project annotation is invalid or references a missing note.");
+    }
+    std::size_t positions = 0;
+    for (const auto& alternative : project.fingering_alternatives) {
+        positions += alternative.positions.size();
+        if (!std::isfinite(alternative.cost) || alternative.cost < 0 || positions > 100000)
+            throw std::invalid_argument("Project fingering alternative cost or size is invalid.");
+        double total = 0;
+        for (const auto cost : alternative.cost_components) {
+            if (!std::isfinite(cost) || cost < 0)
+                throw std::invalid_argument("Project fingering cost component is invalid.");
+            total += cost;
+        }
+        if (!std::isfinite(total) || std::abs(total - alternative.cost) > 1e-7 * std::max(1.0, total))
+            throw std::invalid_argument("Project fingering cost components do not match the total.");
+        std::unordered_set<std::string> assigned;
+        for (const auto& position : alternative.positions) {
+            const auto note = notes.find(position.note_id);
+            if (note == notes.end() || !assigned.insert(position.note_id).second ||
+                position.string_number < 1 ||
+                static_cast<std::size_t>(position.string_number) > project.score.instrument.tuning.size() ||
+                position.fret < 0 || position.fret > analysis.maximum_fret ||
+                (project.score.instrument.physical_fret_count &&
+                 position.fret + project.score.instrument.capo_fret > *project.score.instrument.physical_fret_count) ||
+                project.score.instrument.tuning[static_cast<std::size_t>(position.string_number - 1)] +
+                    project.score.instrument.capo_fret + position.fret != note->second->sounding_midi_pitch)
+                throw std::invalid_argument("Project fingering alternative does not match its score pitch.");
+        }
     }
     if (project.exports.size() > 32) {
         throw std::length_error("Project contains too many export-status records.");
@@ -2231,7 +2392,7 @@ void validate_project_document(const ProjectDocument& project) {
         if ((status.format != "musicxml" && status.format != "tablature" &&
              status.format != "midi") ||
             !export_formats.insert(status.format).second ||
-            status.path.empty() || status.path.size() > 32768 ||
+            status.path.empty() || !valid_project_path(status.path) ||
             status.score_revision == 0 ||
             status.score_revision > project.score.revision ||
             status.error.size() > 4096) {
@@ -2240,7 +2401,7 @@ void validate_project_document(const ProjectDocument& project) {
     }
 }
 
-std::string serialize_project_document(const ProjectDocument& project) {
+static std::string serialize_project_payload(const ProjectDocument& project) {
     validate_project_document(project);
     std::ostringstream output;
     output << "{\"format\":\"transcriber-project\",\"project_schema_version\":"
@@ -2252,7 +2413,8 @@ std::string serialize_project_document(const ProjectDocument& project) {
     json_string(output, project.last_saved_path);
     output << ",\"audio\":{\"policy\":";
     json_string(output, project.audio.policy == ProjectAudioPolicy::ScoreOnly
-        ? "score-only" : "external-reference");
+        ? "score-only" : project.audio.policy == ProjectAudioPolicy::ProjectCopy
+            ? "project-copy" : "external-reference");
     output << ",\"reference_path\":";
     json_string(output, project.audio.reference_path);
     output << ",\"relative_to_project\":"
@@ -2260,7 +2422,9 @@ std::string serialize_project_document(const ProjectDocument& project) {
            << ",\"sample_rate\":" << project.audio.sample_rate
            << ",\"channels\":" << project.audio.channels
            << ",\"frame_count\":" << project.audio.frame_count
-           << "},\"analysis\":{\"backend_identifier\":";
+           << ",\"original_reference\":";
+    json_string(output, project.audio.original_reference);
+    output << "},\"analysis\":{\"backend_identifier\":";
     json_string(output, project.analysis.backend_identifier);
     output << ",\"model_identifier\":";
     json_string(output, project.analysis.model_identifier);
@@ -2284,6 +2448,21 @@ std::string serialize_project_document(const ProjectDocument& project) {
            << (project.analysis.preserve_expressive_timing ? "true" : "false")
            << ",\"latency_ms\":";
     json_number(output, project.analysis.latency_ms);
+    output << ",\"quantization\":";
+    json_string(output, project.analysis.quantization);
+    output << ",\"quantization_strength\":";
+    json_number(output, project.analysis.quantization_strength);
+    output << ",\"minimum_rhythm_evidence\":";
+    json_number(output, project.analysis.minimum_rhythm_evidence);
+    output << ",\"retain_review_evidence\":" << (project.analysis.retain_review_evidence ? "true" : "false")
+           << ",\"bounded_inference\":" << (project.analysis.bounded_inference ? "true" : "false")
+           << ",\"fingering_alternatives\":" << project.analysis.fingering_alternatives
+           << ",\"maximum_fret\":" << project.analysis.maximum_fret
+           << ",\"preferred_position\":" << project.analysis.preferred_position
+           << ",\"provider\":";
+    json_string(output, project.analysis.provider);
+    output << ",\"model_version\":";
+    json_string(output, project.analysis.model_version);
     output << "},\"exports\":[";
     for (std::size_t index = 0; index < project.exports.size(); ++index) {
         if (index) output << ',';
@@ -2298,9 +2477,49 @@ std::string serialize_project_document(const ProjectDocument& project) {
         json_string(output, status.error);
         output << '}';
     }
-    output << "],\"score\":" << serialize_score_document(project.score) << '}';
+    output << "],\"annotations\":[";
+    for (std::size_t index = 0; index < project.annotations.size(); ++index) {
+        if (index) output << ',';
+        const auto& item = project.annotations[index];
+        output << "{\"id\":"; json_string(output, item.id);
+        output << ",\"note_id\":"; json_string(output, item.note_id);
+        output << ",\"text\":"; json_string(output, item.text);
+        output << '}';
+    }
+    output << "],\"fingering_alternatives\":[";
+    for (std::size_t index = 0; index < project.fingering_alternatives.size(); ++index) {
+        if (index) output << ',';
+        const auto& item = project.fingering_alternatives[index];
+        output << "{\"cost\":"; json_number(output, item.cost);
+        output << ",\"cost_components\":[";
+        for (std::size_t c = 0; c < item.cost_components.size(); ++c) {
+            if (c) output << ',';
+            json_number(output, item.cost_components[c]);
+        }
+        output << "],\"positions\":[";
+        for (std::size_t p = 0; p < item.positions.size(); ++p) {
+            if (p) output << ',';
+            const auto& position = item.positions[p];
+            output << "{\"note_id\":"; json_string(output, position.note_id);
+            output << ",\"string\":" << position.string_number << ",\"fret\":" << position.fret << '}';
+        }
+        output << "]}";
+    }
+    output << "],\"fingering_alternatives_truncated\":"
+           << (project.fingering_alternatives_truncated ? "true" : "false")
+           << ",\"score\":" << serialize_score_document(project.score) << '}';
     if (!output) throw std::runtime_error("Failed to serialize project document.");
     return output.str();
+}
+
+std::string serialize_project_document(const ProjectDocument& project) {
+    auto payload = serialize_project_payload(project);
+    const auto checksum = project_checksum(payload);
+    payload.pop_back();
+    payload += ",\"integrity\":{\"algorithm\":\"crc32-canonical-v2\",\"value\":\"" + checksum + "\"}}";
+    if (payload.size() > maximum_project_bytes)
+        throw std::length_error("Project exceeds the 64 MiB save/load limit.");
+    return payload;
 }
 
 ProjectDocument deserialize_project_document(std::string_view json) {
@@ -2319,6 +2538,10 @@ ProjectDocument deserialize_project_document(std::string_view json) {
             migrated.score.source_id != "live-capture") {
             migrated.audio.policy = ProjectAudioPolicy::ExternalReference;
             migrated.audio.reference_path = migrated.score.source_id;
+            migrated.audio.relative_to_project =
+                migrated.audio.reference_path.find(':') == std::string::npos &&
+                !migrated.audio.reference_path.starts_with('/') &&
+                !migrated.audio.reference_path.starts_with('\\');
             migrated.audio.sample_rate = migrated.score.source_sample_rate;
         }
         validate_project_document(migrated);
@@ -2405,6 +2628,8 @@ ProjectDocument deserialize_project_document(std::string_view json) {
             project.audio.policy = ProjectAudioPolicy::ScoreOnly;
         } else if (policy == "external-reference") {
             project.audio.policy = ProjectAudioPolicy::ExternalReference;
+        } else if (policy == "project-copy" && schema_version >= 2) {
+            project.audio.policy = ProjectAudioPolicy::ProjectCopy;
         } else {
             throw std::invalid_argument("Project audio policy is not supported.");
         }
@@ -2419,6 +2644,10 @@ ProjectDocument deserialize_project_document(std::string_view json) {
             uint32_value(field(audio_fields, "channels"), "audio channels");
         project.audio.frame_count =
             uint64_value(field(audio_fields, "frame_count"), "audio frame count");
+        if (schema_version >= 2) {
+            project.audio.original_reference =
+                string(field(audio_fields, "original_reference"), "original_reference");
+        }
 
         const auto& analysis_fields = object(field(fields, "analysis"), "analysis");
         project.analysis.backend_identifier =
@@ -2455,6 +2684,43 @@ ProjectDocument deserialize_project_document(std::string_view json) {
                      "preserve_expressive_timing");
         project.analysis.latency_ms =
             number(field(analysis_fields, "latency_ms"), "latency_ms");
+        if (schema_version >= 2) {
+            project.fingering_alternatives_truncated =
+                boolean(field(fields, "fingering_alternatives_truncated"), "fingering_alternatives_truncated");
+            project.analysis.quantization = string(field(analysis_fields, "quantization"), "quantization");
+            project.analysis.quantization_strength = number(field(analysis_fields, "quantization_strength"), "quantization_strength");
+            project.analysis.minimum_rhythm_evidence = number(field(analysis_fields, "minimum_rhythm_evidence"), "minimum_rhythm_evidence");
+            project.analysis.retain_review_evidence = boolean(field(analysis_fields, "retain_review_evidence"), "retain_review_evidence");
+            project.analysis.bounded_inference = boolean(field(analysis_fields, "bounded_inference"), "bounded_inference");
+            project.analysis.fingering_alternatives = uint32_value(field(analysis_fields, "fingering_alternatives"), "fingering_alternatives");
+            project.analysis.maximum_fret = int_value(field(analysis_fields, "maximum_fret"), "maximum_fret");
+            project.analysis.preferred_position = int_value(field(analysis_fields, "preferred_position"), "preferred_position");
+            project.analysis.provider = string(field(analysis_fields, "provider"), "provider");
+            project.analysis.model_version = string(field(analysis_fields, "model_version"), "model_version");
+            for (const auto& entry : array(field(fields, "annotations"), "annotations")) {
+                const auto& item = object(entry, "annotation");
+                project.annotations.push_back({string(field(item, "id"), "annotation id"),
+                    string(field(item, "note_id"), "annotation note"),
+                    string(field(item, "text"), "annotation text")});
+            }
+            for (const auto& entry : array(field(fields, "fingering_alternatives"), "fingering_alternatives")) {
+                const auto& item = object(entry, "fingering alternative");
+                ProjectFingeringAlternative alternative;
+                alternative.cost = number(field(item, "cost"), "cost");
+                const auto& components = array(field(item, "cost_components"), "cost_components");
+                if (components.size() != alternative.cost_components.size())
+                    throw std::invalid_argument("Expected nine fingering cost components.");
+                for (std::size_t c = 0; c < components.size(); ++c)
+                    alternative.cost_components[c] = number(components[c], "cost component");
+                for (const auto& value : array(field(item, "positions"), "positions")) {
+                    const auto& position = object(value, "position");
+                    alternative.positions.push_back({string(field(position, "note_id"), "position note"),
+                        int_value(field(position, "string"), "position string"),
+                        int_value(field(position, "fret"), "position fret")});
+                }
+                project.fingering_alternatives.push_back(std::move(alternative));
+            }
+        }
 
         for (const auto& value : array(field(fields, "exports"), "exports")) {
             const auto& export_fields = object(value, "export status");
@@ -2474,7 +2740,24 @@ ProjectDocument deserialize_project_document(std::string_view json) {
         }
         project.score = read_current_document(score_fields);
     }
+    if (schema_version < 2) {
+        // v0/v1 did not store rhythm settings, annotations or alternative sequences.
+        project.audio.original_reference = project.audio.reference_path;
+        project.analysis.maximum_fret = project.score.instrument.physical_fret_count
+            ? *project.score.instrument.physical_fret_count - project.score.instrument.capo_fret : 36;
+        project.analysis.preferred_position = std::min(5, project.analysis.maximum_fret);
+        project.analysis.retain_review_evidence = std::any_of(
+            project.score.source_events.begin(), project.score.source_events.end(),
+            [](const auto& event) { return !event.evidence.empty(); });
+    }
     validate_project_document(project);
+    if (schema_version >= 2) {
+        const auto& integrity = object(field(fields, "integrity"), "integrity");
+        if (string(field(integrity, "algorithm"), "integrity algorithm") != "crc32-canonical-v2" ||
+            string(field(integrity, "value"), "integrity value") != project_checksum(serialize_project_payload(project))) {
+            throw std::invalid_argument("Project integrity check failed. Open a recovery copy or restore a known-good project.");
+        }
+    }
     return project;
 }
 

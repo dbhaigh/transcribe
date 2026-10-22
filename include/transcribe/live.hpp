@@ -22,9 +22,12 @@ using Nanoseconds = std::chrono::nanoseconds;
 // Monotonic time source. Tests inject a simulated clock; the default is steady_clock.
 using MonotonicClock = std::function<Nanoseconds()>;
 
+enum class ChannelLayout { DiscreteInterleaved, Mono, Stereo };
+
 struct AudioFormat {
     std::uint32_t sample_rate{};
     std::uint16_t channels{1};
+    ChannelLayout layout{ChannelLayout::DiscreteInterleaved};
 };
 
 // Interleaved float32 frames. first_frame counts device frames (including frames the producer
@@ -38,9 +41,20 @@ struct AudioFrameBlock {
     Nanoseconds capture_time{};
     // Producer/driver reported unknown loss immediately before this block.
     bool discontinuity{};
+    // Optional only for source compatibility. New producers use strictly increasing numbers.
+    // QueueFull retries retain the same number; rejected/dropped blocks do not consume it.
+    std::optional<std::uint64_t> sequence{};
+    std::uint64_t stream_epoch{};
 };
 
 enum class PushStatus { Accepted, QueueFull, InvalidFormat, InvalidTimestamp, Closed };
+
+class AudioInputSink {
+public:
+    virtual ~AudioInputSink() = default;
+    virtual PushStatus push(const AudioFrameBlock& block) noexcept = 0;
+    virtual void report_input_lost() noexcept = 0;
+};
 
 enum class LiveBackendKind {
     // True sample-incremental YIN state machine (existing RealtimeTranscriber).
@@ -116,6 +130,12 @@ struct LiveOptions {
     std::function<void()> events_available;
     // Diagnostic/test hook executed inside each timed analysis step on the analysis worker.
     std::function<void(std::uint64_t step)> analysis_hook;
+    // Identity is immutable for a session. Use a new epoch/ID for a restarted device timeline.
+    std::uint64_t stream_epoch{};
+    std::string stream_id;
+    // Diagnostic targets only: never silently change pitch/context/stability parameters.
+    double target_provisional_seconds{0.2};
+    double target_stabilized_seconds{0.3};
 };
 
 enum class LiveEventKind {
@@ -125,7 +145,8 @@ enum class LiveEventKind {
     NoteCorrected,   // Pitch/onset/offset revised, or a closed note reopened; same ID.
     NoteRetracted,   // Provisional note withdrawn; consumers should remove it.
     AnalysisGap,     // Frames [gap_first_frame, gap_end_frame) were not analysed live.
-    Status           // Input/model/lifecycle diagnostic in message.
+    Status,          // Input/model/lifecycle diagnostic in message.
+    NoteFinalized    // Last revision from this stream; offline refinement remains a separate proposal.
 };
 
 struct LiveNote {
@@ -142,6 +163,7 @@ struct LiveNote {
     // Onset hidden by an input gap, interruption or skipped analysis.
     bool onset_truncated{};
     std::uint32_t revision{};
+    bool finalized{};
 
     double onset_seconds() const noexcept;
     std::optional<double> offset_seconds() const;
@@ -171,6 +193,9 @@ struct EventBatch {
     // Events were dropped because the consumer fell behind; rebuild state from snapshot().
     bool resync_required{};
     std::uint64_t dropped_events{};
+    // Atomic-with-events replacement on overflow. It supersedes all events queued at this poll.
+    // Use instead of a separate snapshot() call; the latter may include newer revisions.
+    std::vector<LiveNote> resync_snapshot;
 };
 
 struct LatencySummary {
@@ -179,6 +204,7 @@ struct LatencySummary {
     double p50_seconds{};
     double p95_seconds{};
     double maximum_seconds{};
+    double p99_seconds{};
 };
 
 struct LiveMetrics {
@@ -222,9 +248,40 @@ struct LiveMetrics {
     std::uint64_t model_recoveries{};
     double analysed_audio_seconds{};
     double analysis_busy_seconds{};
+    // Ingestion of the newest evidence block -> start of its analysis step.
+    LatencySummary analysis_queue_latency;
+    // First NoteOn -> NoteStabilized (distinct from capture -> stabilization above).
+    LatencySummary confirmation_latency;
+    // Event publication -> poll_events by the consumer; excludes UI dispatch/rendering.
+    LatencySummary publication_queue_latency;
+    bool overloaded{};
+    std::uint64_t input_markers_coalesced{};
+    std::size_t input_queue_depth{};
+    std::size_t event_queue_depth{};
+    std::uint64_t current_lag_frames{};
+    std::uint64_t sequence_gaps{};
+    std::uint64_t provisional_target_misses{};
+    std::uint64_t stabilized_target_misses{};
+    double target_provisional_seconds{};
+    double target_stabilized_seconds{};
 };
 
-class LiveTranscriptionSession {
+struct LatencyBudget {
+    double capture_block_seconds{};
+    double ingest_poll_seconds{};
+    double analysis_context_seconds{};
+    double update_wait_seconds{};
+    double stabilization_seconds{};
+    double provisional_estimate_seconds{};
+    double stabilized_estimate_seconds{};
+    bool provisional_estimate_within_target{};
+    bool stabilized_estimate_within_target{};
+    // Model compute, scheduling and consumer/UI delays are measured, not estimated here.
+};
+
+LatencyBudget latency_budget(const LiveOptions& options, std::size_t capture_block_frames);
+
+class LiveTranscriptionSession : public AudioInputSink {
 public:
     // OverlappingWindow requires a model; it is loaded in start() if not already loaded.
     explicit LiveTranscriptionSession(LiveOptions options,
@@ -234,17 +291,33 @@ public:
     LiveTranscriptionSession& operator=(const LiveTranscriptionSession&) = delete;
 
     ModelOperation start();
+    // Optional device timeline declaration. Owner calls before starting the external producer.
+    // Without it, the first accepted block remains the origin for compatibility.
+    void begin_input(std::uint64_t first_frame);
+    // Producer must be quiescent. Seal the known end so a dropped final block becomes a gap.
+    void end_input(std::uint64_t end_frame);
     // Real-time safe for one producer: no locks, allocation, blocking or analysis.
-    PushStatus push(const AudioFrameBlock& block) noexcept;
+    PushStatus push(const AudioFrameBlock& block) noexcept override;
     // Real-time safe: the device stopped delivering audio (e.g. disconnection).
-    void report_input_lost() noexcept;
+    void report_input_lost() noexcept override;
     // Manual mode only: ingest queued audio and run all ready analysis on the caller.
     void pump();
     // Drain remaining audio, finalize open notes and stop workers.
+    // Control calls belong on the owner thread, never inside worker notification/hooks.
+    // Quiesce the external producer before destroying the session.
     void finish();
+    // Cooperative request only; does not join. Safe from analysis notifications.
+    // Owner must later call cancel()/finish() or destroy the quiesced session.
+    void request_cancel() noexcept;
+    // Capture/recording continue; resume may skip stale analysis with an explicit gap.
+    // Only supported with SkipAhead. finish() resumes analysis before draining.
+    void pause_analysis(bool paused);
     void cancel() noexcept;
 
     EventBatch poll_events(std::size_t maximum = std::numeric_limits<std::size_t>::max());
+    // Complete snapshot taken under the same publication lock as the drained events.
+    // resync_snapshot is populated even without overflow; resync_required retains its meaning.
+    EventBatch poll_events_with_snapshot();
     std::vector<LiveNote> snapshot() const;
     LiveMetrics metrics() const;
     LiveState state() const noexcept;
@@ -257,6 +330,7 @@ public:
     const LiveOptions& options() const noexcept;
 
 private:
+    EventBatch poll_events_impl(std::size_t maximum, bool include_snapshot);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

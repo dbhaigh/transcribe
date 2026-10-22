@@ -97,9 +97,10 @@ struct ScoreTabNote {
 struct ScoreInstrument {
     std::string name;
     int written_transposition_semitones{};
-    // MIDI open-string pitches, ordered from the highest string to the lowest.
+    // MIDI open-string pitches in string-number order (may be reentrant).
     std::vector<int> tuning{64, 59, 55, 50, 45, 40};
     int capo_fret{};
+    std::optional<int> physical_fret_count;
 };
 
 struct ScoreDocument {
@@ -242,6 +243,8 @@ ScoreInterpretation to_score_interpretation(const ScoreDocument& document);
 std::vector<Note> score_notes(const ScoreDocument& document);
 double score_position_seconds(const ScoreDocument& document, double quarter_position);
 double score_position_quarters(const ScoreDocument& document, double seconds);
+double recording_sample_seconds(std::uint64_t frame, std::uint32_t sample_rate);
+std::uint64_t recording_sample_position(double seconds, std::uint32_t sample_rate);
 void validate_score_document(const ScoreDocument& document);
 std::string serialize_score_document(const ScoreDocument& document);
 ScoreDocument deserialize_score_document(std::string_view json);

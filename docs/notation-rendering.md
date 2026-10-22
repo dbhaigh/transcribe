@@ -2,12 +2,13 @@
 
 ## Existing path and constraints
 
-The current WebView2 staff is drawn in [`ui/editor.js`](../ui/editor.js) on a
-fixed-height canvas. It maps recording seconds linearly across one treble staff,
-derives a rough natural-note position from MIDI pitch, and draws a sharp sign
-for chromatic pitches. It does not consume the score's written spelling,
-rhythmic values, measures, meter, key, voices, ties, rests, or tuplets. The
-tablature canvas is a separate timeline view.
+The custom WebView2 staff in [`ui/editor.js`](../ui/editor.js) is an interactive
+recording-time sketch, not a page engraver. It consumes available spelling,
+rhythm, voice, tie and rest metadata, but its linear time spacing cannot provide
+reliable collision avoidance, aligned multi-voice engraving, or system/page
+layout. Extending that canvas into a professional engraver would duplicate an
+established layout engine. It remains useful for provisional notes and draft
+editing, and is explicitly labelled a timing sketch.
 
 The C++ [`ScoreDocument`](../include/transcribe/score.hpp) is the accepted
 musical model; [`ScoreEditor`](../src/score.cpp) applies revision-checked
@@ -73,6 +74,52 @@ selection synchronize with the editor by stable note ID. Unsaved browser edits
 remain a draft; they do not replace the accepted engraving or score revision.
 Pagination and system breaks are renderer output, not new score events.
 
+The Page selector provides A4, US Letter, and compact portrait layouts. Verovio
+owns staff geometry, SMuFL clefs/noteheads/flags/rests, key/time signatures,
+ledger lines, dots, accidentals, tie curves, collision avoidance, horizontal
+spacing, systems, and pages. These choices affect only the view: MusicXML
+exports remain layout-independent and keep the existing two-part contract.
+Notation and tab use the same measure/voice durations. Score metadata already
+supports sounding versus written pitch, tuning, and capo; for conventional
+octave-transposing guitar notation, specify an instrument written transposition
+of +12 semitones. The exporter writes the corresponding -12 sounding
+transposition without changing tablature or audio pitch. Concert-pitch notation
+remains the default.
+
+Only the latest pending accepted revision/layout is retained while the worker
+is busy. Unchanged page SVGs retain their DOM; distant pages are unmounted.
+Selecting or following a note on an unmounted page mounts it by canonical ID
+before scrolling. SVG coordinates never enter score transactions. Draft edits
+remain explicitly distinct from the last accepted engraving.
+
+## MusicXML interoperability changes
+
+The canonical exporter now supplies:
+
+- Meter-aware beams (including secondary beams/hooks), conventional compound
+  grouping, and explicit opposing stems for multiple voices.
+- Start/stop boundaries for supported 3:2, 5:4, and 7:4 tuplets. Partial groups
+  also carry boundaries so importers do not discard their timing ratio.
+- Symbolic decomposition of irregular rest spans where representable, with
+  exact tick totals; no new sounding events or timing quantization.
+- Correct `double-sharp` and `flat-flat` accidental names, alongside existing
+  key-aware repeated-accidental cancellation and bar resets.
+- An explicit final barline.
+
+Independent import showed that Verovio collapses unequal-duration same-voice
+chord members to one written duration. Rather than silently publishing a
+misleading engraving, export rejects those chords with an actionable
+independent-voices error. Normal interpretation already separates unequal
+releases into voices; the rejection concerns contradictory supplied/edited
+score data. Invalid beat-group totals are likewise rejected before output
+creation. Public export overloads and the score schema are unchanged.
+
+Durations without a symbolic type remain exact in MusicXML, but a renderer
+may approximate their written rhythm. The workstation reports that warning,
+and explicitly reports unresolved tab positions that Verovio cannot engrave.
+Renderer diagnostics are visible in the status and tooltip instead of being
+treated as proof of correct notation.
+
 ## Optional build and deployment
 
 The default CMake configuration remains unchanged. To enable the renderer,
@@ -122,6 +169,61 @@ for visual review. `tests/notation_fixtures_smoke.py` checks their structure
 and renderer wiring; pixel-based screenshot baselines are not automated yet
 because the repository does not pin a WebView2 runtime/graphics environment.
 These fixtures do not imply full MusicXML conformance.
+
+## Reproducible semantic and independent-import tests
+
+Build the existing test configuration, then run:
+
+```powershell
+cmake --build build-evaluation-quality --target transcriber-notation transcriber-tests
+ctest --test-dir build-evaluation-quality -R "interpretation_semantics|fingering_export_semantics|ui_workflow_browser" --output-on-failure
+python tests\notation_browser.py `
+  --runner build-evaluation-quality\transcriber-notation.exe `
+  --verovio-dist "C:\path\to\node_modules\verovio\dist"
+```
+
+The optional browser command requires the pinned local package and an installed
+Chromium browser (`TRANSCRIBE_BROWSER` can select it); it downloads nothing.
+Without a browser it returns skip code 77. CMake registers the same check as
+`notation_interoperability_browser` when both tests and Verovio are enabled.
+
+The standard-library semantic checker reconstructs events across ties and
+checks pitch, onset, duration, voices, rests, meter, keys, tuplets, beams, and
+canonical JSON round-trip exports, separately from layout. The browser test
+then sends generated MusicXML through the independent Verovio importer and
+checks its MEI representation, sounding MIDI pitches, tie endpoints, repeat
+directions, string/fret assignments, and SVG note IDs. It also runs the real
+workstation scripts for paginated selection, rapid layout changes, and draft
+separation. This tests an independent notation engine, **not** an editable
+MusicXML importer into `ScoreDocument`: arbitrary MusicXML project import is
+not implemented, and no unsupported features are silently converted to score
+data.
+
+Verified on Windows/Edge with Verovio 6.3.0 for this change:
+
+- 415 C++ assertions in 45 targeted score/interpretation/fingering/MusicXML cases.
+- The interpretation-semantic, fingering-export, and browser-workflow CTest
+  checks passed.
+- Independent import: 22 generated/reference MusicXML files, 709 pitched
+  fragments checked, and 24 SVG pages rendered, including a 256-note paginated
+  passage. The numeric pitch check uses Verovio's written MIDI value plus its
+  retained staff transposition; tab checks retain string/fret rather than
+  pretending MEI tab notes carry ordinary written pitches.
+- The strict WebView2/ONNX/ASIO/Verovio GUI build and UI fixture/asset checks
+  passed. Node syntax-only checking was skipped because Node was unavailable;
+  the actual scripts executed in Edge.
+
+These checks do not establish pixel-perfect collision freedom for every score.
+No MuseScore, Dorico, Finale,
+or LilyPond application import was available to run; no cross-application
+conformance claim is made.
+
+Remaining scope limits: chord diagrams/chord-symbol inference, repeat/ending
+editing and playback in the canonical model, nested or mixed-value tuplet
+editing, arbitrary clef changes, cross-staff beaming, and user-controlled
+engraving breaks are not added here. Forward/backward repeat import is checked
+using the hand-authored renderer fixture only. Optional Verovio is required for
+polished pages, not for transcription, score editing, or MusicXML export.
 
 The surrounding WebView2 workstation controls, supported operations, and
 current integration limits are documented in

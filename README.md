@@ -1,6 +1,6 @@
 # Transcriber
 
-Transcriber 0.1.5 is a C++20 audio-to-score CLI with an optional Windows
+Transcriber 0.1.6 is a C++20 audio-to-score CLI with an optional Windows
 WebView2 workstation as its sole graphical interface. It combines first-pass
 transcription with editable notation/tab, canonical score projects, evidence
 review, and reproducible build/package checks while retaining the
@@ -11,6 +11,14 @@ This release is an early transcription aid, not a commercial-grade
 polyphonic automatic music transcription (AMT) system. The fast built-in YIN
 tracker is monophonic; the optional spectral path can identify simple
 polyphony, and both work best on clear recordings.
+
+Version 0.1.6 adds the evidence-oriented release workflow: deterministic,
+per-fixture synthetic regression gates; separated cold, warmup, and warm
+performance measurements; host/provider metadata; and machine-readable plus
+readable release reports. The reports keep synthetic regressions distinct
+from licensed real-recording evidence, document missing qualification, and
+include manual acceptance for the workstation's recording, notation, tab,
+editing, playback, and export flows.
 
 ## Architecture
 
@@ -34,6 +42,12 @@ The default CLI and core library use only the C++ standard library. Optional
 integrations are configured explicitly and are not needed for WAV
 transcription. No native Win32 GUI is built; the WebView2 workstation is the
 only graphical frontend and is enabled explicitly for Windows builds.
+
+Long model-backed WAV files can opt into `--bounded-inference` with an explicit
+`--backend`, or select **Bounded neural windows** in the workstation. This uses
+overlapping offline windows, not stateful or full-buffer-equivalent neural
+streaming. See [streaming contracts, memory limits, cancellation and measured
+tradeoffs](docs/streaming.md) before enabling it.
 
 ## Build
 
@@ -60,6 +74,10 @@ include `linux-ffmpeg-release` and `linux-sanitizer`. See
 [the release checklist](docs/release-checklist.md) for dependencies and the
 complete preset list.
 
+See [Reliability and troubleshooting](docs/reliability.md) for strict CLI/config
+validation, Unicode paths, safe per-file exports, sanitizer/static-analysis
+commands, package checks and remaining release-qualification limits.
+
 To build and run the test suite (Catch2 is fetched by CMake):
 
 ```powershell
@@ -71,25 +89,54 @@ ctest --test-dir build-tests -C Release --output-on-failure
 For deterministic synthetic quality/performance baselines, compiler-identified
 JSON/text reports, event-versus-frame metrics, comparison gates, and the
 licensed real-audio workflow, see [Evaluation](docs/evaluation.md).
+For release regression thresholds, cold/warm measurement protocol,
+provenance/leakage requirements, manual acceptance and JSON/Markdown release
+reports, see [Release evidence](docs/release-evidence.md).
 The [opt-in temporal decoder](docs/decoding.md) preserves raw evidence and adds
 sample-referenced canonical events without changing existing CLI/GUI outputs.
 The [versioned model interface](docs/model-inference.md) provides model
 discovery, explicit contracts/providers, owned sessions and optional
 `--backend <registry-id>` CLI selection.
+The [neural event strategy](docs/neural-strategy.md) adds opt-in measured
+Basic Pitch speed/quality modes, pinned model acquisition and validation-only
+event confidence calibration while retaining the dependency-light default.
+
+The [pluggable engine layer](docs/engines.md) composes those adapters with
+capability-aware selection, a common lifecycle and provenance, and an optional
+incremental interface. It distinguishes true live YIN from overlapping neural
+windows and includes a compiled reference plugin.
+The [polyphonic adapter evaluation](docs/polyphonic.md) documents frame-by-pitch
+activations, opt-in aligned Basic Pitch onset/contour heads, and experimental
+harmonic competition, including measured real-guitar regressions.
 The synthetic evaluation needs no model or dataset download and is registered
 with CTest when tests and Python are available.
 Measured DSP optimizations and the cold/warm CPU/memory benchmark workflow are
 documented in [Performance](docs/performance.md).
+The optional [mixed-recording instrument-isolation workflow](docs/instrument-isolation.md)
+accepts reviewed, sample-aligned guitar/bass/piano/voice stems without adding
+dependencies to the default build. The WebView UI supports mixture/stem
+audition before transcription; missing-source fallback is explicit. A separate
+local-only waveform-ONNX worker and paired evaluation report both gains and
+artifact-induced regressions. No separator weights are bundled or downloaded,
+and no real-recording separation benefit is claimed from synthetic oracle tests.
 The opt-in [incremental live pipeline](docs/live.md) (`--live-pipeline`) emits
-provisional, stabilized, corrected and retracted note events with stable IDs,
+provisional, stabilized, corrected, retracted and finalized note revisions with stable IDs,
 bounded queues and separate latency metrics, plus a refinement proposal that
-never overwrites manual edits.
+never overwrites manual edits. Sequenced sample-timestamped input is shared by
+ASIO and bounded progressive WAV decoding. Only YIN is truly sample-incremental;
+spectral/neural fallbacks explicitly rerun overlapping context. Configurable
+latency targets report misses without silently changing pitch accuracy.
 The separate [musical interpretation layer](docs/interpretation.md) preserves
 measured event times while producing ranked tempo, meter, key, rhythm and
 notation hypotheses for MusicXML and GUI score export.
 The separate [guitar fingering solver](docs/guitar-fingering.md) ranks
 playability-aware sequence assignments and preserves manual corrections
 without changing sounding pitch.
+It now checks held-note stretch and conservative finger/barre feasibility,
+with configurable C++ search budgets and ergonomic costs. Suggestions expose
+pruning and unresolved assignments rather than claiming the performed fingering.
+See [Editing and playback](docs/editing-playback.md) for shared timeline mappings,
+transactional editing/history, proposal protection and playback limitations.
 The [canonical score model](docs/score-model.md) is the versioned source of
 truth for accepted notation, tablature, MIDI exports, and transactional edits.
 The [evidence-based review workflow](docs/review.md) preserves raw detector
@@ -98,13 +145,20 @@ user-confirmed correction suggestions. The current workflow does not present
 uncalibrated detector values as probabilities.
 The local [project workflow](docs/projects.md) saves that accepted score,
 analysis settings, audio references, export status, and correction history in a
-versioned project file with autosave recovery.
+versioned project file with autosave recovery. Version 2 adds integrity checks,
+annotations, preserved fingering alternatives and rhythm settings, explicit
+**Save with audio** portable-directory copies, and **Locate audio** relocation.
+Undo stacks reset on reopening; accepted edits and revision audit records remain.
 The optional [Verovio engraving view](docs/notation-rendering.md) renders that
 accepted score as interactive, zoomable notation in the WebView2 workstation
 while preserving the editable canvas.
 The optional [WebView2 workstation](docs/workstation-ui.md) connects file and
 ASIO capture, score editing, playback, interpretation settings, and explicit
 score-proposal acceptance to the existing application backend.
+Its [interaction guide](docs/workstation-ui.md#first-recording) covers guided
+setup, contextual help, keyboard editing, shared timeline navigation and unsaved
+project state. The [usability audit](docs/workstation-usability.md) records the
+source findings, responsiveness checks and Windows validation scope.
 
 ## CLI
 
@@ -112,6 +166,7 @@ score-proposal acceptance to the existing application backend.
 transcriber <input> [options]
 transcriber --asio <seconds> [options]
 transcriber --batch <directory> [options]
+transcriber --batch-manifest <csv> [options]
 ```
 
 Examples:
@@ -123,9 +178,14 @@ Examples:
 .\build\Release\transcriber.exe take.wav --fast-preview --benchmark
 .\build\Release\transcriber.exe take.wav --quality fast --tempo 96 --key-fifths 2 --mode minor --meter 6/8
 .\build\Release\transcriber.exe --batch .\recordings --output-dir .\scores --quiet
+.\build\Release\transcriber.exe --batch-manifest .\jobs.csv --output-dir .\scores --concurrency 2 --resume
 .\build\Release\transcriber.exe --asio 8 --musicxml live.musicxml --tab live.txt
 .\build\Release\transcriber.exe --live 8 --benchmark
 ```
+
+See [batch processing and integrations](docs/batch-processing.md) for the
+versioned CSV manifest, structured results, JSONL progress events, resumability,
+memory-admission limits, exit codes, and an external-process example.
 
 Run `transcriber --help` for all options. Batch mode writes outputs into the
 selected output directory (or a `transcriber-output` subdirectory) and supports
@@ -150,19 +210,39 @@ positions, and writes pickup measures, rests, chord groupings, barline ties,
 tempo changes and supported rhythmic spellings. Use `--tempo`, `--meter`,
 `--key-fifths`, `--mode`, `--pickup`, and `--written-transposition` to constrain
 interpretation; `--preserve-expressive-timing` annotates onset residuals.
+Use `--quantization evidence` for confidence-gated passage rhythm inference,
+or `--quantization expressive` to preserve measured timing. Optional
+`--quantization-strength <0..1>` blends toward a grid; the default remains
+legacy quantization. WebView advanced settings expose the same controls.
 Uncertain key or meter signatures are not silently asserted in MusicXML.
 See [Musical interpretation](docs/interpretation.md) for the current limits and
 API.
 
+Canonical MusicXML includes meter-aware beams, tuplet boundaries, double
+accidentals and final barlines. Optional offline Verovio 6.3.0
+(LGPL-3.0-or-later) supplies polished, paginated A4/Letter engraving; the custom
+canvas remains a timing/editing sketch. It is not required for CLI export.
+See [notation layout and independent-import tests](docs/notation-rendering.md)
+for commands, licensing, supported conventions and explicit limitations.
+
 The ASCII tablature and MusicXML fingering use the same sequence-level
 playable-position solver. Select `--tuning standard|drop-d|dadgad|open-d|open-g`,
 set `--capo 0..24`, and request up to five ranked sequence alternatives with
-`--tab-alternatives 1..5`. The GUI shows per-note alternatives and preserves
+`--tab-alternatives 1..5`. For 1-12 independent strings, use
+`--string-tuning 64,59,55,50,45,40,35` (string 1 first); reentrant and duplicate
+pitches are supported. `--fret-count` sets the physical neck limit and
+`--guitar-min-midi`/`--guitar-max-midi` constrain suggestions without discarding
+detected pitches. The GUI shows per-note and whole-phrase alternatives and preserves
 manual string/fret corrections across later analysis. Fingering edits preserve
 the sounding pitch; changing pitch remains a separate explicit edit. These
 positions are playability suggestions, not identification of the original
 performance's exact string/fret choices. See [Guitar fingering](docs/guitar-fingering.md)
 for cost definitions, ambiguity, unknown assignments, and correction matching.
+Optional isolated-contour analysis distinguishes vibrato-like modulation and
+continuous pitch rises/falls, with separate pitch, technique and fingering
+uncertainty. It does not identify a bend versus slide, hammer-on, pull-off,
+harmonic or original string from pitch alone. Real-recording technique/string
+accuracy is not established by the deterministic fixtures.
 
 ## Performance and fast preview
 
@@ -290,6 +370,12 @@ versioned in [python/README.md](python/README.md). A compatible Spotify Basic
 Pitch ONNX model is bundled at `python/models/basic_pitch.onnx`; with ONNX
 enabled, use `--model python/models/basic_pitch.onnx --polyphonic` for
 polyphonic inference.
+Generic ONNX models additionally require an explicit
+`--model-objective independent-multi-pitch` declaration; many pitch values do
+not establish a multi-label training objective. The bundled Basic Pitch adapter
+already declares its known objective. Add `--polyphonic-decoder competing`
+to opt into aligned Basic Pitch heads or experimental model-free harmonic
+competition; see the [quality tradeoffs](docs/polyphonic.md) before enabling it.
 
 CUDA, DirectML, and ROCm provider selection can be enabled with the matching
 ONNX Runtime GPU distribution. CUDA and ROCm provider option types come from

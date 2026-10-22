@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(transcriber VERSION 0.1.5 LANGUAGES CXX)
+project(transcriber VERSION 0.1.6 LANGUAGES CXX)
 
 option(TRANSCRIBE_ENABLE_ASIO "Build real-time capture using RtAudio's ASIO backend" OFF)
 option(TRANSCRIBE_ENABLE_ONNX "Build ONNX Runtime model inference support" OFF)
@@ -32,6 +32,17 @@ if(TRANSCRIBE_ENABLE_SANITIZERS)
     if(MSVC OR NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
         message(FATAL_ERROR
             "TRANSCRIBE_ENABLE_SANITIZERS requires a GCC- or Clang-compatible compiler.")
+    endif()
+    include(CheckCXXSourceCompiles)
+    include(CMakePushCheckState)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=address,undefined")
+    check_cxx_source_compiles("int main() { return 0; }" TRANSCRIBE_SANITIZER_RUNTIME_AVAILABLE)
+    cmake_pop_check_state()
+    if(NOT TRANSCRIBE_SANITIZER_RUNTIME_AVAILABLE)
+        message(FATAL_ERROR
+            "AddressSanitizer/UndefinedBehaviorSanitizer cannot link with this toolchain. "
+            "Install its sanitizer runtimes or use the supported linux-sanitizer preset.")
     endif()
 endif()
 
@@ -117,6 +128,7 @@ add_library(transcriber_core STATIC
     src/transcriber.cpp
     src/decoding.cpp
     src/inference.cpp
+    src/engine.cpp
     src/interpretation.cpp
     src/score.cpp
     src/project.cpp
@@ -126,13 +138,20 @@ add_library(transcriber_core STATIC
     src/live_document.cpp
     src/musicxml.cpp
     src/guitar_tab.cpp
+    src/guitar_analysis.cpp
+    src/preprocessing.cpp
 )
 
 target_include_directories(transcriber_core PUBLIC include)
+target_sources(transcriber_core PRIVATE src/polyphonic.cpp)
+target_sources(transcriber_core PRIVATE src/inference_stream.cpp)
 target_compile_features(transcriber_core PUBLIC cxx_std_20)
 
 add_executable(transcriber src/main.cpp)
 target_link_libraries(transcriber PRIVATE transcriber_core)
+if(WIN32)
+    target_link_libraries(transcriber PRIVATE shell32)
+endif()
 target_compile_definitions(transcriber PRIVATE
     TRANSCRIBE_VERSION="${PROJECT_VERSION}")
 
@@ -140,7 +159,11 @@ if(WIN32 AND TRANSCRIBE_ENABLE_WEBVIEW2)
     add_library(transcriber_gui_backend STATIC src/gui_transcription.cpp)
     target_link_libraries(transcriber_gui_backend PUBLIC transcriber_core)
     target_compile_features(transcriber_gui_backend PUBLIC cxx_std_20)
+    transcriber_apply_warnings(transcriber_gui_backend)
+    transcriber_apply_sanitizers(transcriber_gui_backend)
+endif()
 
+if(WIN32 AND TRANSCRIBE_ENABLE_WEBVIEW2)
     set(TRANSCRIBE_WEBVIEW2_SDK_ROOT "" CACHE PATH
         "Root of an extracted Microsoft.Web.WebView2 NuGet package")
     set(TRANSCRIBE_WEBVIEW2_BOOTSTRAPPER_PATH "" CACHE FILEPATH
@@ -209,6 +232,7 @@ if(WIN32 AND TRANSCRIBE_ENABLE_WEBVIEW2)
     set_property(SOURCE src/gui_webview.cpp APPEND PROPERTY OBJECT_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html"
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/styles.css"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ui/timeline.js"
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/workspace.js"
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/app.js"
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/editor.js"
@@ -229,7 +253,7 @@ if(WIN32 AND TRANSCRIBE_ENABLE_WEBVIEW2)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/ui" "$<TARGET_FILE_DIR:transcriber-gui>/ui")
     if(TRANSCRIBE_ENABLE_VEROVIO)
-        target_compile_definitions(transcriber_gui_backend PRIVATE
+        target_compile_definitions(transcriber_gui_backend PUBLIC
             TRANSCRIBE_ENABLE_VEROVIO=1)
         target_compile_definitions(transcriber-gui PRIVATE
             TRANSCRIBE_ENABLE_VEROVIO=1)
@@ -273,9 +297,7 @@ transcriber_apply_warnings(transcriber)
 transcriber_apply_sanitizers(transcriber_core)
 transcriber_apply_sanitizers(transcriber)
 if(WIN32 AND TRANSCRIBE_ENABLE_WEBVIEW2)
-    transcriber_apply_warnings(transcriber_gui_backend)
     transcriber_apply_warnings(transcriber-gui)
-    transcriber_apply_sanitizers(transcriber_gui_backend)
     transcriber_apply_sanitizers(transcriber-gui)
 endif()
 
@@ -388,11 +410,15 @@ if(TRANSCRIBE_BUILD_TESTS)
         tests/transcribe_tests.cpp
         tests/decoding_tests.cpp
         tests/inference_tests.cpp
+        tests/engine_tests.cpp
+        tests/polyphonic_tests.cpp
         tests/live_tests.cpp
         tests/interpretation_tests.cpp)
     target_sources(transcriber-tests PRIVATE
         tests/fingering_tests.cpp tests/score_tests.cpp tests/review_tests.cpp
         tests/project_tests.cpp)
+    target_sources(transcriber-tests PRIVATE tests/preprocessing_tests.cpp)
+    target_sources(transcriber-tests PRIVATE tests/asio_tests.cpp)
     target_link_libraries(transcriber-tests PRIVATE transcriber_core Catch2::Catch2WithMain)
     target_compile_features(transcriber-tests PRIVATE cxx_std_20)
     if(TRANSCRIBE_ENABLE_ONNX)
@@ -403,16 +429,22 @@ if(TRANSCRIBE_BUILD_TESTS)
             TRANSCRIBE_BASIC_PITCH_MODEL_PATH="${BASIC_PITCH_MODEL_PATH}")
     endif()
     add_executable(transcriber-evaluate tests/evaluation_runner.cpp)
+    add_executable(transcriber-engine-example examples/engine_plugin.cpp)
+    target_link_libraries(transcriber-engine-example PRIVATE transcriber_core)
+    add_test(NAME engine_plugin_example COMMAND transcriber-engine-example)
     target_link_libraries(transcriber-evaluate PRIVATE transcriber_core)
     add_executable(transcriber-performance tests/performance_runner.cpp)
     add_executable(transcriber-live tests/live_runner.cpp)
+    add_executable(transcriber-notation tests/notation_runner.cpp)
+    target_link_libraries(transcriber-notation PRIVATE transcriber_core)
     target_link_libraries(transcriber-live PRIVATE transcriber_core)
     target_link_libraries(transcriber-performance PRIVATE transcriber_core)
     if(WIN32)
+        target_link_libraries(transcriber-evaluate PRIVATE psapi)
         target_link_libraries(transcriber-performance PRIVATE psapi)
     endif()
     foreach(target transcriber-tests transcriber-evaluate
-                   transcriber-performance transcriber-live)
+                   transcriber-performance transcriber-live transcriber-notation transcriber-engine-example)
         transcriber_apply_warnings(${target})
         transcriber_apply_sanitizers(${target})
     endforeach()
@@ -421,6 +453,29 @@ if(TRANSCRIBE_BUILD_TESTS)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME interpretation_semantics
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/interpretation_semantics.py"
+                "$<TARGET_FILE:transcriber-notation>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/interpretation/passages.json"
+                --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/notation-semantics.json"
+                --output-markdown "${CMAKE_CURRENT_BINARY_DIR}/evaluation/notation-semantics.md")
+        set_tests_properties(interpretation_semantics PROPERTIES LABELS "notation" TIMEOUT 60)
+        if(TRANSCRIBE_ENABLE_VEROVIO)
+            add_test(NAME notation_interoperability_browser
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/notation_browser.py"
+                    --verovio-dist "${TRANSCRIBE_VEROVIO_DIST_DIR}"
+                    --runner "$<TARGET_FILE:transcriber-notation>")
+            set_tests_properties(notation_interoperability_browser PROPERTIES
+                LABELS "notation;ui;optional" TIMEOUT 120 SKIP_RETURN_CODE 77)
+        endif()
+        add_test(NAME fingering_export_semantics
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/fingering_exports.py"
+                "$<TARGET_FILE:transcriber-notation>")
+        set_tests_properties(fingering_export_semantics PROPERTIES LABELS "notation;fingering" TIMEOUT 60)
+        add_test(NAME ui_workflow_browser
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_workflow_browser.py")
+        set_tests_properties(ui_workflow_browser PROPERTIES
+            LABELS "ui" TIMEOUT 90 SKIP_RETURN_CODE 77)
         add_test(NAME dependency_manifest_smoke
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/dependency_audit.py"
@@ -451,9 +506,50 @@ if(TRANSCRIBE_BUILD_TESTS)
                 --mode realtime --repetitions 1 --warmups 0
                 --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-realtime.json"
                 --output-text "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-realtime.txt")
+        add_test(NAME synthetic_release_gate_yin
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/quality_release_gate.py"
+                --candidate "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-yin.json"
+                --baseline "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluation/synthetic-v1-windows-clang23-yin-streaming.json"
+                --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/release-gates/yin.json"
+                --output-markdown "${CMAKE_CURRENT_BINARY_DIR}/evaluation/release-gates/yin.md")
+        add_test(NAME synthetic_release_gate_spectral
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/quality_release_gate.py"
+                --candidate "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-spectral.json"
+                --baseline "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluation/synthetic-v1-windows-clang23-spectral-full.json"
+                --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/release-gates/spectral.json"
+                --output-markdown "${CMAKE_CURRENT_BINARY_DIR}/evaluation/release-gates/spectral.md")
+        add_test(NAME synthetic_release_gate_realtime
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/quality_release_gate.py"
+                --candidate "${CMAKE_CURRENT_BINARY_DIR}/evaluation/synthetic-realtime.json"
+                --baseline "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluation/synthetic-v1-windows-clang23-yin-realtime.json"
+                --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/release-gates/realtime.json"
+                --output-markdown "${CMAKE_CURRENT_BINARY_DIR}/evaluation/release-gates/realtime.md")
+        add_test(NAME synthetic_quality_suite
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
+                --runner "$<TARGET_FILE:transcriber-evaluate>"
+                --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                --backend all --mode full --corpus-version 2
+                --repetitions 1 --warmups 0
+                --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/quality-suite.json"
+                --output-markdown "${CMAKE_CURRENT_BINARY_DIR}/evaluation/quality-suite.md")
+        add_test(NAME synthetic_polyphonic_suite
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
+                --runner "$<TARGET_FILE:transcriber-evaluate>"
+                --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                --backend all --mode full --temporal --corpus-version 3
+                --polyphonic-decoder competing --repetitions 1 --warmups 0
+                --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/polyphonic-suite.json"
+                --output-markdown "${CMAKE_CURRENT_BINARY_DIR}/evaluation/polyphonic-suite.md")
         set_tests_properties(evaluation_framework synthetic_evaluation
-            synthetic_evaluation_spectral synthetic_evaluation_realtime PROPERTIES
+            synthetic_evaluation_spectral synthetic_evaluation_realtime
+            synthetic_quality_suite synthetic_polyphonic_suite PROPERTIES
             LABELS "evaluation" TIMEOUT 180)
+        set_tests_properties(synthetic_release_gate_yin PROPERTIES
+            DEPENDS synthetic_evaluation LABELS "evaluation;release-gate" TIMEOUT 60)
+        set_tests_properties(synthetic_release_gate_spectral PROPERTIES
+            DEPENDS synthetic_evaluation_spectral LABELS "evaluation;release-gate" TIMEOUT 60)
+        set_tests_properties(synthetic_release_gate_realtime PROPERTIES
+            DEPENDS synthetic_evaluation_realtime LABELS "evaluation;release-gate" TIMEOUT 60)
         foreach(backend yin spectral)
             add_test(NAME model_interface_evaluation_${backend}
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
@@ -511,6 +607,22 @@ if(TRANSCRIBE_BUILD_TESTS)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_export_smoke.py"
                 "$<TARGET_FILE:transcriber>"
                 "${CMAKE_CURRENT_SOURCE_DIR}/samples/single_a4.wav")
+        add_test(NAME batch_cli_validation
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/batch_cli_tests.py"
+                "$<TARGET_FILE:transcriber>")
+        set_tests_properties(batch_cli_validation PROPERTIES LABELS "cli;batch" TIMEOUT 300)
+        add_test(NAME separation_contracts
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/separation_tests.py")
+        set_tests_properties(separation_contracts PROPERTIES LABELS "evaluation;preprocessing" TIMEOUT 120)
+        add_test(NAME mixed_instrument_evaluation
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/evaluate.py"
+                --runner "$<TARGET_FILE:transcriber-evaluate>"
+                --build-info "${CMAKE_CURRENT_BINARY_DIR}/evaluation-build-$<CONFIG>.json"
+                --corpus mixed --backend all --mode full --repetitions 1 --warmups 0
+                --output-json "${CMAKE_CURRENT_BINARY_DIR}/evaluation/mixed-instruments.json"
+                --output-markdown "${CMAKE_CURRENT_BINARY_DIR}/evaluation/mixed-instruments.md")
+        set_tests_properties(mixed_instrument_evaluation PROPERTIES LABELS "evaluation;preprocessing" TIMEOUT 180)
         add_test(NAME ui_asset_smoke
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_smoke.py"
@@ -537,6 +649,9 @@ install(FILES
     README.md
     docs/dependency-licenses.md
     docs/release-checklist.md
+    docs/reliability.md
+    docs/engines.md
+    docs/neural-strategy.md
     DESTINATION share/doc/transcriber)
 install(DIRECTORY samples/ DESTINATION share/transcriber/samples
     FILES_MATCHING PATTERN "*.wav" PATTERN "*.expected.txt" PATTERN "README.md")
@@ -567,6 +682,7 @@ if(TRANSCRIBE_ENABLE_ONNX)
     install(FILES
         python/models/basic_pitch.onnx
         python/models/LICENSE-basic-pitch.txt
+        python/models/basic_pitch.provenance.json
         DESTINATION share/transcriber/models)
 
     if(WIN32)

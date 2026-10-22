@@ -30,9 +30,9 @@ def _value(name, dimensions, element_type=1):
 
 
 def write_model(path, *, inputs=(1, None), classes=69, output_type=1,
-                input_type=1, nonfinite=False, output_name="pitch"):
+                input_type=1, nonfinite=False, output_name="pitch", frames=20,
+                additional_heads=()):
     """Encode ModelProto/GraphProto/TensorProto using their standard protobuf field IDs."""
-    frames = 20
     values = [0.0] * (frames * classes)
     for frame in range(frames):
         values[frame * classes + min(41, classes - 1)] = float("nan") if nonfinite else .9
@@ -43,5 +43,14 @@ def write_model(path, *, inputs=(1, None), classes=69, output_type=1,
     graph += _message(5, tensor)
     graph += _message(11, _value("waveform", inputs, input_type))
     graph += _message(12, _value(output_name, (1, frames, classes), output_type))
+    for name, head_frames, head_classes, head_type in additional_heads:
+        dims = (1, head_frames, head_classes)
+        data = [0.0] * (head_frames * head_classes)
+        head = b"".join(_integer(1, dim) for dim in dims)
+        head += _integer(2, head_type) + _message(8, name)
+        head += _message(9, struct.pack(
+            "<" + ("d" if head_type == 11 else "f") * len(data), *data))
+        graph += _message(5, head)
+        graph += _message(12, _value(name, dims, head_type))
     model = _integer(1, 8) + _message(7, graph) + _message(8, _integer(2, 13))
     path.write_bytes(model)

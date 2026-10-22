@@ -15,6 +15,7 @@ class UiParser(HTMLParser):
     def handle_starttag(self, tag, attributes):
         values = dict(attributes)
         if "id" in values:
+            require(values["id"] not in self.ids, f"Duplicate UI element ID: {values['id']}")
             self.ids.add(values["id"])
         if tag == "script" and values.get("src"):
             self.assets.append(values["src"])
@@ -32,11 +33,25 @@ def main():
 
     required_ids = {
         "workspace",
+        "journey-guide",
+        "journey-next",
+        "activity-panel",
+        "activity-heading",
+        "activity-detail",
+        "help-dialog",
+        "help-button",
+        "save-state",
+        "phase-progress",
+        "timeline-scroll",
+        "detected-duration",
         "project-title",
         "new-project",
         "open-project",
         "save-project",
         "save-score-copy",
+        "save-portable-project",
+        "relink-project-audio",
+        "project-annotation",
         "project-summary-button",
         "project-summary-dialog",
         "project-summary-details",
@@ -120,6 +135,7 @@ def main():
         ui_directory / "editor.js",
         ui_directory / "notation.js",
         ui_directory / "notation-worker.js",
+        ui_directory / "timeline.js",
     ]
     for source in javascript:
         text = source.read_text(encoding="utf-8")
@@ -131,6 +147,13 @@ def main():
     app = javascript[1].read_text(encoding="utf-8")
     editor = javascript[2].read_text(encoding="utf-8")
     webview_backend = (ui_directory.parent / "src" / "gui_webview.cpp").read_text(encoding="utf-8")
+    for control in ("quantization-mode", "quantization-strength", "rhythm-evidence"):
+        require(control in parser.ids, f"Missing rhythm interpretation control: {control}")
+    require('quantization: $("quantization-mode").value' in app and
+            'quantization_strength: $("quantization-strength").value' in app and
+            'minimum_rhythm_evidence: $("rhythm-evidence").value' in app and
+            "parse_quantization_mode(quantization)" in webview_backend,
+            "Rhythm interpretation controls must reach validated native request options")
     transcription_backend = (ui_directory.parent / "src" / "gui_transcription.cpp").read_text(encoding="utf-8")
     review_backend = (ui_directory.parent / "src" / "review.cpp").read_text(encoding="utf-8")
     require("transcribe:notes" in app and "transcribe:notes" in editor,
@@ -214,9 +237,25 @@ def main():
             'note.id = source_id' not in webview_backend and
             'fingerings.find(live_id)' in webview_backend,
             "Live score notes must keep distinct canonical IDs and retain source-event identity")
-    require("setBusy(busy, preserveScore = false, liveCapture = false)" in app and
+    require("setBusy(busy, preserveScore = false, liveCapture = false, cancellable = false)" in app and
             "captureActive = Boolean(busy && liveCapture)" in app,
             "Offline worker operations are incorrectly exposed as active capture")
+    require("(!cancellable && !captureActive)" in app and
+            'captureActive ? "Stop capture" : "Cancel analysis"' in app and
+            'setBusy(true, hasAcceptedScore, mode === "asio", true)' in app,
+            "File-analysis cancellation is missing or exposed for non-cancellable export jobs")
+    require('id="bounded-inference"' in html_path.read_text(encoding="utf-8") and
+            "bounded_inference:" in app and
+            "request.bounded_inference" in webview_backend,
+            "Bounded neural windows are not wired through the interface")
+    require("completion->job != state->active_transcription_job" in webview_backend and
+            "post_coalesced(state, message_progress" in webview_backend and
+            "state.pending_audio_preview" in webview_backend,
+            "Transcription updates lack stale-job protection or bounded preview queues")
+    require("latest.metrics.overloaded" in app and '"OVERLOAD"' in app and
+            "ui_dispatch_delay_ms" in app and "analysis_queue" in webview_backend and
+            "publication_queue" in webview_backend and "confirmation" in webview_backend,
+            "Live overload or separated queue/stabilization/UI diagnostics are not exposed")
     require("unsupported operation" in
             (ui_directory.parent / "src" / "gui_webview.cpp").read_text(encoding="utf-8"),
             "WebView2 bridge does not reject unknown commands")

@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace transcribe {
@@ -16,6 +17,10 @@ struct MeterConstraint {
     // Group sizes are in denominator units. Empty uses conventional grouping.
     std::vector<int> grouping;
 };
+
+enum class QuantizationMode { Legacy, EvidenceAware, Expressive };
+
+QuantizationMode parse_quantization_mode(std::string_view value);
 
 struct InterpretationOptions {
     std::optional<double> tempo_bpm;
@@ -34,6 +39,11 @@ struct InterpretationOptions {
     std::size_t maximum_hypotheses{6};
     bool detect_tempo_changes{true};
     bool infer_local_keys{true};
+    QuantizationMode quantization_mode{QuantizationMode::Legacy};
+    // 0 preserves measured timing; 1 applies the selected grid fully.
+    double quantization_strength{1.0};
+    // Heuristic support, not a calibrated probability. Used by EvidenceAware.
+    double minimum_rhythm_evidence{0.65};
 };
 
 struct TempoSegment {
@@ -77,6 +87,15 @@ struct RhythmValue {
     double fit_error_quarters{};
     bool symbolic{};
 };
+
+struct PitchSpelling {
+    std::string step;
+    int alter{};
+    int octave{};
+    bool accidental{};
+};
+
+PitchSpelling spell_written_pitch(int midi, int key_fifths);
 
 struct InterpretedNote {
     std::size_t source_event_index{};

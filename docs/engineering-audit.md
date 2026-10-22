@@ -1,6 +1,390 @@
 # Engineering audit
 
-## 1. Scope, baseline, and interpretation
+## Current audit: 0.1.5 baseline
+
+Audit date: 2026-10-21. Source baseline: `1528f91` (Transcriber 0.1.5).
+The worktree was clean before this documentation update. No application
+implementation was modified. This current audit supersedes the historical
+0.1.4 findings preserved below.
+
+This is a source-level engineering and correctness audit, not a security
+penetration test, a hardware qualification, or a claim of commercial-grade
+automatic music transcription. Severity ranks user impact and remediation
+priority. Evidence labels distinguish **Reproduced** behavior,
+**Source-confirmed** behavior not exercised at runtime, **Risk** paths
+supported by source but not reproduced, and **Design gap** items that are
+limitations or assurance/documentation gaps rather than established defects.
+
+### Execution paths and subsystem boundaries
+
+| Surface | Current execution path and boundary |
+|---|---|
+| WAV input | The CLI uses `transcribe_wav_streaming` for ordinary WAV requests; it calls bounded `read_wav_blocks` and processes overlapping chunks. The library `read_wav` adapter instead accumulates those blocks into a full `AudioBuffer`. See [audio_file.cpp](../src/audio_file.cpp#L99) and [transcriber.cpp](../src/transcriber.cpp#L1977). |
+| Compressed audio | With `TRANSCRIBE_ENABLE_FFMPEG`, `read_audio` dispatches non-WAV input to `read_audio_ffmpeg`, which decodes/resamples to a full mono `AudioBuffer` at 44.1 kHz. FFmpeg is an optional development-library dependency, not merely a command-line executable. See [ffmpeg_audio.cpp](../src/ffmpeg_audio.cpp#L69) and [README optional integrations](../README.md#L315). |
+| YIN / spectral DSP | `transcribe_monophonic` preprocesses audio, detects onsets, resamples to the analysis rate, then uses multi-resolution YIN or the STFT/harmonic-salience pitch tracker. WAV streaming applies that analysis per chunk and merges notes onto the source-time axis. See [transcriber.cpp](../src/transcriber.cpp#L1855) and [StreamingOptions processing](../src/transcriber.cpp#L1977). |
+| ONNX inference | The path-based compatibility API loads/reuses an `Ort::Session`. Basic Pitch is recognized by its fixed waveform input dimensions, resampled to 22.05 kHz and run in overlapping fixed windows; stitched frame probabilities and decoded notes are retained across the recording. The generic legacy contract resamples to 16 kHz and submits one full waveform tensor. The separate versioned [ModelBackend interface](../src/inference.cpp) makes model contracts and ownership more explicit. See [transcriber.cpp](../src/transcriber.cpp#L687) and [ONNX dispatch](../src/transcriber.cpp#L2164). |
+| ASIO acquisition | The legacy `capture_asio` path has an RtAudio callback feeding separate recording and analysis SPSC rings; a worker runs realtime YIN and the caller receives the recording. `capture_asio_live` instead pushes timestamped blocks into `LiveTranscriptionSession`, which owns bounded input/event queues, ingest and analysis workers, gap reporting and optional refinement. See [asio_capture.cpp](../src/asio_capture.cpp#L35), [live capture](../src/asio_capture.cpp#L68), and [live pipeline contract](live.md#architecture). |
+| Note events and time | Detectors produce `Note` vectors with measured seconds. `decoding.cpp` can turn aligned frame evidence into sample-referenced canonical events; the score/editor model preserves measured timing separately from musical positions. WAV chunk merging adds each chunk's source-frame offset; the live API expresses event times as recording frames divided by sample rate. These timestamp differences are intentional (analysis/event latency is distinct from onset time). See [decoding.cpp](../src/decoding.cpp#L128), [live.md](live.md#frames-and-timestamps), and [score-model.md](score-model.md#time-and-pitch). |
+| Musical interpretation | CLI and shared GUI backend pass note results to `interpret_notes`, which ranks tempo, meter, key and rhythmic hypotheses; `make_score_document` selects a hypothesis and constructs the canonical editable score. The older public `Note`-vector MusicXML API still uses `infer_score_metadata`. See [interpretation.cpp](../src/interpretation.cpp#L967), [main.cpp](../src/main.cpp#L1109), and [score.cpp](../src/score.cpp#L1582). |
+| Exports and projects | CLI writes MusicXML, guitar tablature, MIDI and JSON; optional score-project JSON serializes the canonical score. GUI exports accepted edits through the same score writers. MusicXML and tab use score fingering assignments; MIDI and JSON retain their own time/event representations. See [main.cpp](../src/main.cpp#L1115), [musicxml.cpp](../src/musicxml.cpp#L1049), [guitar_tab.cpp](../src/guitar_tab.cpp), and [score.cpp](../src/score.cpp#L1913). |
+| GUI and UI state | There is one graphical variant in this revision: the Windows WebView2 host, shared transcription backend, and local `ui/` assets. The host owns worker/score state and communicates over WebView messages; `app.js` and `editor.js` render and edit the accepted score. There is no native `src/gui.cpp` target in the current CMake project. See [CMakeLists.txt](../CMakeLists.txt#L139), [gui_webview.cpp](../src/gui_webview.cpp), [gui_transcription.cpp](../src/gui_transcription.cpp), and [ui/](../ui/). |
+
+The central boundaries are therefore audio decoding/acquisition → DSP or
+model inference → note/event construction → musical interpretation → canonical
+score editing → exporters, with GUI state as a separate presentation and
+editing layer. The opt-in canonical event/live/review features add provenance
+and revisioning without making every older `Note`-vector API sample-based.
+
+### Build-time and optional dependencies
+
+CMake 3.20+ and a C++20 compiler are required. The default WAV/YIN core uses
+the C++ standard library without FFmpeg, ONNX, Python, or WebView2. Tests are
+opt-in and fetch Catch2 3.7.1 through CMake FetchContent; when Python is
+available, CMake registers the integration/evaluation tests. Optional
+features add RtAudio plus a Windows ASIO driver, FFmpeg development libraries
+through pkg-config, ONNX Runtime and provider-specific SDK/runtime files, or
+the WebView2 SDK/runtime. Verovio assets are separately optional. These
+requirements are documented across [README build/integrations](../README.md#build),
+[release checklist](release-checklist.md), and the named feature guides.
+
+### Build and test baseline
+
+The documented commands were run from the repository root:
+
+```powershell
+cmake -S . -B build
+cmake --build build --config Release
+
+cmake -S . -B build-tests -DTRANSCRIBE_BUILD_TESTS=ON
+cmake --build build-tests --config Release
+ctest --test-dir build-tests -C Release --output-on-failure
+```
+
+Both configurations configured and built successfully. CTest registered 129
+tests: **128 passed, 1 skipped, 0 failed** (exit code 0). The skipped case was
+`real_audio_smoke`; no real-recording/device test was thereby passed.
+
+Configuration caveat: this machine used the `MinGW Makefiles` single-config
+generator for both build trees. `build/CMakeCache.txt` has an empty
+`CMAKE_BUILD_TYPE`, so `--config Release` does not turn that standard build
+into an optimized Release build. `build-tests/CMakeCache.txt` has
+`CMAKE_BUILD_TYPE=Release`, so the test build did use Release. The standard
+build succeeded, but must not be reported as a Release performance baseline.
+The optional ASIO, ONNX, FFmpeg and WebView2 builds were not enabled here;
+no physical ASIO device, interactive WebView2 session, GPU provider, or
+FFmpeg error-injection test was run.
+
+### Existing coverage and measured results
+
+The C++ Catch2 suite is split across transcription, decoding, inference,
+live capture/session, interpretation, fingering, score, review and project
+tests. Python CTest integrations cover dependency-manifest checks, evaluation
+metrics, synthetic full/spectral/realtime evaluation, model-interface/live
+evaluation, CLI exports, UI assets and notation fixtures. The current suite
+also exercises chunk-boundary/held-note behavior, score transactions,
+serialization, timing constraints and generated synthetic cases. It does not
+exercise real hardware or a full interactive GUI lifecycle.
+
+The following measurements are from the synthetic reports emitted by this
+CTest run, using 16 clips / 41.41 seconds of generated audio, one run per clip
+and no warmup. They are a reproducible local baseline, not a multi-run
+benchmark or a generalization claim:
+
+| CTest mode | Strict note-event F1 (TP/FP/FN) | 10 ms frame F1 | Chord-note recall | Mean analysis / corpus RTF |
+|---|---:|---:|---:|---:|
+| Full YIN | 48.15% (13/17/11) | 78.33% | 20% (1/5) | 16.39 ms / 0.00633 |
+| Full spectral | 26.67% (16/80/8) | 81.01% | 100% (5/5) | 13.00 ms / 0.00530 |
+| Realtime YIN | 69.57% (16/6/8) | 80.65% | 20% (1/5) | 3.11 ms / 0.00149 |
+
+The small corpus makes the substantial synthetic spectral false-positive
+count visible; synthetic scores should not be extrapolated to recordings.
+The README's GuitarSet v1.1.0 figures (Basic Pitch 14.58% strict
+note-event F1 / 72.97% frame F1) are historical stored results, not rerun in
+this audit. Likewise, the older before/after DSP timings in
+[performance.md](performance.md) are not this run's benchmark. Dataset
+identity, metric definitions and known GuitarSet overlap limitations are
+described in [evaluation.md](evaluation.md) and [python/README.md](../python/README.md).
+
+### Current findings
+
+#### C01 — Legacy ASIO exception teardown can race callback-state lifetime
+
+- **Severity / evidence:** High impact, **Risk**; not reproduced on hardware.
+- **Source:** [capture_asio](../src/asio_capture.cpp#L223) constructs `RtAudio`
+  before stack-owned `CaptureState`, starts the callback, and explicitly stops
+  and closes the stream only on the normal path. User callbacks and preview
+  allocations execute while capture is active and can throw. During unwinding,
+  the later-declared state is destroyed before the earlier-declared RtAudio
+  object has completed teardown, while the callback still holds its pointer.
+- **Reproduction:** ASIO-enabled build with a throwing progress/audio-update
+  callback while the stream is active; run under ASan or a lifetime-focused
+  stress harness. Not run here because ASIO was disabled.
+- **Remediation:** Use an exception-safe stream guard that stops/closes and
+  joins callbacks before callback state is destroyed; test callback exceptions
+  and cancellation.
+
+#### C02 — Batch output names collide for same-stem inputs
+
+- **Severity / evidence:** High conditional data-loss impact,
+  **Source-confirmed**; FFmpeg batch not built here.
+- **Source:** [process_batch](../src/main.cpp#L1229) constructs every
+  destination from `file.stem()` and writes fixed `.musicxml`, `.tab.txt`,
+  `.mid`, `.json` and `.score.json` names. With FFmpeg enabled, both WAV and
+  compressed formats are accepted, so `take.wav` and `take.flac` target the
+  same output paths. The later successful file can silently replace the
+  earlier file's results.
+- **Reproduction:** In an FFmpeg-enabled build, batch a directory containing
+  two supported, successfully decodable files with the same stem but different
+  extensions; inspect the shared output names.
+- **Remediation:** Preflight output collisions and assign deterministic unique
+  names (or reject ambiguous batches) before processing starts. Add a
+  same-stem batch test. Keep the current continue-after-per-file-failure
+  behavior for non-colliding inputs.
+
+#### C03 — CLI/config numeric parsing accepts partial and non-finite values
+
+- **Severity / evidence:** Medium, **Reproduced** for partial numeric tokens;
+  NaN-to-size risk is source-confirmed but not exercised through ASIO.
+- **Source:** `apply_config` and `parse_options` in
+  [main.cpp](../src/main.cpp#L217) use `stoi`/`stod`/`stoul` without checking
+  full-string consumption consistently. `capture_asio` validates only
+  `seconds <= 0` and `seconds > 300` before converting duration to
+  `size_t`; NaN satisfies neither comparison. The WebView request parser has
+  stricter finite/full-consumption checks, so validation differs by surface.
+- **Reproduction:** `transcriber tone.wav --tempo 96junk ...` completed
+  successfully; separate `--help` probes accepted `--device-id 1.5` and
+  `--asio nan`. ASIO itself was disabled here, so the conversion path was not
+  run.
+- **Remediation:** Centralize strict integer/finite-number parsing for CLI and
+  config input; validate again at public capture entry before any conversion.
+  Reject trailing characters, NaN/infinities, and fractional integers with
+  option-specific errors.
+
+#### C04 — Linear downsampling aliases out-of-band energy into valid pitches
+
+- **Severity / evidence:** Medium accuracy defect, **Reproduced**.
+- **Source:** [resample_linear](../src/transcriber.cpp#L201) interpolates but
+  does not low-pass before the YIN analysis-rate downsample at
+  [transcribe_monophonic](../src/transcriber.cpp#L1855).
+- **Reproduction:** A 2-second 44.1 kHz, 10,585 Hz mono PCM sine, above the
+  11.025 kHz analysis Nyquist frequency, was transcribed by the default CLI
+  as MIDI 69 (A4). The source contains no 440 Hz fundamental; it aliases
+  into the supported pitch range during downsampling.
+- **Remediation:** Use a documented anti-alias low-pass/polyphase resampler
+  (or an equivalent band-limited method) for decimation, and add
+  above-Nyquist rejection plus in-band pitch/timing fixtures.
+
+#### C05 — YIN lag search contradicts its advertised low MIDI bound
+
+- **Severity / evidence:** Medium pitch-accuracy defect, **Reproduced**.
+- **Source:** `yin_with_workspace` caps `max_lag` at `sample_rate / 65`
+  ([transcriber.cpp](../src/transcriber.cpp#L72)) but later permits MIDI
+  28–96. At the 11.025 kHz analysis rate, the search cannot represent
+  fundamentals below approximately 65 Hz (near MIDI 36); the lower MIDI
+  guard is not evidence of detector support.
+- **Reproduction:** A sustained 58.2705 Hz tone (MIDI 34) produced MIDI 36;
+  a 32.7032 Hz tone produced no stable pitches. A 65.4064 Hz control
+  produced MIDI 36.
+- **Remediation:** Make supported pitch limits consistent with lag/window
+  sizes and documentation. Extend the offline search only with adequate
+  windows and octave-error tests; do not claim MIDI 28 for YIN until
+  boundary fixtures pass.
+
+#### C06 — Several full-buffer routes have no duration/resource budget
+
+- **Severity / evidence:** Medium resource-exhaustion risk,
+  **Source-confirmed**, not stress-tested with extreme files.
+- **Source:** `read_audio`/`read_audio_ffmpeg` and generic ONNX hold complete
+  audio buffers ([audio_file.cpp](../src/audio_file.cpp#L99),
+  [ffmpeg_audio.cpp](../src/ffmpeg_audio.cpp#L69),
+  [transcriber.cpp](../src/transcriber.cpp#L2200)). Spectral analysis
+  materializes `frame_count * bin_count` doubles and pitch-frame collections;
+  ONNX Basic Pitch retains stitched per-frame probabilities. The spectrogram
+  cache's 64 MiB retention threshold does not bound the temporary computed
+  spectrogram or the other duration-dependent allocations.
+- **Reproduction:** Run long compressed-audio, generic-ONNX or full spectral
+  inputs while measuring peak memory; there is no configured maximum duration
+  or preflight memory budget in these paths.
+- **Remediation:** Add checked resource estimates and clear maximum/budget
+  behavior first. Where the model contract permits, process bounded windows
+  while preserving overlap/timestamps; do not arbitrarily chunk generic
+  models that require full context.
+
+#### C07 — GUI stop requests do not cancel file decoding or offline analysis
+
+- **Severity / evidence:** Medium liveness issue, **Source-confirmed**;
+  interactive lifecycle not run here.
+- **Source:** [run_transcription](../src/gui_transcription.cpp#L309) checks
+  the stop token at entry and passes it to ASIO capture, but does not pass it
+  to `transcribe_wav_streaming`, `read_audio` or offline `transcribe_*`
+  analysis. The WebView close path requests stop and joins the worker
+  ([gui_webview.cpp](../src/gui_webview.cpp#L4539)); file work can therefore
+  continue until completion before close resolves.
+- **Reproduction:** Request close during a long WAV or offline model analysis
+  and observe that the stop token is not observed inside the active file/DSP
+  path. No WebView GUI was run in this environment.
+- **Remediation:** Thread cancellation through bounded decode/chunk/DSP/model
+  stages and check it between units of work. Add close-during-decode,
+  analysis, export and ASIO tests with a declared response bound.
+
+#### C08 — Path-based ONNX session cache cannot observe model replacement
+
+- **Severity / evidence:** Medium stale-model risk, **Source-confirmed**;
+  ONNX was disabled here.
+- **Source:** [load_onnx_session](../src/transcriber.cpp#L687) keys a static
+  process-lifetime map by normalized path, provider and device only. It does
+  not include file identity/content or provide invalidation/eviction.
+  Replacing a model at the same path in a long-lived process can therefore
+  reuse the old loaded session; loading many paths retains sessions until
+  process exit. This finding is scoped to the path-based compatibility API,
+  not every explicit `ModelBackend` instance.
+- **Reproduction:** In an ONNX-enabled process, infer with model A, replace
+  the file at the same path with compatible model B, and infer again through
+  the path-based wrapper; compare the output/session identity.
+- **Remediation:** Define reload semantics explicitly; use a versioned file
+  identity or explicit cache invalidation and bounded ownership. Add a
+  same-path replacement regression test.
+
+#### C09 — FFmpeg resampler flush can convert errors into successful EOF
+
+- **Severity / evidence:** Medium error-reporting defect,
+  **Source-confirmed**, not exercised with FFmpeg enabled.
+- **Source:** The regular decode loop checks negative `swr_convert` results,
+  but the flush loop in [ffmpeg_audio.cpp](../src/ffmpeg_audio.cpp#L190)
+  breaks on `converted_samples <= 0`, treating a negative conversion error
+  as ordinary drain completion.
+- **Reproduction:** Inject a negative `swr_convert` result during flush in an
+  FFmpeg-enabled test build; current code exits the loop and can return
+  already-decoded samples as success.
+- **Remediation:** Break only on zero; route negative values through
+  `throw_ffmpeg_error`. Test both normal drain and injected flush failure.
+
+#### C10 — Legacy vector-based MusicXML can label a one-tick duration incorrectly
+
+- **Severity / evidence:** Medium public-API export defect,
+  **Source-confirmed**. The normal CLI now exports the canonical score path;
+  this finding applies to the legacy `std::vector<Note>` overload.
+- **Source:** [rhythm_values](../src/musicxml.cpp#L70) maps one tick to
+  `"256th"`, while [ticks_for_time](../src/musicxml.cpp#L106) and the legacy
+  writer use 48 divisions per quarter ([write_musicxml(notes)](../src/musicxml.cpp#L518)).
+  One tick is 1/48 of a quarter, not the 1/64 quarter represented by a
+  256th note; no tuplet ratio is attached to that table entry.
+- **Reproduction:** Call the public vector overload with a 120 BPM score and
+  a 0.01-second note: the timing grid rounds the duration to one tick, whose
+  emitted note type does not equal the XML duration. The separate
+  `ScoreDocument` export path should be tested independently and is not
+  asserted to share this exact defect.
+- **Remediation:** Make duration/divisions/type/dots/tuplet arithmetic agree
+  exactly, or reject/round to a representable lattice with a declared timing
+  tolerance. Add semantic XML tests, not only well-formedness checks.
+
+#### C11 — Legacy ASIO path ignores driver status and stream-operation results
+
+- **Severity / evidence:** Medium capture-diagnostics/data-integrity gap,
+  **Source-confirmed**; no device test.
+- **Source:** The legacy [capture_callback](../src/asio_capture.cpp#L35)
+  does not use `RtAudioStreamStatus`; its ring-overflow flag only covers the
+  application's own rings. The legacy `capture_asio` call sites ignore
+  `openStream`, `startStream` and `stopStream` results
+  ([asio_capture.cpp](../src/asio_capture.cpp#L256)). In contrast, the
+  newer live-ASIO path checks open/start errors and records driver overflow.
+- **Reproduction:** Hardware or a test double that reports
+  `RTAUDIO_INPUT_OVERFLOW` or fails a legacy open/start operation; currently
+  no driver-overflow diagnostic is surfaced by that path.
+- **Remediation:** Propagate driver overflow as a gap/error and check all
+  RtAudio results. Preserve the newer live path's explicit status handling;
+  add a fake-driver test before hardware qualification.
+
+#### C12 — Compatibility and documentation paths still describe different architectures
+
+- **Severity / evidence:** Low design/documentation gap,
+  **Source-confirmed**; not a correctness failure by itself.
+- **Source:** New CLI/GUI score paths use `interpret_notes` and the canonical
+  `ScoreDocument`, while the legacy vector MusicXML overload calls the older
+  `infer_score_metadata` ([transcriber.cpp](../src/transcriber.cpp#L1592),
+  [interpretation.cpp](../src/interpretation.cpp#L967),
+  [musicxml.cpp](../src/musicxml.cpp#L518)). This preserves compatibility
+  but leaves two metadata/notation routes that can evolve differently.
+  Separately, the opening of [live.md](live.md#L5) says “both GUIs,” while
+  the current [README](../README.md#L35) and CMake target list describe only
+  the WebView2 workstation.
+- **Reproduction:** Compare the legacy vector writer's metadata path with the
+  CLI's canonical score path; inspect the cited `live.md` and README
+  statements against the current CMake GUI targets.
+- **Remediation:** Keep legacy APIs stable, but route shared inference through
+  a single implementation where behavior permits. Correct the stale GUI
+  wording and document deliberate compatibility differences.
+
+#### C13 — Documented standard build does not select Release with a single-config generator
+
+- **Severity / evidence:** Low build-reproducibility gap,
+  **Reproduced** in the documented configuration.
+- **Source:** The standard commands in [README build instructions](../README.md#build)
+  configure without `CMAKE_BUILD_TYPE`, then pass `--config Release` at build
+  time. The local generator is `MinGW Makefiles`, which is single-config, and
+  its `CMAKE_BUILD_TYPE` remains empty; `--config Release` is ignored by this
+  generator. The separately documented Release test configuration did set
+  `CMAKE_BUILD_TYPE=Release`.
+- **Reproduction:** Run the documented standard commands with a single-config
+  Makefile generator and inspect `CMakeCache.txt`; the standard build here
+  succeeded but did not build Release.
+- **Remediation:** Document/configure `CMAKE_BUILD_TYPE=Release` for
+  single-config Release builds and retain `--config Release` for
+  multi-config generators; prefer the existing Release presets for measured
+  performance results.
+
+### Prioritized implementation plan
+
+1. **Correctness baselines first:** add regression fixtures for anti-alias
+   rejection, YIN lower/upper register behavior, and legacy MusicXML duration
+   semantics. Fix those defects without changing public interfaces; compare
+   note events and timestamps against the current synthetic baseline.
+2. **Input and capture safety:** introduce strict shared numeric parsing,
+   reject non-finite/out-of-range values before conversions, and make legacy
+   ASIO teardown exception-safe with explicit driver/open/start/stop handling.
+   Validate with fake-driver/callback-exception tests before physical devices.
+3. **Prevent destructive batch outcomes:** preflight same-stem output
+   collisions and add deterministic batch tests; then stage outputs or report
+   exact partial completion for multi-file exports.
+4. **Bound work and honor cancellation:** establish documented per-mode
+   resource budgets, add early estimates for full-buffer routes, then add
+   cooperative cancellation at decode/chunk/DSP/inference boundaries.
+5. **Harden optional model/decoder paths:** define ONNX cache invalidation and
+   reload behavior; distinguish FFmpeg flush EOF from errors and test injected
+   failures in the optional build.
+6. **Make build measurements comparable:** set Release at configure time for
+   single-config generators and record the effective build configuration.
+7. **Reduce compatibility drift:** consolidate shared metadata/notation
+   policy only after comparison fixtures show legacy output changes are
+   understood; align GUI/live documentation and expand lifecycle/export
+   coverage. Do not perform a broad refactor as part of this audit.
+
+### Findings deliberately not promoted to defects
+
+- No race was established in the documented single-producer/single-consumer
+  ring usage. The live API explicitly documents the SPSC contract; concurrent
+  multiple-producer use is not promised.
+- WAV chunk offsets are explicitly added to note/evidence times, canonical
+  events retain sample positions, and live events use frame/sample-rate
+  timestamps. No inconsistent timestamp defect was reproduced in the paths
+  audited; event detection latency is intentionally distinct from onset time.
+- Basic Pitch fixed input/output dimensions and the generic ONNX contract are
+  validated in source. Shape-based Basic Pitch dispatch in the compatibility
+  API remains a fragile assumption, but no invalid tensor access was found.
+- Heuristic confidence, approximate musical interpretation, the limited
+  synthetic corpus and the lack of physical-device verification are disclosed
+  limitations, not hidden failures. The optional model/provider and
+  compressed-audio paths need their own enabled-build validation.
+
+## Archived audit (0.1.4 baseline; retained for history)
+
+The following sections and F01–F29 anchors are preserved from the audit dated
+2026-10-20 at commit `0561397`. They are historical evidence only; do not
+interpret their severity, reproduction status or inventory as a current
+0.1.5 finding. The current source-verified findings and test results above
+take precedence. The roadmap's historical finding links continue to resolve.
+
+## 1. Historical scope, baseline, and interpretation
 
 Audit date: 2026-10-20. Source baseline:
 `0561397b3705aeb8763726ea4b73fd83b4012aac` (Transcriber 0.1.4).

@@ -111,6 +111,32 @@ confidence intervals or universal speedups; raw observations are retained in
 local JSON reports. A second optimized run also produced identical outputs,
 but is not substituted for the final measurements.
 
+## Release measurement schema
+
+The performance runner now records a distinct first inference before any
+warmup, then excludes the configured warmup calls from its `runs` array.
+`performance.py --warmups N --repetitions M` therefore produces one
+`cold_run`, N discarded warmups, and M reported warm samples. It also measures
+the whole subprocess wall time and runner startup separately; runner startup
+includes decode and model/session initialization, while model-load time is
+reported independently when available.
+
+Schema-v2 reports contain warm p50/p95/p99, CPU/wall time, RTF, audio-seconds
+per second, peak resident memory, first-window time, build/compiler/features,
+model hash, provider/runtime, CPU identity and best-effort GPU inventory.
+Quantiles are linearly interpolated. A p95/p99 based on fewer than 100 warm
+samples is explicitly descriptive and must not be described as statistically
+stable. RSS is process-lifetime high-water memory, including warmups.
+
+When comparing reports, matching hardware and build configuration are
+recorded explicitly. Timing deltas with a hardware or build mismatch remain
+observations, not speedup claims. Shared CI does not gate wall-clock timings;
+the historical results above use the earlier protocol and must not be
+compared with schema-v2 reports as though measurement order were identical.
+The clean-checkout command, release report, deterministic per-fixture gates,
+data-provenance policy and manual acceptance record are documented in
+[Release evidence](release-evidence.md).
+
 ## Results
 
 Each backend processed **244.130 seconds** of audio once in the cold total.
@@ -307,3 +333,9 @@ fixtures, reports session loading separately, and checks exact legacy outputs.
 It contains no private recording. These are descriptive interface measurements,
 not a rerun or replacement of the before/after optimization experiment above.
 No GPU execution provider was available for that experiment.
+
+## Bounded long-recording pipeline
+
+See [streaming contracts, limits and reproducible measurements](streaming.md)
+for the opt-in WAV/Basic Pitch file pipeline, repeated-result cache, cancellation,
+two-hour protocol and explicit non-streaming backend limitations.

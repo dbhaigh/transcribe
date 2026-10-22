@@ -1,4 +1,7 @@
 #include "transcribe/transcriber.hpp"
+#include "transcribe/path.hpp"
+#include "transcribe/polyphonic.hpp"
+#include "transcribe/decoding.hpp"
 #include "onnx_backend.hpp"
 
 #include <algorithm>
@@ -159,8 +162,8 @@ PitchEstimate yin_with_workspace(std::span<const float> samples, std::uint32_t s
         }
     }
     const double frequency = sample_rate / refined_lag;
-    const int midi_pitch =
-        static_cast<int>(std::lround(69.0 + 12.0 * std::log2(frequency / 440.0)));
+    const double fractional_midi = 69.0 + 12.0 * std::log2(frequency / 440.0);
+    const int midi_pitch = static_cast<int>(std::lround(fractional_midi));
     if (midi_pitch < 28 || midi_pitch > 96) {
         return {};
     }
@@ -168,7 +171,7 @@ PitchEstimate yin_with_workspace(std::span<const float> samples, std::uint32_t s
     const double confidence = clamp_probability(1.0 - best_value);
     const double voicing_probability =
         clamp_probability((threshold + 0.12 - best_value) / 0.12);
-    return {midi_pitch, confidence, voicing_probability};
+    return {midi_pitch, confidence, voicing_probability, fractional_midi};
 }
 
 PitchEstimate multi_resolution_yin(std::span<const float> samples,
@@ -433,6 +436,11 @@ std::vector<Note> transcribe_spectral_polyphonic(
         maximum_pitch = 84;
         maximum_pitches = std::min<std::size_t>(maximum_pitches, 2);
         break;
+    case InstrumentPrior::Bass:
+        minimum_pitch = 28;
+        maximum_pitch = 72;
+        maximum_pitches = std::min<std::size_t>(maximum_pitches, 4);
+        break;
     case InstrumentPrior::None:
         break;
     }
@@ -462,6 +470,10 @@ std::vector<Note> transcribe_spectral_polyphonic(
         }
     }
     std::array<double, pitch_count> salience{};
+    std::optional<HarmonicCompetition> competition;
+    if (options.spectral_decoder == SpectralDecoder::HarmonicCompetition) {
+        competition.emplace(sample_rate, window_size, minimum_pitch, maximum_pitch);
+    }
     std::vector<double> peak_fractions;
     std::array<std::vector<double>, pitch_count> raw_salience;
     if (options.evidence_callback) peak_fractions.reserve(frame_count);
@@ -517,6 +529,14 @@ std::vector<Note> transcribe_spectral_polyphonic(
             }
         }
 
+        if (options.spectral_decoder == SpectralDecoder::HarmonicCompetition &&
+            maximum_spectrum > 1e-9) {
+            const auto activity = competition->activations(
+                std::span<const double>(magnitudes, spectrogram->bin_count));
+            salience.fill(0);
+            std::copy(activity.begin(), activity.end(),
+                      salience.begin() + minimum_pitch - first_pitch);
+        }
         const double strongest = *std::max_element(salience.begin(), salience.end());
         if (options.evidence_callback) {
             for (std::size_t pitch = 0; pitch < pitch_count; ++pitch) {
@@ -534,7 +554,8 @@ std::vector<Note> transcribe_spectral_polyphonic(
                                          ? 0.0
                                          : salience[pitch_index + 1];
                 if (value >= strongest * options.spectral_threshold &&
-                    value >= left && value >= right && value > 0.0) {
+                    (options.spectral_decoder == SpectralDecoder::HarmonicCompetition ||
+                     (value >= left && value >= right)) && value > 0.0) {
                     candidates.emplace_back(pitch_index, value / strongest);
                 }
             }
@@ -555,7 +576,7 @@ std::vector<Note> transcribe_spectral_polyphonic(
             const double confidence = voiced ? selected->second : 0.0;
             pitch_frames[pitch].push_back(
                 {voiced ? static_cast<int>(pitch + first_pitch) : -1, time,
-                 confidence, confidence});
+                 confidence, confidence, 0.0, std::nullopt});
         }
     }
 
@@ -564,9 +585,11 @@ std::vector<Note> transcribe_spectral_polyphonic(
         auto& frames = pitch_frames[pitch];
         if (options.evidence_callback) {
             options.evidence_callback({frames, static_cast<double>(window_size) / sample_rate,
-                static_cast<double>(hop_size) / sample_rate, "spectral", "normalized-salience",
+                static_cast<double>(hop_size) / sample_rate, "spectral",
+                options.spectral_decoder == SpectralDecoder::HarmonicCompetition ?
+                    "normalized-harmonic-fit" : "normalized-salience",
                 peak_fractions, raw_salience[pitch], static_cast<int>(pitch + first_pitch),
-                EvidenceSemantics::RelativeActivation, EvidenceSemantics::RawActivation});
+                EvidenceSemantics::RelativeActivation, EvidenceSemantics::RawActivation, {}, {}, {}});
         }
         auto detected = notes_from_frames(frames, duration_seconds, onsets,
                                           options.minimum_confidence);
@@ -675,7 +698,7 @@ std::shared_ptr<Ort::Session> create_onnx_session(
     const std::filesystem::path& path, OnnxExecutionProvider provider, int device_id) {
     if (device_id < 0) throw std::invalid_argument("ONNX device ID must be nonnegative");
     if (!std::filesystem::is_regular_file(path)) {
-        throw std::invalid_argument("ONNX model file does not exist: " + path.string());
+        throw std::invalid_argument("ONNX model file does not exist: " + path_utf8(path));
     }
     Ort::SessionOptions options;
     options.SetIntraOpNumThreads(1);
@@ -689,16 +712,29 @@ std::shared_ptr<Ort::Session> load_onnx_session(
     int device_id) {
     static std::mutex cache_mutex;
     static std::unordered_map<std::wstring, std::shared_ptr<Ort::Session>> cache;
-    auto key = path.lexically_normal().wstring();
+    auto key = std::filesystem::absolute(path).lexically_normal().wstring();
     key += L"\n" + std::to_wstring(static_cast<int>(provider)) + L"\n" +
            std::to_wstring(device_id);
-    std::lock_guard lock(cache_mutex);
-    const auto existing = cache.find(key);
-    if (existing != cache.end()) {
-        return existing->second;
+    key += L"\n" + std::to_wstring(std::filesystem::file_size(path)) + L"\n" +
+        std::to_wstring(static_cast<std::int64_t>(
+            std::filesystem::last_write_time(path).time_since_epoch().count()));
+    {
+        std::lock_guard lock(cache_mutex);
+        const auto existing = cache.find(key);
+        if (existing != cache.end()) return existing->second;
     }
     auto session = create_onnx_session(path, provider, device_id);
-    cache.emplace(key, session);
+    std::shared_ptr<Ort::Session> retired;
+    {
+        std::lock_guard lock(cache_mutex);
+        const auto existing = cache.find(key);
+        if (existing != cache.end()) return existing->second;
+        if (cache.size() >= 2) {
+            retired = std::move(cache.begin()->second);
+            cache.erase(cache.begin());
+        }
+        cache.emplace(key, session);
+    }
     return session;
 }
 
@@ -726,16 +762,27 @@ void validate_onnx_contract(Ort::Session& session, ModelContract contract) {
     bool supported_output = false;
     for (std::size_t i = 0; i < session.GetOutputCount(); ++i) {
         const auto name = session.GetOutputNameAllocated(i, allocator);
-        if (basic && std::string_view(name.get()) != "StatefulPartitionedCall:1") continue;
+        const std::string_view output_name(name.get());
+        if (basic && output_name != "StatefulPartitionedCall:1" &&
+            output_name != "StatefulPartitionedCall:2" &&
+            output_name != "StatefulPartitionedCall:0") continue;
         const auto type = session.GetOutputTypeInfo(i);
         if (type.GetONNXType() != ONNX_TYPE_TENSOR) continue;
         const auto tensor = type.GetTensorTypeAndShapeInfo();
         const auto dims = tensor.GetShape();
         const bool matches = tensor.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT &&
             dims.size() == 3 && (dims[0] == 1 || dims[0] == -1) &&
-            (basic ? (dims[1] == 172 && dims[2] == 88) :
+            (basic ? (dims[1] == 172 &&
+                       dims[2] == (output_name == "StatefulPartitionedCall:0" ? 264 : 88)) :
                      ((dims[1] > 0 || dims[1] == -1) && (dims[2] == 69 || dims[2] == 70)));
-        if (matches && (basic || i < 2)) supported_output = true;
+        if (basic && !matches) {
+            throw std::invalid_argument("BasicPitchV1 incompatible head '" + std::string(output_name) +
+                "': expected float32 [1,172," +
+                (output_name == "StatefulPartitionedCall:0" ? "264]" : "88]"));
+        }
+        if (matches && (basic ? output_name == "StatefulPartitionedCall:1" : i < 2)) {
+            supported_output = true;
+        }
     }
     if (!supported_output) {
         throw std::invalid_argument(basic ?
@@ -863,11 +910,19 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
     owned_output_names.reserve(output_count);
     output_names.reserve(output_count);
     std::size_t note_output_index = output_count;
+    std::size_t onset_output_index = output_count;
+    std::size_t contour_output_index = output_count;
     for (std::size_t i = 0; i < output_count; ++i) {
         owned_output_names.emplace_back(session.GetOutputNameAllocated(i, allocator));
         output_names.push_back(owned_output_names.back().get());
         if (std::string_view(output_names.back()) == "StatefulPartitionedCall:1") {
             note_output_index = i;
+        }
+        if (std::string_view(output_names.back()) == "StatefulPartitionedCall:2") {
+            onset_output_index = i;
+        }
+        if (std::string_view(output_names.back()) == "StatefulPartitionedCall:0") {
+            contour_output_index = i;
         }
     }
     if (note_output_index == output_count) {
@@ -883,6 +938,9 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
         (padded.size() + hop_samples - 1) / hop_samples;
     std::vector<std::array<double, supported_pitches>> frame_probabilities;
     std::array<std::vector<double>, supported_pitches> raw_activations;
+    std::array<std::vector<double>, supported_pitches> onset_activations;
+    std::array<std::vector<double>, supported_pitches> contour_activations;
+    std::vector<double> frame_positions;
     frame_probabilities.reserve(window_count * usable_frames);
     std::vector<float> window(window_samples, 0.0f);
     const std::array<std::int64_t, 3> input_shape{
@@ -919,12 +977,55 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
         }
         const float* activations = outputs[note_output_index].GetTensorData<float>();
         validate_activations(activations, output_info.GetElementCount());
+        const float* onset_values = nullptr;
+        if (options.evidence_callback && onset_output_index < output_count) {
+            const auto& onset_output = outputs[onset_output_index];
+            if (!onset_output.IsTensor()) {
+                throw std::runtime_error("Basic Pitch onset output is not a tensor");
+            }
+            const auto onset_info = onset_output.GetTensorTypeAndShapeInfo();
+            if (onset_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+                onset_info.GetShape() != shape) {
+                throw std::runtime_error("Basic Pitch onset output must be float32 [1,172,88]");
+            }
+            onset_values = onset_output.GetTensorData<float>();
+            validate_activations(onset_values, onset_info.GetElementCount());
+        }
+        const float* contour_values = nullptr;
+        if (options.aligned_model_heads && contour_output_index < output_count) {
+            const auto& contour = outputs[contour_output_index];
+            if (!contour.IsTensor()) throw std::runtime_error("Basic Pitch contour is not a tensor");
+            const auto info = contour.GetTensorTypeAndShapeInfo();
+            if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+                info.GetShape() != std::vector<std::int64_t>{1, 172, 264}) {
+                throw std::runtime_error("Basic Pitch contour must be float32 [1,172,264]");
+            }
+            contour_values = contour.GetTensorData<float>();
+            validate_activations(contour_values, info.GetElementCount());
+        }
         for (std::size_t frame = edge_frames; frame < output_frames - edge_frames; ++frame) {
+            frame_positions.push_back(static_cast<double>(
+                window_start + (frame - edge_frames) * fft_hop));
             std::array<double, supported_pitches> probabilities{};
             const float* row = activations + frame * 88 + first_supported_pitch;
             for (std::size_t pitch = 0; pitch < supported_pitches; ++pitch) {
                 probabilities[pitch] = clamp_probability(row[pitch]);
                 if (options.evidence_callback) raw_activations[pitch].push_back(row[pitch]);
+                if (onset_values) onset_activations[pitch].push_back(
+                    onset_values[frame * 88 + first_supported_pitch + pitch]);
+                if (contour_values) {
+                    const auto center = (first_supported_pitch + pitch) * 3;
+                    double weighted = 0, sum = 0;
+                    for (int offset = -1; offset <= 1; ++offset) {
+                        const auto bin = static_cast<std::size_t>(
+                            static_cast<int>(center) + offset);
+                        const double value = std::max(0.0f, contour_values[frame * 264 + bin]);
+                        weighted += value * offset;
+                        sum += value;
+                    }
+                    contour_activations[pitch].push_back(
+                        28 + pitch + (sum > 0 ? weighted / (3 * sum) : 0));
+                }
             }
             frame_probabilities.push_back(probabilities);
         }
@@ -935,13 +1036,46 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
     }
 
     // Match Basic Pitch's overlap stitching length, then decode each pitch as its own voice.
-    const std::size_t expected_frames = std::min(
+    if (options.aligned_model_heads) {
+        // Window advances are not an integer number of output hops. Regrid all heads together.
+        const auto count = (model_audio.samples.size() + fft_hop - 1) / fft_hop;
+        std::vector<std::array<double, supported_pitches>> aligned(count);
+        const auto regrid = [&](std::vector<double>& values) {
+            if (values.empty()) return;
+            std::vector<double> result(count);
+            std::size_t left = 0;
+            for (std::size_t i = 0; i < count; ++i) {
+                const double position = static_cast<double>(i * fft_hop);
+                while (left + 1 < frame_positions.size() &&
+                    frame_positions[left + 1] <= position) ++left;
+                const auto right = std::min(left + 1, frame_positions.size() - 1);
+                const double weight = right == left ? 0 : std::clamp(
+                    (position - frame_positions[left]) /
+                    (frame_positions[right] - frame_positions[left]), 0.0, 1.0);
+                result[i] = values[left] * (1 - weight) + values[right] * weight;
+            }
+            values = std::move(result);
+        };
+        for (std::size_t pitch = 0; pitch < supported_pitches; ++pitch) {
+            std::vector<double> values;
+            for (const auto& frame : frame_probabilities) values.push_back(frame[pitch]);
+            regrid(values);
+            for (std::size_t i = 0; i < count; ++i) aligned[i][pitch] = values[i];
+            regrid(raw_activations[pitch]);
+            regrid(onset_activations[pitch]);
+            regrid(contour_activations[pitch]);
+        }
+        frame_probabilities = std::move(aligned);
+    }
+    const std::size_t expected_frames = options.aligned_model_heads ?
+        frame_probabilities.size() : std::min(
         frame_probabilities.size(),
         static_cast<std::size_t>(static_cast<double>(model_audio.samples.size()) /
                                  hop_samples * usable_frames));
     const double duration_seconds =
         static_cast<double>(audio.samples.size()) / audio.sample_rate;
-    const auto onsets = detect_onsets(preprocess_audio(audio));
+    const auto onsets = options.note_decoder == NeuralNoteDecoder::Legacy ?
+        detect_onsets(preprocess_audio(audio)) : std::vector<double>{};
     std::vector<std::vector<PitchFrame>> pitch_frames(supported_pitches);
     for (std::size_t frame = 0; frame < expected_frames; ++frame) {
         const auto& probabilities = frame_probabilities[frame];
@@ -950,9 +1084,22 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
             std::array<float, supported_pitches> values{};
             std::transform(probabilities.begin(), probabilities.end(), values.begin(),
                            [](double value) { return static_cast<float>(value); });
-            selected = greedy_peaks(values.data(), supported_pitches, true,
-                                    options.polyphonic_threshold,
-                                    options.maximum_pitches_per_frame);
+            if (options.aligned_model_heads) {
+                for (std::size_t pitch = 0; pitch < supported_pitches; ++pitch) {
+                    if (values[pitch] >= options.polyphonic_threshold) {
+                        selected.push_back(static_cast<int>(pitch));
+                    }
+                }
+                std::stable_sort(selected.begin(), selected.end(),
+                    [&](int left, int right) { return values[left] > values[right]; });
+                if (selected.size() > options.maximum_pitches_per_frame) {
+                    selected.resize(options.maximum_pitches_per_frame);
+                }
+            } else {
+                selected = greedy_peaks(values.data(), supported_pitches, true,
+                                        options.polyphonic_threshold,
+                                        options.maximum_pitches_per_frame);
+            }
         } else {
             const auto best = static_cast<int>(
                 std::max_element(probabilities.begin(), probabilities.end()) -
@@ -970,6 +1117,9 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
             pitch_frames[pitch].push_back(
                 {voiced ? static_cast<int>(pitch) + 28 : -1, time,
                  voiced ? confidence : 0.0, voiced ? confidence : 0.0});
+            if (!contour_activations[pitch].empty()) {
+                pitch_frames[pitch].back().fractional_midi = contour_activations[pitch][frame];
+            }
         }
     }
 
@@ -978,15 +1128,27 @@ std::vector<Note> transcribe_basic_pitch(const AudioBuffer& audio, Ort::Session&
         auto& frames = pitch_frames[pitch];
         if (options.evidence_callback) {
             raw_activations[pitch].resize(expected_frames);
-            options.evidence_callback({frames, 0.0, frame_step, "basic-pitch",
+            FrameEvidenceTrack evidence{frames, 0.0, frame_step, "basic-pitch",
                                        "selected-note-head-activation", {}, raw_activations[pitch],
                                        static_cast<int>(pitch) + 28,
                                        EvidenceSemantics::RelativeActivation,
-                                       EvidenceSemantics::RawActivation});
+                                       EvidenceSemantics::RawActivation};
+            if (!onset_activations[pitch].empty()) {
+                onset_activations[pitch].resize(expected_frames);
+                evidence.onset_strengths = std::move(onset_activations[pitch]);
+            }
+            evidence.note_states = raw_activations[pitch];
+            if (!contour_activations[pitch].empty()) {
+                contour_activations[pitch].resize(expected_frames);
+                evidence.contour_midi = std::move(contour_activations[pitch]);
+            }
+            options.evidence_callback(evidence);
         }
-        auto detected = notes_from_frames(frames, duration_seconds, onsets,
-                                          options.minimum_confidence);
-        notes.insert(notes.end(), detected.begin(), detected.end());
+        if (options.note_decoder == NeuralNoteDecoder::Legacy) {
+            auto detected = notes_from_frames(frames, duration_seconds, onsets,
+                                              options.minimum_confidence);
+            notes.insert(notes.end(), detected.begin(), detected.end());
+        }
     }
     std::sort(notes.begin(), notes.end(), [](const Note& left, const Note& right) {
         if (left.start_seconds != right.start_seconds) {
@@ -1042,6 +1204,8 @@ AudioPreviewData make_audio_preview(std::span<const float> samples,
         static_cast<double>(samples.size()) / sample_rate;
     preview.columns = column_count;
     preview.frequency_bands = frequency_bands;
+    preview.minimum_frequency_hz = 55.0;
+    preview.maximum_frequency_hz = sample_rate * 0.5;
     preview.waveform.resize(column_count);
     preview.spectrogram.assign(column_count * frequency_bands, 0.0f);
 
@@ -1375,6 +1539,14 @@ std::vector<NoteEvent> RealtimeTranscriber::take_events() {
     return result;
 }
 
+RealtimeSnapshot RealtimeTranscriber::take_snapshot() {
+    std::lock_guard lock(impl_->mutex);
+    RealtimeSnapshot result;
+    result.notes = impl_->live_notes;
+    result.events.swap(impl_->events);
+    return result;
+}
+
 std::string midi_note_name(int midi_pitch) {
     static constexpr std::array<const char*, 12> names{
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
@@ -1433,12 +1605,20 @@ AudioBuffer preprocess_audio(const AudioBuffer& audio, double high_pass_hz) {
     return filtered;
 }
 
-std::vector<double> detect_onsets(const AudioBuffer& audio) {
+std::vector<OnsetEvidence> detect_onset_evidence(
+    const AudioBuffer& audio, const OnsetDetectionOptions& options) {
+    for (const double value : {options.minimum_strength, options.deviation_multiplier,
+                              options.minimum_spacing_seconds}) {
+        if (!std::isfinite(value) || value < 0) {
+            throw std::invalid_argument("Onset parameters must be finite and nonnegative");
+        }
+    }
     if (audio.sample_rate == 0 || audio.samples.size() < onset_window) {
         return {};
     }
     std::vector<double> flux;
     std::vector<double> energy;
+    std::vector<OnsetEvidence> evidence;
     const std::size_t frame_count = 1 + (audio.samples.size() - onset_window) / onset_hop;
     flux.reserve(frame_count);
     energy.reserve(frame_count);
@@ -1482,6 +1662,8 @@ std::vector<double> detect_onsets(const AudioBuffer& audio) {
             high_frequency_flux / (high_frequency_sum + 1e-9);
         flux.push_back(0.75 * spectral_flux + 0.25 * high_frequency_content +
                        0.15 * energy_rise);
+        evidence.push_back({static_cast<double>(start) / audio.sample_rate, flux.back(),
+                            spectral_flux, high_frequency_content, energy_rise});
         energy.push_back(rms);
     }
     if (flux.size() < 3) {
@@ -1494,20 +1676,26 @@ std::vector<double> detect_onsets(const AudioBuffer& audio) {
     for (const double value : flux) {
         deviations.push_back(std::abs(value - median));
     }
-    const double threshold = std::max(0.08, median + 2.5 * percentile(deviations, 0.5));
-    std::vector<double> onsets;
+    const double threshold = std::max(options.minimum_strength,
+        median + options.deviation_multiplier * percentile(deviations, 0.5));
+    std::vector<OnsetEvidence> onsets;
     double last_onset = -1.0;
-    constexpr double minimum_spacing = 0.07;
     for (std::size_t i = 1; i + 1 < flux.size(); ++i) {
         if (flux[i] > threshold && flux[i] >= flux[i - 1] && flux[i] > flux[i + 1]) {
             const double time = static_cast<double>(i * onset_hop) / audio.sample_rate;
-            if (time - last_onset >= minimum_spacing) {
-                onsets.push_back(time);
+            if (time - last_onset >= options.minimum_spacing_seconds) {
+                onsets.push_back(evidence[i]);
                 last_onset = time;
             }
         }
     }
     return onsets;
+}
+
+std::vector<double> detect_onsets(const AudioBuffer& audio) {
+    std::vector<double> times;
+    for (const auto& onset : detect_onset_evidence(audio)) times.push_back(onset.time_seconds);
+    return times;
 }
 
 std::vector<Note> notes_from_frames(std::span<const PitchFrame> frames,
@@ -1920,7 +2108,7 @@ std::vector<Note> transcribe_monophonic(const AudioBuffer& audio,
                              static_cast<double>(start) /
                                  analysis_audio.sample_rate,
                              pitch.confidence, pitch.voicing_probability,
-                             std::sqrt(energy / sample_span.size())};
+                             std::sqrt(energy / sample_span.size()), pitch.fractional_midi};
         }
     };
 
@@ -1966,7 +2154,7 @@ std::vector<Note> transcribe_monophonic(const AudioBuffer& audio,
         options.evidence_callback({frames, static_cast<double>(selected_window) / selected_sample_rate,
             static_cast<double>(selected_hop) / selected_sample_rate, "yin",
             "one-minus-cmnd-and-voicing-heuristic", {}, {}, -1,
-            EvidenceSemantics::HeuristicScore, EvidenceSemantics::Unspecified});
+            EvidenceSemantics::HeuristicScore, EvidenceSemantics::Unspecified, {}, {}, {}});
     }
     const double duration_seconds =
         static_cast<double>(audio.samples.size()) / audio.sample_rate;
@@ -2078,6 +2266,7 @@ StreamingResult transcribe_wav_streaming(const std::filesystem::path& path,
     };
 
     read_wav_blocks(path, 4096, [&](const AudioBlockView& block) {
+        check_cancelled(options.analysis.cancellation);
         if (sample_rate == 0) {
             sample_rate = block.sample_rate;
             total_frames = block.total_frames;
@@ -2173,6 +2362,10 @@ std::vector<Note> infer_onnx_session(const AudioBuffer& audio,
     if (options.maximum_pitches_per_frame == 0) {
         throw std::invalid_argument("Maximum polyphonic pitch count must be positive.");
     }
+    if (options.note_decoder != NeuralNoteDecoder::Legacy &&
+        options.note_decoder != NeuralNoteDecoder::MultiHeadEvents) {
+        throw std::invalid_argument("Unknown neural note decoder");
+    }
     if (options.device_id < 0) {
         throw std::invalid_argument("ONNX execution provider device ID must be non-negative.");
     }
@@ -2195,13 +2388,58 @@ std::vector<Note> infer_onnx_session(const AudioBuffer& audio,
         if (options.progress_callback) {
             options.progress_callback(0.1);
         }
-        auto notes = transcribe_basic_pitch(audio, *session, options);
+        auto effective = options;
+        std::vector<FrameEvidenceTrack> tracks;
+        if (options.note_decoder == NeuralNoteDecoder::MultiHeadEvents) {
+            if (!options.polyphonic) {
+                throw std::invalid_argument("Multi-head event decoding requires polyphonic BasicPitchV1");
+            }
+            effective.aligned_model_heads = true;
+            effective.evidence_callback = [&](const FrameEvidenceTrack& track) {
+                tracks.push_back(track);
+                if (options.evidence_callback) options.evidence_callback(track);
+            };
+        }
+        auto notes = transcribe_basic_pitch(audio, *session, effective);
+        if (options.note_decoder == NeuralNoteDecoder::MultiHeadEvents) {
+            if (tracks.empty() || tracks.front().onset_strengths.empty()) {
+                throw std::invalid_argument("Multi-head event decoding requires the Basic Pitch onset head");
+            }
+            check_cancelled(options.cancellation);
+            TemporalDecodingOptions decoding;
+            decoding.activation_on = options.polyphonic_threshold;
+            decoding.activation_off = options.polyphonic_threshold;
+            const auto decoded = decode_note_events(audio, tracks, decoding,
+                "neural-input", "basic-pitch-v1");
+            notes.clear();
+            for (const auto& event : decoded.events) {
+                double strength = 0;
+                for (const auto& evidence : event.evidence) strength += evidence.raw_strength;
+                if (!event.evidence.empty()) strength /= event.evidence.size();
+                const auto pitch = static_cast<int>(std::lround(event.midi_pitch));
+                notes.push_back({pitch, event.onset_seconds,
+                    event.offset_seconds - event.onset_seconds, midi_note_name(pitch), strength});
+            }
+            check_cancelled(options.cancellation);
+        }
         if (options.progress_callback) {
             options.progress_callback(1.0);
         }
         return notes;
     }
     validate_onnx_contract(*session, ModelContract::LegacyPitchV1);
+    if (options.note_decoder != NeuralNoteDecoder::Legacy) {
+        throw std::invalid_argument("Multi-head event decoding requires the BasicPitchV1 contract");
+    }
+    if (options.aligned_model_heads) {
+        throw std::invalid_argument(
+            "Aligned onset/contour decoding requires the BasicPitchV1 contract; "
+            "generic pitch outputs have no declared onset or contour alignment");
+    }
+    if (options.polyphonic && options.objective != PitchObjective::IndependentMultiPitch) {
+        throw std::invalid_argument(
+            "LegacyPitchV1 polyphony requires an explicit independent multi-pitch training objective");
+    }
     const auto model_input_audio = resample_linear(audio, model_sample_rate);
     if (model_input_shape[1] > 0 && static_cast<std::size_t>(model_input_shape[1]) !=
         model_input_audio.samples.size()) {

@@ -48,6 +48,13 @@ therefore be multi-hot, not a mutually exclusive softmax target. The pitch
 count should be 69; a 70th value is reserved for mono silence and ignored in
 polyphonic peak picking.
 
+For a generic model, explicitly declare its documented training objective with
+`--model-objective independent-multi-pitch`. The C++ model definition/request
+has the corresponding `PitchObjective` field. Unknown or monophonic objectives
+are not accepted for polyphonic inference merely because a tensor has 69
+pitch values. This declaration does not certify calibration or training-data
+independence.
+
 The implementation is intentionally strict about tensor rank, batch size,
 pitch dimension, and floating-point type. Frame count is read from the output
 shape; output timing is assumed to begin at zero with 10 ms spacing. Models
@@ -120,9 +127,13 @@ It resamples mono audio to 22,050 Hz, processes two-second windows with the
 official 30-frame overlap and edge trimming, and stitches note activations.
 The note head is `StatefulPartitionedCall:1`, shaped `[1, 172, 88]`, with
 independent probabilities for MIDI 21–108 at a 256-sample hop (~86.13 frames
-per second). Transcriber crops to MIDI 28–96; the model's onset and contour
-heads are not currently consumed. Greedy peak picking is applied when
-`--polyphonic` is enabled.
+per second). Transcriber crops to MIDI 28–96. The canonical temporal decoder
+uses the matching onset head and note-state evidence. The opt-in
+`--polyphonic-decoder competing` path additionally consumes the 264-bin contour
+head, aligns all heads using actual window sample positions and selects
+independent notes without suppressing adjacent semitones. Contour estimates
+remain local fractional-MIDI evidence, not calibrated confidence.
+See [the alignment contract and real-data results](../docs/polyphonic.md).
 
 Example from the repository root:
 
@@ -171,8 +182,14 @@ By default, this evaluates all 360 recordings for both the bundled Basic Pitch
 model and the built-in YIN baseline. Zenodo MD5 checksums are verified before
 processing. The per-recording results are written only to the requested JSON
 file; no dataset audio or annotations are copied into the repository. Use
-`--limit 24 --seed 2026` for a repeatable smoke subset. Do not tune thresholds
-against this test set.
+`--limit 24 --seed 2026` for a repeatable smoke subset. `--dataset-split`
+accepts `train`, `validation`, `test`, or `all`; its fixed performer grouping
+keeps players 00–03 in train, 04 in validation and 05 in test (60 tracks per
+performer). Use `--dataset-split test` for held-out performers and do not tune
+thresholds on that partition. This is not proof of model-data independence:
+Basic Pitch may have trained on GuitarSet, so the report flags possible
+training-data overlap. The historical all-recordings measurement below is not
+retroactively a held-out result.
 
 Reconfigure the matching CMake build to generate the compiler/configuration
 metadata above; tests can remain disabled for this legacy CLI workflow.
