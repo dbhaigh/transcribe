@@ -51,15 +51,56 @@ intact; recovery remains an explicit choice.
 - The transport opens an audio file, starts/stops supported ASIO capture,
   transcribes, plays or pauses the score preview, plays the original WAV,
   toggles score looping, navigates measures, undoes/redoes edits, and exports.
+  MusicXML, tablature, MIDI when configured, and score JSON are written from the
+  accepted score document. JSON output is editable score data, not a replacement
+  for the original live event stream.
 - The ASIO source controls enumerate input devices and expose the formats
   reported by each device. During capture, stable-ID provisional and stabilized
   note events update the same notation, tablature, and timeline used by editing.
   Live edits are sent to the capture worker and retained in the document history.
-- After a live capture is finalized, **Refine recording** runs the backend's
-  offline refinement mode. Proposed changes are reviewed separately from the
-  accepted score. Manual-edit conflicts are withheld unless individually
-  approved; the original event stream remains in the live document. An applied
-  refinement can be undone until a subsequent score edit is exported.
+  Stop drains queued audio and finalizes open notes. Cancel instead discards the
+  capture and restores the previously accepted score without claiming any notes
+  were finalized.
+- The analysis worker only posts a lightweight event-ready notification. The
+  WebView2/UI thread polls and applies event batches to the live document,
+  resynchronizing from a coherent note snapshot if the bounded event queue
+  overflows. It coalesces note upserts, retractions, finalizations, gaps, and a
+  metrics/status snapshot into protocol-version 1 updates at a 17 ms tick
+  (under 60 Hz).
+  Stable note IDs carry monotonically increasing revisions; the UI ignores
+  duplicate or stale revisions. The bounded event-detail list reports when
+  older entries were coalesced. The status-bar health strip reports driver
+  latency, callback period, analysis-window delay, input and analysis queue
+  waits, analysis execution, confirmation, event wait, and native UI dispatch.
+  Software stage timings include p50/p95 where sampled; zero-observation
+  timings and unavailable driver latency are shown as unmeasured or unknown.
+  Provisional/stabilized target misses are compared with the configured targets
+  (defaults 200/300 ms). **OVERLOAD** reports queue/worker pressure and loss
+  counts; **INPUT GAP** separately reports known missing frames, sequence gaps,
+  and discontinuities. These are pipeline-stage measurements, not physical
+  end-to-end latency. The OVERLOAD state clears when current queue/lag pressure
+  subsides; its loss counters remain cumulative for the capture. Native UI dispatch is measured from the coalesced
+  events-ready notification to the beginning of UI-thread polling.
+- Advanced settings expose the `live-hop-ms` interval for Spectral and ONNX
+  windowed live backends (10-1800 ms, default 250 ms). It does not alter YIN;
+  the selected interval must fit the backend's analysis window.
+- During capture, the editable notation, tablature, and piano-roll share one
+  time viewport and render only visible live notes in animation-frame batches.
+  Provisional notes are hollow/dashed, stabilized notes use a solid mark and
+  `S`, finalized notes return to normal notation, corrections receive a brief
+  outline, and retractions cross-fade before removal. Hatched **UNANALYSED**
+  spans mark analysis gaps across all three canvases. Unresolved tablature is
+  shown as `?`; the UI never guesses a string or fret. **Follow live** tracks
+  the newest evidence edge; manual scrolling or zooming turns it off and shows
+  **Jump to live**. Verovio engraving is held during capture and updated only
+  after capture finishes.
+- After a live capture is finalized, **Refine recording** runs offline
+  refinement on a worker. ONNX backends use windowed refinement; built-in
+  backends use full-context refinement. Proposed changes are reviewed separately
+  from the accepted score. Manual-edit conflicts are withheld unless
+  individually approved; the original event stream remains in the live
+  document. An applied refinement can be undone until a subsequent score edit
+  is exported.
 - The source panel displays the selected audio waveform and spectrogram,
   preview-sample peak level, recording status, and setup options.
 - The central score presents the editable notation and tablature timelines.
@@ -71,16 +112,19 @@ intact; recovery remains an explicit choice.
   detector, and playable-fingering alternatives. Missing evidence is shown as
   unavailable; it is not synthesized by the UI.
 - The status bar reports backend availability, capture/analysis state,
-  progress, and live event latency when the backend supplies it.
+  progress, and the live health strip while live metrics are available.
 
 Progress percentages describe the **current backend phase**, not end-to-end
 completion or an ETA. Unknown progress is indeterminate. **Cancel analysis**
 acknowledges once, disables repeated requests and waits for a safe backend
 boundary; model initialization/in-flight calls cannot always stop immediately.
 Canceling does not replace an accepted score. **Stop capture** instead requests
-capture termination and finalizes the captured notes. Saving and export are
-non-cancellable while committing files; their controls do not offer a false
-cancel action.
+capture termination and finalizes the captured notes. A second **Cancel
+capture** action while finalization is in progress discards that capture rather
+than accepting or exporting its notes. The versioned native bridge reports
+`idle`, `arming`, `capturing`, `interrupted`, `finishing`, `finished`, and
+`failed` capture states. Saving and export are non-cancellable while committing
+files; their controls do not offer a false cancel action.
 
 The waveform is a normalized **peak-envelope preview**, not individual samples.
 Its amplitude and seconds axes share the viewport with the spectrogram,

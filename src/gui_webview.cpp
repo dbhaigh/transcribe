@@ -12,6 +12,8 @@
 #include "transcribe/review.hpp"
 #include "transcribe/guitar_analysis.hpp"
 #include "transcribe/preprocessing.hpp"
+#include "transcribe/live_bridge.hpp"
+#include "transcribe/output.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +21,7 @@
 #include <cmath>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cwctype>
 #include <deque>
 #include <filesystem>
@@ -29,6 +32,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -46,10 +50,13 @@ constexpr UINT message_complete = WM_APP + 1;
 constexpr UINT message_progress = WM_APP + 2;
 constexpr UINT message_live_preview = WM_APP + 3;
 constexpr UINT message_audio_preview = WM_APP + 4;
-constexpr UINT message_live_session = WM_APP + 5;
 constexpr UINT message_project_autosave = WM_APP + 6;
+constexpr UINT message_live_events_ready = WM_APP + 7;
+constexpr UINT message_live_status = WM_APP + 8;
+constexpr UINT_PTR live_session_timer = 0x4752;
 
 class ProjectAutosaver;
+struct LiveBridgeState;
 
 enum class LiveEditKind { Add, Update, Delete, Fingering };
 
@@ -63,7 +70,6 @@ struct LiveEditCommand {
     int fret{};
 };
 
-struct LiveSessionMessage;
 struct ProgressMessage;
 struct LiveMessage;
 struct AudioPreviewMessage;
@@ -81,14 +87,16 @@ struct AppState {
     std::mutex live_command_mutex;
     std::deque<std::vector<LiveEditCommand>> live_commands;
     std::mutex live_message_mutex;
-    std::unique_ptr<LiveSessionMessage> pending_live_message;
-    bool live_message_posted{};
     std::unique_ptr<ProgressMessage> pending_progress;
     std::unique_ptr<LiveMessage> pending_preview_notes;
     std::unique_ptr<AudioPreviewMessage> pending_audio_preview;
+    std::unique_ptr<struct LiveStatusMessage> pending_live_status;
     bool progress_posted{};
     bool preview_notes_posted{};
     bool audio_preview_posted{};
+    bool live_status_posted{};
+    bool live_session_timer_active{};
+    std::shared_ptr<LiveBridgeState> live_bridge;
     bool busy{};
     std::uint64_t next_transcription_job{};
     std::uint64_t active_transcription_job{};
@@ -141,17 +149,41 @@ struct LiveMessage {
     std::vector<transcribe::NoteEvent> events;
 };
 
-struct LiveSessionMessage {
+struct LiveStatusMessage {
     std::uint64_t job{};
-    std::chrono::steady_clock::time_point posted_at;
+    transcribe::live::bridge::CaptureState state{
+        transcribe::live::bridge::CaptureState::Idle};
+    std::string status;
+};
+
+struct LiveBridgeState {
+    explicit LiveBridgeState(std::uint32_t sample_rate)
+        : document(sample_rate), sample_rate(sample_rate) {}
+
+    std::mutex mutex;
+    std::condition_variable drained;
+    std::shared_ptr<transcribe::live::LiveTranscriptionSession> session;
+    transcribe::live::TranscriptionDocument document;
+    transcribe::live::bridge::Coalescer coalescer;
+    std::unordered_map<std::string, std::pair<int, int>> fingerings;
+    std::unordered_set<std::string> manual_note_ids;
+    std::vector<transcribe::live::LiveNote> manual_upserts;
+    std::vector<std::pair<std::string, std::uint64_t>> manual_retractions;
+    std::atomic<bool> notification_posted{false};
+    std::atomic<std::int64_t> notification_posted_at_ns{0};
+    std::atomic<bool> notification_failed{false};
+    std::atomic<bool> cancel_requested{false};
+    std::atomic<bool> shutdown_requested{false};
+    std::deque<double> ui_dispatch_samples_ms;
+    std::uint64_t ui_dispatch_sample_count{};
+    bool final_batch_applied{};
+    std::uint64_t job{};
+    std::uint32_t sample_rate{};
     double driver_input_latency_ms{-1};
     double callback_period_ms{};
-    double recording_seconds{};
-    std::uint32_t sample_rate{};
-    std::vector<transcribe::live::LiveNote> notes;
-    std::vector<transcribe::live::LiveEvent> events;
-    transcribe::live::LiveMetrics metrics;
-    std::unordered_map<std::string, std::pair<int, int>> fingerings;
+    transcribe::live::bridge::CaptureState capture_state{
+        transcribe::live::bridge::CaptureState::Arming};
+    std::string status{"Preparing ASIO input"};
 };
 
 struct AudioPreviewMessage {
@@ -204,6 +236,35 @@ void post_coalesced(AppState& state, UINT kind, std::unique_ptr<Message> message
         }
         posted = true;
     }
+}
+
+void post_live_events_ready(
+    AppState& state, const std::shared_ptr<LiveBridgeState>& bridge) noexcept {
+    if (bridge->notification_posted.exchange(true, std::memory_order_acq_rel)) return;
+    auto expected = std::int64_t{0};
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    bridge->notification_posted_at_ns.compare_exchange_strong(
+        expected, now_ns, std::memory_order_release, std::memory_order_relaxed);
+    if (!PostMessageW(state.window, message_live_events_ready, 0, 0)) {
+        bridge->notification_failed.store(true, std::memory_order_release);
+    }
+}
+
+void post_live_capture_state(
+    AppState& state, const std::shared_ptr<LiveBridgeState>& bridge,
+    transcribe::live::bridge::CaptureState capture_state, std::string status) {
+    {
+        std::lock_guard lock(bridge->mutex);
+        bridge->capture_state = capture_state;
+        bridge->status = status;
+    }
+    auto message = std::make_unique<LiveStatusMessage>();
+    message->job = bridge->job;
+    message->state = capture_state;
+    message->status = std::move(status);
+    post_coalesced(state, message_live_status, std::move(message),
+                   state.pending_live_status, state.live_status_posted);
 }
 
 struct AutosaveCompletion {
@@ -412,6 +473,20 @@ void post_json(AppState& state, const std::wstring& json) {
     }
 }
 
+void post_live_status_json(
+    AppState& state, std::uint64_t job,
+    transcribe::live::bridge::CaptureState capture_state,
+    std::string_view status) {
+    std::wostringstream json;
+    json << L"{\"type\":\"live-status\",\"version\":"
+         << transcribe::live::bridge::protocol_version
+         << L",\"job\":" << job << L",\"state\":\""
+         << from_utf8(std::string(
+                transcribe::live::bridge::capture_state_name(capture_state)))
+         << L"\",\"status\":\"" << json_escape(from_utf8_lossy(status)) << L"\"}";
+    post_json(state, json.str());
+}
+
 std::filesystem::path project_autosave_directory() {
     std::array<wchar_t, 32768> local_app_data{};
     const DWORD length = GetEnvironmentVariableW(
@@ -528,40 +603,6 @@ void post_error(AppState& state, std::string_view message) {
                          json_escape(from_utf8_lossy(message)) + L"\"}");
 }
 
-void post_live_session(AppState& state,
-                       std::unique_ptr<LiveSessionMessage> message) {
-    message->posted_at = std::chrono::steady_clock::now();
-    bool should_post = false;
-    {
-        std::lock_guard lock(state.live_message_mutex);
-        if (state.pending_live_message) {
-            auto& pending = state.pending_live_message->events;
-            pending.insert(pending.end(),
-                std::make_move_iterator(message->events.begin()),
-                std::make_move_iterator(message->events.end()));
-            constexpr std::size_t maximum_pending_events = 4096;
-            if (pending.size() > maximum_pending_events) {
-                message->metrics.events_dropped += pending.size() - maximum_pending_events;
-                message->metrics.overloaded = true;
-                pending.erase(pending.begin(), pending.end() - maximum_pending_events);
-            }
-            message->events = std::move(pending);
-        }
-        state.pending_live_message = std::move(message);
-        if (!state.live_message_posted) {
-            state.live_message_posted = true;
-            should_post = true;
-        }
-    }
-    if (should_post &&
-        !PostMessageW(state.window, message_live_session, 0, 0)) {
-        std::lock_guard lock(state.live_message_mutex);
-        state.live_message_posted = false;
-        state.pending_live_message.reset();
-        throw std::runtime_error("Could not post live session update to the interface.");
-    }
-}
-
 std::wstring key_name(const transcribe::ScoreMetadata& metadata) {
     static constexpr std::array<const wchar_t*, 15> major_names{
         L"Cb", L"Gb", L"Db", L"Ab", L"Eb", L"Bb", L"F", L"C",
@@ -608,46 +649,39 @@ std::wstring lifecycle_name(transcribe::EventLifecycle state) {
     return L"unknown";
 }
 
-std::wstring live_notes_json(
-    const std::vector<transcribe::live::LiveNote>& notes,
+std::wstring live_note_json(
+    const transcribe::live::LiveNote& note,
     const std::unordered_map<std::string, std::pair<int, int>>& fingerings,
     double recording_seconds) {
+    if (note.state == transcribe::EventLifecycle::Rejected) return {};
+    const double start = note.onset_seconds();
+    const double end = note.offset_seconds().value_or(recording_seconds);
+    if (!std::isfinite(start) || !std::isfinite(end) || end <= start) return {};
     std::wostringstream json;
-    json << L'[';
-    bool first = true;
-    for (const auto& note : notes) {
-        if (note.state == transcribe::EventLifecycle::Rejected) continue;
-        const double start = note.onset_seconds();
-        const double end = note.offset_seconds().value_or(recording_seconds);
-        if (!std::isfinite(start) || !std::isfinite(end) || end <= start) continue;
-        if (!first) json << L',';
-        first = false;
-        json << L"{\"id\":\"" << json_escape(from_utf8(note.id))
-             << L"\",\"midi\":" << note.midi_pitch
-             << L",\"name\":\"" << json_escape(from_utf8(
-                    transcribe::midi_note_name(note.midi_pitch))) << L'"'
-             << L",\"start\":" << std::fixed << std::setprecision(6) << start
-             << L",\"duration\":" << std::max(0.001, end - start)
-             << L",\"confidence\":null,\"calibrated_confidence\":null"
-             << L",\"amplitude\":null,\"raw_strength\":"
-             << note.raw_strength << L",\"finalized\":" << (note.finalized ? L"true" : L"false")
-             << L",\"revision\":" << note.revision << L",\"state\":\"" << lifecycle_name(note.state)
-             << L"\",\"uncertain\":" << (note.onset_truncated ? L"true" : L"false")
-             << L",\"user_authored\":"
-             << (note.state == transcribe::EventLifecycle::ManuallyCorrected
-                     ? L"true" : L"false")
-             << L",\"source_model\":\"" << json_escape(from_utf8(note.source_model))
-             << L"\",\"detection_method\":\""
-             << json_escape(from_utf8(note.detection_method))
-             << L"\",\"measured_start\":" << start << L",\"measured_end\":" << end;
-        if (const auto position = fingerings.find(note.id); position != fingerings.end()) {
-            json << L",\"string\":" << position->second.first
-                 << L",\"fret\":" << position->second.second
-                 << L",\"manual_fingering\":true";
-        }
-        json << L'}';
+    json << L"{\"id\":\"" << json_escape(from_utf8(note.id))
+         << L"\",\"midi\":" << note.midi_pitch
+         << L",\"name\":\"" << json_escape(from_utf8(
+                transcribe::midi_note_name(note.midi_pitch))) << L'"'
+         << L",\"start\":" << std::fixed << std::setprecision(6) << start
+         << L",\"duration\":" << std::max(0.001, end - start)
+         << L",\"confidence\":null,\"calibrated_confidence\":null"
+         << L",\"amplitude\":null,\"raw_strength\":"
+         << note.raw_strength << L",\"finalized\":" << (note.finalized ? L"true" : L"false")
+         << L",\"revision\":" << note.revision << L",\"state\":\"" << lifecycle_name(note.state)
+         << L"\",\"uncertain\":" << (note.onset_truncated ? L"true" : L"false")
+         << L",\"user_authored\":"
+         << (note.state == transcribe::EventLifecycle::ManuallyCorrected
+                 ? L"true" : L"false")
+         << L",\"source_model\":\"" << json_escape(from_utf8(note.source_model))
+         << L"\",\"detection_method\":\""
+         << json_escape(from_utf8(note.detection_method))
+         << L"\",\"measured_start\":" << start << L",\"measured_end\":" << end;
+    if (const auto position = fingerings.find(note.id); position != fingerings.end()) {
+        json << L",\"string\":" << position->second.first
+             << L",\"fret\":" << position->second.second
+             << L",\"manual_fingering\":true";
     }
-    json << L']';
+    json << L'}';
     return json.str();
 }
 
@@ -684,18 +718,52 @@ std::wstring live_events_json(const std::vector<transcribe::live::LiveEvent>& ev
              << event.note.midi_pitch << L",\"time\":" << std::fixed
              << std::setprecision(6) << time << L",\"latency_ms\":"
              << std::max(0.0, latency) << L",\"message\":\""
-             << json_escape(from_utf8(event.message)) << L"\"}";
+             << json_escape(from_utf8(event.message)) << L'"';
+        if (event.kind == transcribe::live::LiveEventKind::AnalysisGap) {
+            json << L",\"first_frame\":" << event.gap_first_frame
+                 << L",\"end_frame\":" << event.gap_end_frame;
+        }
+        json << L'}';
     }
     json << L']';
     return json.str();
 }
 
-std::wstring live_metrics_json(const transcribe::live::LiveMetrics& metrics) {
+transcribe::live::LatencySummary summarize_ui_dispatch(
+    const std::deque<double>& samples_ms, std::uint64_t sample_count) {
+    transcribe::live::LatencySummary summary;
+    summary.count = static_cast<std::size_t>(sample_count);
+    if (samples_ms.empty()) return summary;
+    std::vector<double> sorted(samples_ms.begin(), samples_ms.end());
+    std::sort(sorted.begin(), sorted.end());
+    const auto rank = [&](double quantile) {
+        const auto index = static_cast<std::size_t>(
+            std::ceil(quantile * static_cast<double>(sorted.size())));
+        return sorted[std::clamp<std::size_t>(index, 1, sorted.size()) - 1];
+    };
+    double sum_ms = 0.0;
+    for (const auto sample : samples_ms) {
+        sum_ms += sample;
+        summary.maximum_seconds = std::max(
+            summary.maximum_seconds, sample / 1000.0);
+    }
+    summary.mean_seconds = sum_ms / static_cast<double>(samples_ms.size()) / 1000.0;
+    summary.p50_seconds = rank(0.50) / 1000.0;
+    summary.p95_seconds = rank(0.95) / 1000.0;
+    summary.p99_seconds = rank(0.99) / 1000.0;
+    return summary;
+}
+
+std::wstring live_metrics_json(
+    const transcribe::live::LiveMetrics& metrics,
+    const transcribe::live::LatencySummary& ui_dispatch) {
     const auto summary = [](const transcribe::live::LatencySummary& value) {
         std::wostringstream output;
         output << L"{\"mean_ms\":" << value.mean_seconds * 1000.0
+               << L",\"p50_ms\":" << value.p50_seconds * 1000.0
                << L",\"p95_ms\":" << value.p95_seconds * 1000.0
                << L",\"p99_ms\":" << value.p99_seconds * 1000.0
+               << L",\"maximum_ms\":" << value.maximum_seconds * 1000.0
                << L",\"count\":" << value.count << L'}';
         return output.str();
     };
@@ -708,19 +776,107 @@ std::wstring live_metrics_json(const transcribe::live::LiveMetrics& metrics) {
          << L",\"confirmation\":" << summary(metrics.confirmation_latency)
          << L",\"publication_queue\":" << summary(metrics.publication_queue_latency)
          << L",\"analysis_window\":" << summary(metrics.algorithmic_latency)
+         << L",\"ui_dispatch\":" << summary(ui_dispatch)
          << L",\"overloaded\":" << (metrics.overloaded ? L"true" : L"false")
          << L",\"input_queue_capacity\":" << metrics.input_queue_capacity
          << L",\"input_queue_depth\":" << metrics.input_queue_depth
-         << L",\"event_queue_depth\":" << metrics.event_queue_depth
-         << L",\"processing_lag_frames\":" << metrics.current_lag_frames
-         << L",\"provisional_target_misses\":" << metrics.provisional_target_misses
-         << L",\"stabilized_target_misses\":" << metrics.stabilized_target_misses
          << L",\"input_queue_high_water\":" << metrics.input_queue_high_water
+         << L",\"event_queue_depth\":" << metrics.event_queue_depth
          << L",\"event_queue_capacity\":" << metrics.event_queue_capacity
          << L",\"event_queue_high_water\":" << metrics.event_queue_high_water
+         << L",\"processing_lag_frames\":" << metrics.current_lag_frames
+         << L",\"windows_coalesced\":" << metrics.windows_coalesced
+         << L",\"skipped_frames\":" << metrics.skipped_frames
+         << L",\"sequence_gaps\":" << metrics.sequence_gaps
+         << L",\"discontinuities\":" << metrics.discontinuities
+         << L",\"tracked_notes_refused\":" << metrics.tracked_notes_refused
+         << L",\"provisional_target_misses\":" << metrics.provisional_target_misses
+         << L",\"stabilized_target_misses\":" << metrics.stabilized_target_misses
+         << L",\"target_provisional_seconds\":" << metrics.target_provisional_seconds
+         << L",\"target_stabilized_seconds\":" << metrics.target_stabilized_seconds
          << L",\"blocks_refused\":" << metrics.blocks_refused
          << L",\"events_dropped\":" << metrics.events_dropped
          << L",\"gap_frames\":" << metrics.gap_frames << L'}';
+    return json.str();
+}
+
+std::wstring live_bridge_message_json(
+    const transcribe::live::bridge::Message& message,
+    const std::unordered_map<std::string, std::pair<int, int>>& fingerings,
+    double recording_seconds, std::uint32_t sample_rate,
+    const transcribe::live::LatencySummary& ui_dispatch,
+    double driver_input_latency_ms, double callback_period_ms,
+    std::uint64_t job) {
+    std::wostringstream json;
+    const double safe_sample_rate = sample_rate == 0
+        ? 1.0 : static_cast<double>(sample_rate);
+    json << L"{\"type\":\"live-event-batch\",\"version\":" << message.version
+         << L",\"job\":" << job
+         << L",\"sequence\":" << message.sequence
+         << L",\"resync\":" << (message.resync ? L"true" : L"false")
+         << L",\"sample_rate\":" << sample_rate
+         << L",\"upserts\":{";
+    bool first = true;
+    for (const auto& [id, note] : message.upserts) {
+        const auto serialized = live_note_json(note, fingerings, recording_seconds);
+        if (serialized.empty()) continue;
+        if (!first) json << L',';
+        first = false;
+        json << L'"' << json_escape(from_utf8(id)) << L"\":{\"revision\":"
+             << note.revision << L",\"note\":" << serialized << L'}';
+    }
+    json << L"},\"retractions\":[";
+    first = true;
+    for (const auto& [id, revision] : message.retractions) {
+        if (!first) json << L',';
+        first = false;
+        json << L"{\"id\":\"" << json_escape(from_utf8(id))
+             << L"\",\"revision\":" << revision << L'}';
+    }
+    json << L"],\"finalizations\":[";
+    first = true;
+    for (const auto& [id, note] : message.finalizations) {
+        const auto serialized = live_note_json(note, fingerings, recording_seconds);
+        if (serialized.empty()) continue;
+        if (!first) json << L',';
+        first = false;
+        json << L"{\"id\":\"" << json_escape(from_utf8(id))
+             << L"\",\"revision\":" << note.revision
+             << L",\"note\":" << serialized << L'}';
+    }
+    json << L"],\"gaps\":[";
+    for (std::size_t i = 0; i < message.gaps.size(); ++i) {
+        if (i != 0) json << L',';
+        const auto& gap = message.gaps[i];
+        json << L"{\"first_frame\":" << gap.first_frame
+             << L",\"end_frame\":" << gap.end_frame
+             << L",\"start_seconds\":"
+             << static_cast<double>(gap.first_frame) / safe_sample_rate
+             << L",\"end_seconds\":"
+             << static_cast<double>(gap.end_frame) / safe_sample_rate
+             << L",\"message\":\"" << json_escape(from_utf8(gap.message)) << L"\"}";
+    }
+    json << L"],\"events\":" << live_events_json(message.events, sample_rate)
+         << L",\"coalesced_events_dropped\":"
+         << message.coalesced_events_dropped
+         << L",\"metrics\":" << live_metrics_json(message.metrics, ui_dispatch)
+         << L",\"status\":{\"state\":\""
+    << from_utf8(std::string(
+           transcribe::live::bridge::capture_state_name(message.state)))
+         << L"\",\"message\":\"" << json_escape(from_utf8(message.status)) << L"\"}"
+         << L",\"recording_seconds\":" << recording_seconds
+         << L",\"driver_input_latency_ms\":"
+         << (driver_input_latency_ms < 0 ? L"null" : std::to_wstring(driver_input_latency_ms))
+         << L",\"callback_period_ms\":" << callback_period_ms
+         << L",\"fingerings\":{";
+    first = true;
+    for (const auto& [id, position] : fingerings) {
+        if (!first) json << L',';
+        first = false;
+        json << L'"' << json_escape(from_utf8(id)) << L"\":{\"string\":"
+             << position.first << L",\"fret\":" << position.second << L'}';
+    }
+    json << L"}}";
     return json.str();
 }
 
@@ -1315,7 +1471,8 @@ std::wstring result_json(const CompletionMessage& completion) {
     }
     if (!completion.proposal_only) {
         summary << L".\nMusicXML: " << completion.request.musicxml_path.wstring()
-                << L"\nGuitar tab: " << completion.request.tab_path.wstring();
+                << L"\nGuitar tab: " << completion.request.tab_path.wstring()
+                << L"\nScore JSON: " << completion.request.json_path.wstring();
         if (!completion.request.midi_path.empty()) {
             summary << L"\nMIDI: " << completion.request.midi_path.wstring();
         }
@@ -1777,6 +1934,7 @@ transcribe::ProjectDocument make_project_document(
     update_export_status(project, "musicxml", request.musicxml_path, true);
     update_export_status(project, "tablature", request.tab_path, true);
     update_export_status(project, "midi", request.midi_path, true);
+    update_export_status(project, "json", request.json_path, true);
     transcribe::validate_project_document(project);
     return project;
 }
@@ -1985,6 +2143,7 @@ transcribe::gui::Request request_for_project(
     request.musicxml_path = output_for("musicxml");
     request.tab_path = output_for("tablature");
     request.midi_path = output_for("midi");
+    request.json_path = output_for("json");
     const auto base = project_path.empty()
         ? std::filesystem::current_path() / from_utf8(project.title)
         : project_path.parent_path() / project_path.stem();
@@ -1995,6 +2154,10 @@ transcribe::gui::Request request_for_project(
     if (request.tab_path.empty()) {
         request.tab_path = base;
         request.tab_path.replace_extension(L".tab.txt");
+    }
+    if (request.json_path.empty()) {
+        request.json_path = base;
+        request.json_path.replace_extension(L".score.json");
     }
     return request;
 }
@@ -2056,6 +2219,7 @@ void browse_for_path(AppState& state, const std::string& field_name,
                      const std::wstring& current_value) {
     if (field_name != "input" && field_name != "isolated" && field_name != "model" &&
         field_name != "musicxml" && field_name != "tab" && field_name != "midi" &&
+        field_name != "json" &&
         field_name != "project-open" && field_name != "project-save" &&
         field_name != "project-copy" && field_name != "project-portable" &&
         field_name != "project-relink") {
@@ -2067,7 +2231,8 @@ void browse_for_path(AppState& state, const std::string& field_name,
         std::copy(current_value.begin(), current_value.end(), filename.begin());
     }
     const bool save = field_name == "musicxml" || field_name == "tab" ||
-                      field_name == "midi" || field_name == "project-save" ||
+                      field_name == "midi" || field_name == "json" ||
+                      field_name == "project-save" ||
                       field_name == "project-copy" || field_name == "project-portable";
     const wchar_t* filter = nullptr;
     const wchar_t* extension = nullptr;
@@ -2090,6 +2255,9 @@ void browse_for_path(AppState& state, const std::string& field_name,
     } else if (field_name == "midi") {
         filter = L"MIDI files (*.mid)\0*.mid\0All files (*.*)\0*.*\0\0";
         extension = L"mid";
+    } else if (field_name == "json") {
+        filter = L"Score JSON (*.json)\0*.json\0All files (*.*)\0*.*\0\0";
+        extension = L"json";
     } else if (field_name == "project-open") {
         filter = L"Transcriber projects (*.transcriber;*.json)\0*.transcriber;*.json\0All files (*.*)\0*.*\0\0";
     } else {
@@ -2314,7 +2482,8 @@ void post_worker_status(AppState& state, std::string_view text) {
 void perform_live_capture(
     AppState& state, const transcribe::gui::Request& request,
     std::stop_token stop_token, CompletionMessage& completion,
-    const transcribe::gui::ProgressCallback& progress_callback) {
+    const transcribe::gui::ProgressCallback& progress_callback,
+    const std::shared_ptr<LiveBridgeState>& bridge) {
     using namespace transcribe;
     using namespace transcribe::live;
     const auto rate = request.asio_capture_options.sample_rate;
@@ -2328,6 +2497,9 @@ void perform_live_capture(
     live_options.max_recording_seconds = request.capture_seconds;
     live_options.audio_source_id = "asio-live";
     live_options.lag_policy = LagPolicy::SkipAhead;
+    live_options.events_available = [&state, bridge] {
+        post_live_events_ready(state, bridge);
+    };
 
     std::unique_ptr<ModelBackend> backend;
     std::string backend_id = "builtin:yin";
@@ -2349,13 +2521,18 @@ void perform_live_capture(
         live_options.backend = LiveBackendKind::OverlappingWindow;
         live_options.window.window_seconds =
             std::clamp(model_window, 0.5, 8.0);
-        live_options.window.hop_seconds = std::min(
-            std::max(0.02, request.realtime_options.latency_ms / 1000.0),
-            live_options.window.window_seconds / 4.0);
+        live_options.window.hop_seconds = request.live_hop_ms / 1000.0;
         live_options.window.left_guard_seconds =
             std::min(0.08, live_options.window.window_seconds / 8.0);
         live_options.window.right_guard_seconds =
             std::min(0.08, live_options.window.window_seconds / 8.0);
+        if (live_options.window.window_seconds <
+            live_options.window.hop_seconds +
+                live_options.window.left_guard_seconds +
+                live_options.window.right_guard_seconds) {
+            throw std::invalid_argument(
+                "The live hop interval is too large for this model's analysis window.");
+        }
         live_options.window.confirmations = 2;
         live_options.window.request.analysis.instrument = request.instrument;
         live_options.window.request.analysis.fast_preview = request.fast_preview;
@@ -2373,33 +2550,46 @@ void perform_live_capture(
     }
 
     if (stop_token.stop_requested()) {
+        if (bridge->cancel_requested.load(std::memory_order_acquire)) {
+            completion.cancelled = true;
+            throw std::runtime_error("Live capture cancelled.");
+        }
         throw std::runtime_error("Capture was stopped before the input device opened.");
     }
-    LiveTranscriptionSession session(std::move(live_options), std::move(backend));
-    const auto started = session.start();
+    auto session = std::make_shared<LiveTranscriptionSession>(
+        std::move(live_options), std::move(backend));
+    {
+        std::lock_guard lock(bridge->mutex);
+        bridge->session = session;
+    }
+    const auto started = session->start();
     if (const auto* failure = std::get_if<InferenceError>(&started)) {
         throw std::runtime_error("Could not start live inference: " + failure->message);
     }
-    TranscriptionDocument document(rate);
-    std::unordered_map<std::string, std::pair<int, int>> fingerings;
-    auto last_message = std::chrono::steady_clock::now() -
+    std::stop_callback cancel_capture(stop_token, [session, bridge] {
+        if (bridge->cancel_requested.load(std::memory_order_acquire)) {
+            session->request_cancel();
+        }
+    });
+    auto last_preview = std::chrono::steady_clock::now() -
                         std::chrono::milliseconds(100);
-    auto last_preview = last_message;
-    double driver_input_latency_ms = -1, callback_period_ms = 0;
     auto capture_options = request.asio_capture_options;
     capture_options.stream_opened = [&](std::uint32_t buffer_frames, std::uint64_t driver_frames) {
-        callback_period_ms = 1000.0 * buffer_frames / rate;
-        driver_input_latency_ms = driver_frames ? 1000.0 * driver_frames / rate : -1;
+        {
+            std::lock_guard lock(bridge->mutex);
+            bridge->callback_period_ms = 1000.0 * buffer_frames / rate;
+            bridge->driver_input_latency_ms = driver_frames
+                ? 1000.0 * driver_frames / rate : -1;
+        }
+        post_live_capture_state(state, bridge,
+            transcribe::live::bridge::CaptureState::Capturing,
+            "ASIO stream opened");
     };
     const auto update = [&] {
-        session.pause_analysis(state.analysis_paused.load(std::memory_order_acquire));
-        auto batch = session.poll_events();
-        const bool had_events = !batch.events.empty();
-        if (batch.resync_required) {
-            document.resync(batch.resync_snapshot);
-        } else {
-            document.apply(batch);
+        if (bridge->notification_failed.load(std::memory_order_acquire)) {
+            throw std::runtime_error("The interface could not receive live events.");
         }
+        session->pause_analysis(state.analysis_paused.load(std::memory_order_acquire));
 
         std::deque<std::vector<LiveEditCommand>> transactions;
         {
@@ -2407,137 +2597,150 @@ void perform_live_capture(
             transactions.swap(state.live_commands);
         }
         bool edited = false;
-        for (const auto& commands : transactions) {
-            auto before = document;
-            auto prior_fingerings = fingerings;
-            const bool previously_edited = edited;
-            try {
-              for (const auto& command : commands) {
-                if (command.kind == LiveEditKind::Fingering) {
-                    if (command.string_number == 0 && command.fret == -1) {
-                        fingerings.erase(command.note_id);
-                        edited = true;
-                        continue;
-                    }
-                    const auto note = document.note(command.note_id);
-                    if (!note || command.string_number < 1 ||
-                        static_cast<std::size_t>(command.string_number) >
-                            transcribe::configured_tuning(request.guitar_tab_options).size() || command.fret < 0 ||
-                        command.fret > request.guitar_tab_options.maximum_fret ||
-                        (request.guitar_tab_options.search.physical_fret_count &&
-                         command.fret + request.guitar_tab_options.capo_fret >
-                             *request.guitar_tab_options.search.physical_fret_count) ||
-                        transcribe::configured_tuning(request.guitar_tab_options)[
-                            static_cast<std::size_t>(command.string_number - 1)] +
-                                request.guitar_tab_options.capo_fret +
-                                command.fret != note->midi_pitch) {
-                        throw std::invalid_argument(
-                            "The selected string and fret do not match the note pitch.");
-                    }
-                    fingerings[command.note_id] =
-                        {command.string_number, command.fret};
-                } else if (command.kind == LiveEditKind::Delete) {
-                    document.delete_manual_note(command.note_id,
-                                                "Live editor deletion");
-                    fingerings.erase(command.note_id);
-                } else {
-                    if (command.midi_pitch < 0 || command.midi_pitch > 127 ||
-                        !std::isfinite(command.onset_seconds) ||
-                        !std::isfinite(command.duration_seconds) ||
-                        command.onset_seconds < 0 ||
-                        command.duration_seconds < 0.05 ||
-                        command.onset_seconds + command.duration_seconds >
-                            request.capture_seconds) {
-                        throw std::invalid_argument(
-                            "Live note edits must be within the recording duration.");
-                    }
-                    LiveNote note;
-                    if (command.kind == LiveEditKind::Update) {
-                        const auto current = document.note(command.note_id);
-                        if (!current) {
-                            throw std::invalid_argument(
-                                "The live note changed before the edit was applied.");
+        {
+            std::lock_guard bridge_lock(bridge->mutex);
+            auto &document = bridge->document;
+            auto &fingerings = bridge->fingerings;
+            for (const auto &commands : transactions) {
+                auto before = document;
+                auto prior_fingerings = fingerings;
+                const auto manual_upserts_before = bridge->manual_upserts.size();
+                const auto manual_retractions_before = bridge->manual_retractions.size();
+                const bool previously_edited = edited;
+                try {
+                    for (const auto &command : commands) {
+                        if (command.kind == LiveEditKind::Fingering) {
+                            if (command.string_number == 0 && command.fret == -1) {
+                                fingerings.erase(command.note_id);
+                                edited = true;
+                                continue;
+                            }
+                            const auto note = document.note(command.note_id);
+                            if (!note || command.string_number < 1 ||
+                                static_cast<std::size_t>(command.string_number) >
+                                    transcribe::configured_tuning(request.guitar_tab_options)
+                                        .size() ||
+                                command.fret < 0 ||
+                                command.fret > request.guitar_tab_options.maximum_fret ||
+                                (request.guitar_tab_options.search.physical_fret_count &&
+                                 command.fret + request.guitar_tab_options.capo_fret >
+                                     *request.guitar_tab_options.search.physical_fret_count) ||
+                                transcribe::configured_tuning(
+                                    request.guitar_tab_options)[static_cast<std::size_t>(
+                                    command.string_number - 1)] +
+                                        request.guitar_tab_options.capo_fret + command.fret !=
+                                    note->midi_pitch) {
+                                throw std::invalid_argument(
+                                    "The selected string and fret do not match the note pitch.");
+                            }
+                            fingerings[command.note_id] = {command.string_number, command.fret};
+                        } else if (command.kind == LiveEditKind::Delete) {
+                            document.delete_manual_note(command.note_id, "Live editor deletion");
+                            fingerings.erase(command.note_id);
+                        } else {
+                            if (command.midi_pitch < 0 || command.midi_pitch > 127 ||
+                                !std::isfinite(command.onset_seconds) ||
+                                !std::isfinite(command.duration_seconds) ||
+                                command.onset_seconds < 0 || command.duration_seconds < 0.05 ||
+                                command.onset_seconds + command.duration_seconds >
+                                    request.capture_seconds) {
+                                throw std::invalid_argument(
+                                    "Live note edits must be within the recording duration.");
+                            }
+                            LiveNote note;
+                            if (command.kind == LiveEditKind::Update) {
+                                const auto current = document.note(command.note_id);
+                                if (!current) {
+                                    throw std::invalid_argument(
+                                        "The live note changed before the edit was applied.");
+                                }
+                                note = *current;
+                            }
+                            note.id = command.note_id;
+                            note.midi_pitch = command.midi_pitch;
+                            note.sample_rate = rate;
+                            note.onset_frame =
+                                transcribe::recording_sample_position(command.onset_seconds, rate);
+                            note.offset_frame = transcribe::recording_sample_position(
+                                command.onset_seconds + command.duration_seconds, rate);
+                            note.state = EventLifecycle::ManuallyCorrected;
+                            if (command.kind == LiveEditKind::Add) {
+                                note.source_model = backend_id;
+                                note.detection_method = "manual live edit";
+                                document.add_manual_note(note, "Live editor insertion",
+                                                         command.note_id);
+                            } else {
+                                document.edit_manual_note(note, "Live editor correction");
+                            }
                         }
-                        note = *current;
+                        edited = true;
                     }
-                    note.id = command.note_id;
-                    note.midi_pitch = command.midi_pitch;
-                    note.sample_rate = rate;
-                    note.onset_frame = transcribe::recording_sample_position(command.onset_seconds, rate);
-                    note.offset_frame = transcribe::recording_sample_position(
-                        command.onset_seconds + command.duration_seconds, rate);
-                    note.state = EventLifecycle::ManuallyCorrected;
-                    if (command.kind == LiveEditKind::Add) {
-                        note.source_model = backend_id;
-                        note.detection_method = "manual live edit";
-                        document.add_manual_note(note, "Live editor insertion",
-                                                 command.note_id);
-                    } else {
-                        document.edit_manual_note(note, "Live editor correction");
+                    std::array<std::vector<std::pair<std::uint64_t, std::uint64_t>>, 6> occupied;
+                    for (const auto &[id, position] : fingerings) {
+                        const auto note = document.note(id);
+                        if (!note || note->state == EventLifecycle::Rejected)
+                            continue;
+                        const auto [string, fret] = position;
+                        if (string < 1 ||
+                            static_cast<std::size_t>(string) >
+                                transcribe::configured_tuning(request.guitar_tab_options).size() ||
+                            fret < 0 || fret > request.guitar_tab_options.maximum_fret ||
+                            (request.guitar_tab_options.search.physical_fret_count &&
+                             fret + request.guitar_tab_options.capo_fret >
+                                 *request.guitar_tab_options.search.physical_fret_count) ||
+                            transcribe::configured_tuning(
+                                request.guitar_tab_options)[static_cast<std::size_t>(string - 1)] +
+                                    request.guitar_tab_options.capo_fret + fret !=
+                                note->midi_pitch) {
+                            throw std::invalid_argument(
+                                "Live fingering no longer preserves pitch.");
+                        }
+                        occupied[static_cast<std::size_t>(string - 1)].push_back(
+                            {note->onset_frame, note->offset_frame.value_or(
+                                                    std::numeric_limits<std::uint64_t>::max())});
                     }
+                    for (auto &string : occupied) {
+                        std::sort(string.begin(), string.end());
+                        for (std::size_t i = 1; i < string.size(); ++i) {
+                            if (string[i].first < string[i - 1].second) {
+                                throw std::invalid_argument(
+                                    "Live edit assigns overlapping notes to the same string.");
+                            }
+                        }
+                    }
+                    for (const auto &command : commands) {
+                        if (command.kind == LiveEditKind::Fingering)
+                            continue;
+                        bridge->manual_note_ids.insert(command.note_id);
+                        if (const auto note = document.note(command.note_id)) {
+                            if (note->state == EventLifecycle::Rejected) {
+                                bridge->manual_retractions.emplace_back(note->id, note->revision);
+                            } else {
+                                bridge->manual_upserts.push_back(*note);
+                            }
+                        }
+                    }
+                } catch (const std::exception &error) {
+                    document = std::move(before);
+                    fingerings = std::move(prior_fingerings);
+                    bridge->manual_upserts.resize(manual_upserts_before);
+                    bridge->manual_retractions.resize(manual_retractions_before);
+                    edited = previously_edited;
+                    post_worker_status(state, std::string("Live edit error: ") + error.what());
                 }
-                edited = true;
-              }
-              std::array<std::vector<std::pair<std::uint64_t, std::uint64_t>>, 6> occupied;
-              for (const auto& [id, position] : fingerings) {
-                  const auto note = document.note(id);
-                  if (!note || note->state == EventLifecycle::Rejected) continue;
-                  const auto [string, fret] = position;
-                  if (string < 1 || static_cast<std::size_t>(string) >
-                      transcribe::configured_tuning(request.guitar_tab_options).size() ||
-                      fret < 0 || fret > request.guitar_tab_options.maximum_fret ||
-                      (request.guitar_tab_options.search.physical_fret_count &&
-                       fret + request.guitar_tab_options.capo_fret >
-                           *request.guitar_tab_options.search.physical_fret_count) ||
-                      transcribe::configured_tuning(request.guitar_tab_options)[static_cast<std::size_t>(string - 1)] +
-                          request.guitar_tab_options.capo_fret + fret != note->midi_pitch) {
-                      throw std::invalid_argument("Live fingering no longer preserves pitch.");
-                  }
-                  occupied[static_cast<std::size_t>(string - 1)].push_back({
-                      note->onset_frame, note->offset_frame.value_or(std::numeric_limits<std::uint64_t>::max())});
-              }
-              for (auto& string : occupied) {
-                  std::sort(string.begin(), string.end());
-                  for (std::size_t i = 1; i < string.size(); ++i) {
-                      if (string[i].first < string[i - 1].second) {
-                          throw std::invalid_argument("Live edit assigns overlapping notes to the same string.");
-                      }
-                  }
-              }
-            } catch (const std::exception& error) {
-                document = std::move(before);
-                fingerings = std::move(prior_fingerings);
-                edited = previously_edited;
-                post_worker_status(state,
-                    std::string("Live edit error: ") + error.what());
             }
         }
 
         const auto now = std::chrono::steady_clock::now();
-        if (had_events || edited ||
-            now - last_message >= std::chrono::milliseconds(100)) {
-            auto message = std::make_unique<LiveSessionMessage>();
-            message->job = completion.job;
-            message->driver_input_latency_ms = driver_input_latency_ms;
-            message->callback_period_ms = callback_period_ms;
-            message->recording_seconds =
-                static_cast<double>(session.ingested_frames()) / rate;
-            message->sample_rate = rate;
-            message->notes = document.notes();
-            message->events = std::move(batch.events);
-            message->metrics = session.metrics();
-            message->fingerings = fingerings;
-            post_live_session(state, std::move(message));
-            last_message = now;
-        }
+        if (edited)
+            post_live_events_ready(state, bridge);
         if (now - last_preview >= std::chrono::milliseconds(150)) {
-            const auto tail = session.recording_tail(8192);
+            const auto tail = session->recording_tail(8192);
             if (!tail.samples.empty()) {
-                const auto preview = make_audio_preview(
-                    tail.samples, tail.sample_rate, 96, 40);
-                const double offset = std::max(
-                    0.0, static_cast<double>(session.ingested_frames()) / rate -
-                             preview.duration_seconds);
+                const auto preview = make_audio_preview(tail.samples, tail.sample_rate, 96, 40);
+                const double offset =
+                    std::max(0.0, static_cast<double>(session->ingested_frames()) / rate -
+                                      preview.duration_seconds);
                 auto message = std::make_unique<AudioPreviewMessage>();
                 message->job = completion.job;
                 message->offset = offset;
@@ -2554,19 +2757,79 @@ void perform_live_capture(
 
     post_worker_status(state, "Connecting to ASIO input");
     const auto capture = capture_asio_live(
-        request.capture_seconds, session, stop_token,
+        request.capture_seconds, *session, stop_token,
         [&](double progress) {
             if (progress_callback) {
                 progress_callback(progress, "Capturing live audio");
             }
         },
         capture_options, update);
-    post_worker_status(state, "Stabilizing live note events");
-    session.finish();
-    update();
-    if (session.state() == LiveState::AnalysisFailed) {
-        throw std::runtime_error("Live analysis failed: " + session.last_error());
+    const auto discard_queued_edits = [&state] {
+        std::lock_guard lock(state.live_command_mutex);
+        state.live_commands.clear();
+    };
+    if (bridge->cancel_requested.load(std::memory_order_acquire)) {
+        discard_queued_edits();
+        post_live_capture_state(state, bridge,
+            transcribe::live::bridge::CaptureState::Finishing,
+            "Discarding cancelled live capture");
+        session->cancel();
+    } else {
+        post_worker_status(state, "Stabilizing live note events");
+        update();
+        post_live_capture_state(state, bridge,
+            transcribe::live::bridge::CaptureState::Finishing,
+            "Finalizing live note events");
+        session->finish();
+        if (bridge->cancel_requested.load(std::memory_order_acquire) &&
+            session->state() != LiveState::Finished) {
+            discard_queued_edits();
+            session->cancel();
+        }
     }
+    post_live_events_ready(state, bridge);
+    {
+        std::unique_lock lock(bridge->mutex);
+        while (!bridge->final_batch_applied &&
+               !bridge->notification_failed.load(std::memory_order_acquire) &&
+               !bridge->shutdown_requested.load(std::memory_order_acquire)) {
+            bridge->drained.wait_for(lock, std::chrono::milliseconds(100));
+        }
+        if (!bridge->final_batch_applied) {
+            throw std::runtime_error(
+                bridge->notification_failed.load(std::memory_order_acquire)
+                    ? "Could not notify the interface to drain final live events."
+                    : "The interface closed before final live events were applied.");
+        }
+    }
+    if (session->state() == LiveState::AnalysisFailed) {
+        throw std::runtime_error("Live analysis failed: " + session->last_error());
+    }
+    bool cancelled = false;
+    {
+        std::lock_guard lock(bridge->mutex);
+        cancelled = bridge->cancel_requested.load(std::memory_order_acquire) &&
+                    session->state() != LiveState::Finished;
+        if (!cancelled) {
+            bridge->capture_state =
+                transcribe::live::bridge::CaptureState::Finished;
+            bridge->status = "Capture finished";
+        } else {
+            bridge->capture_state =
+                transcribe::live::bridge::CaptureState::Finished;
+            bridge->status =
+                "Capture cancelled; captured notes were not accepted";
+        }
+    }
+    if (cancelled) {
+        completion.cancelled = true;
+        post_live_capture_state(state, bridge,
+            transcribe::live::bridge::CaptureState::Finished,
+            "Capture cancelled; captured notes were not accepted");
+        throw std::runtime_error("Live capture cancelled.");
+    }
+    post_live_capture_state(state, bridge,
+        transcribe::live::bridge::CaptureState::Finished, "Capture finished");
     if (capture.input_lost || capture.reconnects > 0 || capture.blocks_refused > 0 || capture.null_input_frames > 0 ||
         capture.driver_overflows > 0) {
         std::ostringstream warning;
@@ -2582,8 +2845,13 @@ void perform_live_capture(
 
     completion.live_capture = true;
     completion.live_backend_id = backend_id;
-    completion.live_recording = session.recording();
-    completion.live_document = std::move(document);
+    completion.live_recording = session->recording();
+    std::unordered_map<std::string, std::pair<int, int>> fingerings;
+    {
+        std::lock_guard lock(bridge->mutex);
+        completion.live_document = bridge->document;
+        fingerings = bridge->fingerings;
+    }
     completion.result = build_live_result(
         request, *completion.live_document, rate, completion.live_recording.samples.size(),
         fingerings);
@@ -2602,6 +2870,8 @@ void perform_live_capture(
     if (!request.midi_path.empty()) {
         write_midi(request.midi_path, completion.result.score);
     }
+    write_output_atomic(
+        request.json_path, serialize_score_document(completion.result.score) + '\n');
     if (progress_callback) progress_callback(1.0, "Live transcription complete");
 }
 
@@ -2635,6 +2905,7 @@ void start_transcription(AppState& state,
     request.musicxml_path = from_utf8(field(fields, "musicxml"));
     request.tab_path = from_utf8(field(fields, "tab"));
     request.midi_path = from_utf8(field(fields, "midi"));
+    request.json_path = from_utf8(field(fields, "json"));
     request.polyphonic = field(fields, "polyphonic") == "1";
     request.fast_preview = field(fields, "quality") == "fast";
     request.instrument = instrument_prior(field(fields, "instrument"));
@@ -2782,6 +3053,14 @@ void start_transcription(AppState& state,
             throw std::invalid_argument(
                 "Realtime analysis latency must be between 20 and 50 milliseconds.");
         }
+        if (request.live_backend != "yin" && fields.contains("live_hop_ms")) {
+            request.live_hop_ms = parse_number(
+                field(fields, "live_hop_ms"), "live hop interval");
+            if (request.live_hop_ms < 10.0 || request.live_hop_ms > 1800.0) {
+                throw std::invalid_argument(
+                    "Live hop interval must be between 10 and 1800 milliseconds.");
+            }
+        }
         const auto device_id_text = field(fields, "device_id");
         std::size_t device_id_characters = 0;
         const auto device_id = std::stoul(device_id_text, &device_id_characters);
@@ -2823,8 +3102,10 @@ void start_transcription(AppState& state,
     } else if (request.input_path.empty()) {
         throw std::invalid_argument("Choose an audio file first.");
     }
-    if (request.musicxml_path.empty() || request.tab_path.empty()) {
-        throw std::invalid_argument("Choose both MusicXML and guitar tab output paths.");
+    if (request.musicxml_path.empty() || request.tab_path.empty() ||
+        request.json_path.empty()) {
+        throw std::invalid_argument(
+            "Choose MusicXML, guitar tab, and score JSON output paths.");
     }
 #ifndef TRANSCRIBE_ENABLE_ONNX
     if (!request.model_path.empty() || request.polyphonic ||
@@ -2843,14 +3124,24 @@ void start_transcription(AppState& state,
     const auto job = ++state.next_transcription_job;
     state.active_transcription_job = job;
     state.transcription_cancelled = false;
+    std::shared_ptr<LiveBridgeState> live_bridge;
     if (request.use_asio) {
+        live_bridge = std::make_shared<LiveBridgeState>(
+            request.asio_capture_options.sample_rate);
+        live_bridge->job = job;
+        state.live_bridge = live_bridge;
+        post_live_status_json(state, job,
+            transcribe::live::bridge::CaptureState::Arming,
+            "Preparing ASIO input");
         std::lock_guard lock(state.live_command_mutex);
         state.live_commands.clear();
+    } else {
+        state.live_bridge.reset();
     }
     post_json(state, L"{\"type\":\"progress\",\"progress\":0,\"status\":\"Starting analysis\"}");
     try {
         state.worker = std::jthread(
-            [&state, job, request = std::move(request)](std::stop_token stop_token) {
+            [&state, job, request = std::move(request), live_bridge](std::stop_token stop_token) {
             auto completion = std::make_unique<CompletionMessage>();
             completion->job = job;
             completion->request = request;
@@ -2891,7 +3182,7 @@ void start_transcription(AppState& state,
                     };
                 if (request.use_asio) {
                     perform_live_capture(state, request, stop_token, *completion,
-                                         progress_callback);
+                                         progress_callback, live_bridge);
                 } else {
                     completion->result = transcribe::gui::run_transcription(
                         request, stop_token, progress_callback, live_callback,
@@ -2911,14 +3202,46 @@ void start_transcription(AppState& state,
                 }
             } catch (const std::exception& error) {
                 completion->error = error.what();
+                if (request.use_asio && live_bridge && completion->cancelled) {
+                    try {
+                        post_live_capture_state(state, live_bridge,
+                            transcribe::live::bridge::CaptureState::Finished,
+                            "Capture canceled; captured notes were not accepted");
+                    } catch (const std::exception& status_error) {
+                        completion->error += std::string("; status delivery failed: ") +
+                                             status_error.what();
+                    }
+                } else if (request.use_asio && live_bridge &&
+                           !completion->cancelled) {
+                    try {
+                        post_live_capture_state(state, live_bridge,
+                            transcribe::live::bridge::CaptureState::Failed,
+                            error.what());
+                    } catch (const std::exception& status_error) {
+                        completion->error += std::string("; status delivery failed: ") +
+                                             status_error.what();
+                    }
+                }
             }
             if (PostMessageW(state.window, message_complete, 0,
                              reinterpret_cast<LPARAM>(completion.get()))) {
                 completion.release();
             }
             });
-    } catch (...) {
+    } catch (const std::exception& error) {
+        if (live_bridge) {
+            {
+                std::lock_guard lock(live_bridge->mutex);
+                live_bridge->capture_state =
+                    transcribe::live::bridge::CaptureState::Failed;
+                live_bridge->status = error.what();
+            }
+            post_live_status_json(state, job,
+                transcribe::live::bridge::CaptureState::Failed, error.what());
+            state.live_bridge.reset();
+        }
         state.busy = false;
+        state.active_transcription_job = 0;
         state.active_asio = false;
         throw;
     }
@@ -3280,9 +3603,11 @@ void export_edited_score(
         const auto musicxml_path = field(fields, "musicxml");
         const auto tab_path = field(fields, "tab");
         const auto midi_path = field(fields, "midi");
+        const auto json_path = field(fields, "json");
         if (!musicxml_path.empty()) request.musicxml_path = from_utf8(musicxml_path);
         if (!tab_path.empty()) request.tab_path = from_utf8(tab_path);
         if (!midi_path.empty()) request.midi_path = from_utf8(midi_path);
+        if (!json_path.empty()) request.json_path = from_utf8(json_path);
     } else if (mode == ScoreWriteMode::SaveProject) {
         const auto requested_path = field(fields, "project_path");
         project_destination = requested_path.empty()
@@ -3298,8 +3623,9 @@ void export_edited_score(
         }
     }
     if (!request.isolated_audio_path.empty()) {
-        const std::array outputs{request.musicxml_path, request.tab_path, request.midi_path,
-                                 project_destination};
+        const std::array outputs{
+            request.musicxml_path, request.tab_path, request.midi_path,
+            request.json_path, project_destination};
         transcribe::protect_preprocessing_inputs(
             {request.input_path, request.isolated_audio_path, "", false}, outputs);
     }
@@ -3741,6 +4067,7 @@ void export_edited_score(
         update_export_status(project, "musicxml", request.musicxml_path, true);
         update_export_status(project, "tablature", request.tab_path, true);
         update_export_status(project, "midi", request.midi_path, true);
+        update_export_status(project, "json", request.json_path, true);
     }
     transcribe::validate_project_document(project);
 
@@ -3827,6 +4154,14 @@ void export_edited_score(
                             update_export_status(
                                 project, current_format, current_output, true);
                         }
+                        current_format = "json";
+                        current_output = request.json_path;
+                        report_export_progress(95, L"Writing accepted score JSON");
+                        transcribe::write_output_atomic(
+                            request.json_path,
+                            transcribe::serialize_score_document(result.score) + '\n');
+                        update_export_status(
+                            project, current_format, current_output, true);
                         report_export_progress(100, L"Export complete");
                     }
                     message->request.guitar_tab_options.manual_corrections =
@@ -3915,6 +4250,10 @@ void accept_proposal(AppState& state) {
                         report_progress(80, L"Writing accepted MIDI");
                         transcribe::write_midi(request.midi_path, result.score);
                     }
+                    report_progress(90, L"Writing accepted score JSON");
+                    transcribe::write_output_atomic(
+                        request.json_path,
+                        transcribe::serialize_score_document(result.score) + '\n');
                     message->project = make_project_document(
                         request, result,
                         live_capture ? &live_recording : nullptr,
@@ -3984,14 +4323,14 @@ void start_live_refinement(AppState& state) {
                         auto message = std::make_unique<ProgressMessage>();
                         message->percent = std::clamp(
                             static_cast<int>(progress * 100.0), 0, 100);
-                        message->status = L"Refining full recording";
+                        message->status = L"Refining recording";
                         if (PostMessageW(state.window, message_progress, 0,
                                          reinterpret_cast<LPARAM>(message.get()))) {
                             message.release();
                         }
                     };
                     options.decoding.minimum_duration_seconds = 0.055;
-                    if (backend_id != "builtin:yin") {
+                    if (backend_id.starts_with("onnx:")) {
                         transcribe::live::WindowOptions window;
                         window.window_seconds =
                             backend_id == "builtin:spectral" ? 1.0 : 2.0;
@@ -4164,6 +4503,11 @@ void apply_live_refinement(
                         transcribe::write_midi(
                             request.midi_path, completion->result.score);
                     }
+                    progress(90, L"Writing accepted score JSON");
+                    transcribe::write_output_atomic(
+                        request.json_path,
+                        transcribe::serialize_score_document(
+                            completion->result.score) + '\n');
                     completion->success = true;
                 } catch (const std::exception& error) {
                     completion->error = error.what();
@@ -4234,6 +4578,9 @@ void undo_live_refinement(AppState& state) {
                         transcribe::write_midi(
                             request.midi_path, prior_result.score);
                     }
+                    transcribe::write_output_atomic(
+                        request.json_path,
+                        transcribe::serialize_score_document(prior_result.score) + '\n');
                     completion->success = true;
                 } catch (const std::exception& error) {
                     completion->error = error.what();
@@ -4302,21 +4649,22 @@ void handle_web_message(AppState& state, const std::string& message) {
     }
     const auto separator = message.find('|');
     const std::string action = message.substr(0, separator);
-    static constexpr std::array<std::string_view, 23> allowed_actions{
-        "ready", "browse", "transcribe", "export-edits", "play-original",
-        "stop-playback", "cancel", "open-output", "accept-proposal", "live-edit",
-        "refine-live", "apply-refinement", "discard-refinement", "undo-refinement",
-        "audition-event", "new-project", "open-project", "save-project",
-        "save-score-copy", "autosave-project", "discard-recovery", "pause-analysis",
-        "audition-source"};
-    if (std::find(allowed_actions.begin(), allowed_actions.end(), action) ==
-        allowed_actions.end()) {
+    if (!transcribe::live::bridge::operation_allowed(action)) {
         throw std::invalid_argument("The interface requested an unsupported operation.");
     }
     const std::string query = separator == std::string::npos
                                   ? std::string{}
                                   : message.substr(separator + 1);
     const auto fields = parse_fields(query);
+    if (action == "start-capture" || action == "stop-capture" ||
+        action == "cancel") {
+        const auto version = field(fields, "version");
+        if (version != std::to_string(
+                transcribe::live::bridge::protocol_version)) {
+            throw std::invalid_argument(
+                "The capture operation uses an unsupported protocol version.");
+        }
+    }
 
     if (action == "ready") {
 #ifdef TRANSCRIBE_ENABLE_ASIO
@@ -4347,6 +4695,8 @@ void handle_web_message(AppState& state, const std::string& message) {
                              std::wstring(ffmpeg_enabled ? L"true" : L"false") +
                              L",\"verovio\":" +
                              std::wstring(verovio_enabled ? L"true" : L"false") + L"}");
+        post_live_status_json(state, 0,
+            transcribe::live::bridge::CaptureState::Idle, "Ready");
         const auto recovery_path = project_autosave_path();
         std::error_code recovery_error;
         if (std::filesystem::is_regular_file(recovery_path, recovery_error) &&
@@ -4363,6 +4713,51 @@ void handle_web_message(AppState& state, const std::string& message) {
     } else if (action == "transcribe") {
         stop_native_playback(state);
         start_transcription(state, fields);
+    } else if (action == "start-capture") {
+        if (field(fields, "mode") != "asio") {
+            post_live_status_json(state, 0,
+                transcribe::live::bridge::CaptureState::Failed,
+                "Capture requests must select ASIO input.");
+            throw std::invalid_argument("Capture requests must select ASIO input.");
+        }
+        try {
+            stop_native_playback(state);
+            start_transcription(state, fields);
+        } catch (const std::exception& error) {
+            post_live_status_json(state, 0,
+                transcribe::live::bridge::CaptureState::Failed, error.what());
+            throw;
+        }
+    } else if (action == "stop-capture") {
+        if (!state.busy || !state.active_asio ||
+            !state.worker.joinable() || !state.live_bridge) {
+            post_live_status_json(state, 0,
+                transcribe::live::bridge::CaptureState::Idle,
+                "No live capture is active");
+            return;
+        }
+        bool capture_complete = false;
+        transcribe::live::bridge::CaptureState capture_state;
+        std::string capture_status;
+        {
+            std::lock_guard lock(state.live_bridge->mutex);
+            capture_state = state.live_bridge->capture_state;
+            capture_status = state.live_bridge->status;
+            capture_complete =
+                capture_state == transcribe::live::bridge::CaptureState::Finished ||
+                capture_state == transcribe::live::bridge::CaptureState::Failed;
+        }
+        if (capture_complete) {
+            post_live_status_json(state, state.live_bridge->job,
+                                  capture_state, capture_status);
+            return;
+        }
+        post_live_capture_state(state, state.live_bridge,
+            transcribe::live::bridge::CaptureState::Finishing,
+            "Stopping capture and finalizing notes");
+        state.worker.request_stop();
+        post_json(state,
+            L"{\"type\":\"progress\",\"status\":\"Stopping capture and finalizing notes\"}");
     } else if (action == "export-edits") {
         export_edited_score(state, fields, ScoreWriteMode::Export);
     } else if (action == "new-project") {
@@ -4397,6 +4792,20 @@ void handle_web_message(AppState& state, const std::string& message) {
     } else if (action == "live-edit") {
         if (!state.busy || !state.active_asio) {
             throw std::runtime_error("Live note editing is available only during capture.");
+        }
+        const auto bridge = state.live_bridge;
+        if (!bridge) {
+            throw std::runtime_error("The live capture document is unavailable.");
+        }
+        {
+            std::lock_guard lock(bridge->mutex);
+            if (bridge->capture_state !=
+                    transcribe::live::bridge::CaptureState::Capturing &&
+                bridge->capture_state !=
+                    transcribe::live::bridge::CaptureState::Interrupted) {
+                throw std::runtime_error(
+                    "Live note editing is unavailable while capture is finalizing.");
+            }
         }
         std::vector<std::unordered_map<std::string, std::string>> edits;
         if (fields.contains("batch")) {
@@ -4574,11 +4983,42 @@ void handle_web_message(AppState& state, const std::string& message) {
         stop_native_playback(state);
     } else if (action == "cancel") {
         if (state.busy && state.active_transcription_job && state.worker.joinable()) {
+            if (state.active_asio && state.live_bridge) {
+                transcribe::live::bridge::CaptureState current_state;
+                std::string current_status;
+                {
+                    std::lock_guard lock(state.live_bridge->mutex);
+                    current_state = state.live_bridge->capture_state;
+                    current_status = state.live_bridge->status;
+                    if (current_state !=
+                            transcribe::live::bridge::CaptureState::Finished &&
+                        current_state !=
+                            transcribe::live::bridge::CaptureState::Failed) {
+                        state.live_bridge->cancel_requested.store(
+                            true, std::memory_order_release);
+                    }
+                }
+                if (current_state ==
+                        transcribe::live::bridge::CaptureState::Finished ||
+                    current_state ==
+                        transcribe::live::bridge::CaptureState::Failed) {
+                    post_live_status_json(state,
+                        state.live_bridge->job, current_state, current_status);
+                    return;
+                }
+                post_live_capture_state(state, state.live_bridge,
+                    transcribe::live::bridge::CaptureState::Finishing,
+                    "Canceling capture and discarding its notes");
+            }
             state.worker.request_stop();
-            state.transcription_cancelled = !state.active_asio;
+            state.transcription_cancelled = true;
             post_json(state, state.active_asio
-                ? L"{\"type\":\"progress\",\"status\":\"Stopping capture and finalizing notes\"}"
+                ? L"{\"type\":\"progress\",\"status\":\"Canceling capture\"}"
                 : L"{\"type\":\"progress\",\"status\":\"Cancelling analysis at a safe boundary\"}");
+        } else {
+            post_live_status_json(state, 0,
+                transcribe::live::bridge::CaptureState::Idle,
+                "No active operation to cancel");
         }
     } else if (action == "open-output") {
         const auto output_path = std::filesystem::path(
@@ -4765,6 +5205,115 @@ HRESULT WebMessageReceived::Invoke(
     return S_OK;
 }
 
+void drain_live_bridge(AppState& state) {
+    const auto bridge = state.live_bridge;
+    if (!bridge || bridge->job != state.active_transcription_job) return;
+
+    std::shared_ptr<transcribe::live::LiveTranscriptionSession> session;
+    {
+        std::lock_guard lock(bridge->mutex);
+        session = bridge->session;
+    }
+    if (!session) return;
+
+    const auto notification_time_ns =
+        bridge->notification_posted_at_ns.exchange(0, std::memory_order_acq_rel);
+    if (notification_time_ns > 0) {
+        const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const double delay_ms = std::max(
+            0.0, static_cast<double>(now_ns - notification_time_ns) / 1'000'000.0);
+        bridge->ui_dispatch_samples_ms.push_back(delay_ms);
+        if (bridge->ui_dispatch_samples_ms.size() > 256) {
+            bridge->ui_dispatch_samples_ms.pop_front();
+        }
+        ++bridge->ui_dispatch_sample_count;
+    }
+    const auto ui_dispatch = summarize_ui_dispatch(
+        bridge->ui_dispatch_samples_ms, bridge->ui_dispatch_sample_count);
+
+    auto batch = session->poll_events();
+    const auto metrics = session->metrics();
+    const auto session_state = session->state();
+    const double recording_seconds =
+        static_cast<double>(session->ingested_frames()) / bridge->sample_rate;
+    transcribe::live::bridge::Message message;
+    std::unordered_map<std::string, std::pair<int, int>> fingerings;
+    double driver_input_latency_ms = -1;
+    double callback_period_ms = 0;
+    std::string status;
+    transcribe::live::bridge::CaptureState capture_state;
+    bool final_batch = false;
+
+    {
+        std::lock_guard lock(bridge->mutex);
+        if (batch.resync_required) {
+            bridge->document.resync(batch.resync_snapshot);
+        } else {
+            bridge->document.apply(batch);
+        }
+
+        auto visible_batch = batch;
+        const auto is_manual_note = [&](const auto& note) {
+            return bridge->manual_note_ids.contains(note.id);
+        };
+        visible_batch.events.erase(
+            std::remove_if(visible_batch.events.begin(), visible_batch.events.end(),
+                [&](const auto& event) {
+                    return !event.note.id.empty() &&
+                           bridge->manual_note_ids.contains(event.note.id);
+                }),
+            visible_batch.events.end());
+        if (visible_batch.resync_required) {
+            visible_batch.resync_snapshot.erase(
+                std::remove_if(visible_batch.resync_snapshot.begin(),
+                              visible_batch.resync_snapshot.end(),
+                              is_manual_note),
+                visible_batch.resync_snapshot.end());
+        }
+        bridge->coalescer.append(visible_batch);
+        for (const auto& note : bridge->manual_upserts) {
+            bridge->coalescer.append_upsert(note);
+        }
+        for (const auto& [id, revision] : bridge->manual_retractions) {
+            bridge->coalescer.append_retraction(id, revision);
+        }
+        bridge->manual_upserts.clear();
+        bridge->manual_retractions.clear();
+
+        if (session_state == transcribe::live::LiveState::InputInterrupted &&
+            bridge->capture_state == transcribe::live::bridge::CaptureState::Capturing) {
+            bridge->capture_state = transcribe::live::bridge::CaptureState::Interrupted;
+            bridge->status = "Audio input interrupted; attempting to reconnect";
+        } else if (session_state == transcribe::live::LiveState::Running &&
+                   bridge->capture_state == transcribe::live::bridge::CaptureState::Interrupted) {
+            bridge->capture_state = transcribe::live::bridge::CaptureState::Capturing;
+            bridge->status = "Audio input reconnected";
+        }
+
+        capture_state = bridge->capture_state;
+        status = bridge->status;
+        fingerings = bridge->fingerings;
+        driver_input_latency_ms = bridge->driver_input_latency_ms;
+        callback_period_ms = bridge->callback_period_ms;
+        message = bridge->coalescer.take(metrics, capture_state, status);
+        final_batch = session_state == transcribe::live::LiveState::Finished ||
+                      session_state == transcribe::live::LiveState::AnalysisFailed ||
+                      session_state == transcribe::live::LiveState::Cancelled;
+    }
+
+    post_json(state, live_bridge_message_json(
+        message, fingerings, recording_seconds, bridge->sample_rate,
+        ui_dispatch, driver_input_latency_ms, callback_period_ms, bridge->job));
+    if (final_batch) {
+        {
+            std::lock_guard lock(bridge->mutex);
+            bridge->final_batch_applied = true;
+        }
+        bridge->drained.notify_all();
+    }
+}
+
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     auto* state = reinterpret_cast<AppState*>(
         GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -4798,6 +5347,68 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         limits->ptMinTrackSize.y = 650;
         return 0;
     }
+    case message_live_status: {
+        std::unique_ptr<LiveStatusMessage> status;
+        if (wparam == 1) {
+            std::lock_guard lock(state->live_message_mutex);
+            status = std::move(state->pending_live_status);
+            state->live_status_posted = false;
+        } else {
+            status.reset(reinterpret_cast<LiveStatusMessage*>(lparam));
+        }
+        if (!status ||
+            (status->job && status->job != state->active_transcription_job)) {
+            return 0;
+        }
+        post_live_status_json(*state, status->job, status->state, status->status);
+        if (status->state == transcribe::live::bridge::CaptureState::Capturing ||
+            status->state == transcribe::live::bridge::CaptureState::Interrupted ||
+            status->state == transcribe::live::bridge::CaptureState::Finishing) {
+            const auto bridge = state->live_bridge;
+            if (bridge && bridge->job == status->job) {
+                bool has_session = false;
+                {
+                    std::lock_guard lock(bridge->mutex);
+                    has_session = static_cast<bool>(bridge->session);
+                }
+                if (has_session && !state->live_session_timer_active) {
+                    if (SetTimer(window, live_session_timer, 17, nullptr) != 0) {
+                        state->live_session_timer_active = true;
+                    } else {
+                        bridge->notification_failed.store(true,
+                            std::memory_order_release);
+                        bridge->drained.notify_all();
+                        if (state->worker.joinable()) state->worker.request_stop();
+                        post_error(*state,
+                            "Could not start the live event delivery timer.");
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+    case message_live_events_ready: {
+        const auto bridge = state->live_bridge;
+        if (!bridge) return 0;
+        bridge->notification_posted.store(false, std::memory_order_release);
+        if (bridge->job != state->active_transcription_job) return 0;
+        bool has_session = false;
+        {
+            std::lock_guard lock(bridge->mutex);
+            has_session = static_cast<bool>(bridge->session);
+        }
+        if (has_session && !state->live_session_timer_active) {
+            if (SetTimer(window, live_session_timer, 17, nullptr) != 0) {
+                state->live_session_timer_active = true;
+            } else {
+                bridge->notification_failed.store(true, std::memory_order_release);
+                bridge->drained.notify_all();
+                if (state->worker.joinable()) state->worker.request_stop();
+                post_error(*state, "Could not start the live event delivery timer.");
+            }
+        }
+        return 0;
+    }
     case message_progress: {
         std::unique_ptr<ProgressMessage> progress(
             reinterpret_cast<ProgressMessage*>(lparam));
@@ -4828,33 +5439,6 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         post_json(*state, L"{\"type\":\"live\",\"notes\":" +
                              notes_json(live->notes, live->offset) +
                              L",\"events\":" + events_json(live->events) + L"}");
-        return 0;
-    }
-    case message_live_session: {
-        std::unique_ptr<LiveSessionMessage> live;
-        {
-            std::lock_guard lock(state->live_message_mutex);
-            live = std::move(state->pending_live_message);
-            state->live_message_posted = false;
-        }
-        if (live && !state->transcription_cancelled &&
-            !(live->job && state->last_result) &&
-            (!live->job || live->job == state->active_transcription_job)) {
-            post_json(*state, L"{\"type\":\"live\",\"live_session\":true,\"notes\":" +
-                live_notes_json(live->notes, live->fingerings,
-                                live->recording_seconds) +
-                L",\"events\":" + live_events_json(live->events, live->sample_rate) +
-                L",\"metrics\":" + live_metrics_json(live->metrics) +
-                L",\"ui_dispatch_delay_ms\":" + std::to_wstring(
-                    std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - live->posted_at).count()) +
-                L",\"driver_input_latency_ms\":" +
-                    (live->driver_input_latency_ms < 0 ? L"null" :
-                        std::to_wstring(live->driver_input_latency_ms)) +
-                L",\"callback_period_ms\":" + std::to_wstring(live->callback_period_ms) +
-                L",\"recording_seconds\":" +
-                std::to_wstring(live->recording_seconds) + L"}");
-        }
         return 0;
     }
     case message_audio_preview: {
@@ -4893,6 +5477,31 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             poll_native_playback(*state);
             return 0;
         }
+        if (wparam == live_session_timer) {
+            const auto bridge = state->live_bridge;
+            try {
+                drain_live_bridge(*state);
+            } catch (const std::exception& error) {
+                if (bridge) {
+                    bridge->notification_failed.store(true,
+                        std::memory_order_release);
+                    bridge->drained.notify_all();
+                    if (state->worker.joinable()) state->worker.request_stop();
+                }
+                post_error(*state, error.what());
+            }
+            bool completed = !bridge;
+            if (bridge) {
+                std::lock_guard lock(bridge->mutex);
+                completed = bridge->final_batch_applied ||
+                    bridge->notification_failed.load(std::memory_order_acquire);
+            }
+            if (completed) {
+                KillTimer(window, live_session_timer);
+                state->live_session_timer_active = false;
+            }
+            return 0;
+        }
         break;
     case message_complete: {
         std::unique_ptr<CompletionMessage> completion(
@@ -4901,10 +5510,18 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         if (state->worker.joinable()) {
             state->worker.join();
         }
+        if (state->live_session_timer_active) {
+            KillTimer(window, live_session_timer);
+            state->live_session_timer_active = false;
+        }
         if (completion->job && state->transcription_cancelled) {
             completion->success = false;
             completion->cancelled = true;
             completion->error = "Transcription cancelled; accepted score unchanged.";
+        }
+        if (state->live_bridge &&
+            state->live_bridge->job == completion->job) {
+            state->live_bridge.reset();
         }
         state->busy = false;
         state->active_transcription_job = 0;
@@ -5192,6 +5809,15 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         return 0;
     case WM_DESTROY:
         stop_native_playback(*state);
+        if (state->live_session_timer_active) {
+            KillTimer(window, live_session_timer);
+            state->live_session_timer_active = false;
+        }
+        if (state->live_bridge) {
+            state->live_bridge->shutdown_requested.store(
+                true, std::memory_order_release);
+            state->live_bridge->drained.notify_all();
+        }
         state->shutting_down = true;
         PlaySoundW(nullptr, nullptr, 0);
         if (state->review_audio_open) {

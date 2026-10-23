@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(transcriber VERSION 0.1.6 LANGUAGES CXX)
+project(transcriber VERSION 0.1.7 LANGUAGES CXX)
 
 option(TRANSCRIBE_ENABLE_ASIO "Build real-time capture using RtAudio's ASIO backend" OFF)
 option(TRANSCRIBE_ENABLE_ONNX "Build ONNX Runtime model inference support" OFF)
@@ -135,6 +135,7 @@ add_library(transcriber_core STATIC
     src/review.cpp
     src/fingering.cpp
     src/live.cpp
+    src/live_bridge.cpp
     src/live_document.cpp
     src/musicxml.cpp
     src/guitar_tab.cpp
@@ -413,6 +414,7 @@ if(TRANSCRIBE_BUILD_TESTS)
         tests/engine_tests.cpp
         tests/polyphonic_tests.cpp
         tests/live_tests.cpp
+        tests/live_bridge_tests.cpp
         tests/interpretation_tests.cpp)
     target_sources(transcriber-tests PRIVATE
         tests/fingering_tests.cpp tests/score_tests.cpp tests/review_tests.cpp
@@ -476,6 +478,11 @@ if(TRANSCRIBE_BUILD_TESTS)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_workflow_browser.py")
         set_tests_properties(ui_workflow_browser PROPERTIES
             LABELS "ui" TIMEOUT 90 SKIP_RETURN_CODE 77)
+        add_test(NAME ui_live_callback_replay
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_workflow_browser.py"
+                --live-replay --runner "$<TARGET_FILE:transcriber-live>")
+        set_tests_properties(ui_live_callback_replay PROPERTIES
+            LABELS "ui;live" TIMEOUT 180 SKIP_RETURN_CODE 77)
         add_test(NAME dependency_manifest_smoke
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/dependency_audit.py"

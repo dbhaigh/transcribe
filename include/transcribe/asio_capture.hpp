@@ -60,15 +60,18 @@ struct LiveCaptureReport {
 // only timestamps blocks and calls session.push(); it never analyses, allocates or blocks. If the
 // stream stops unexpectedly, the session is told the input was lost and the selected device is
 // reopened (bounded retries) with frame numbers advanced by wall time so the gap is explicit.
-// The session format must match capture_options. The caller finishes the session afterwards.
+// The session format must match capture_options. Input origin 0 is declared before capture and
+// the timeline is sealed after callbacks stop, including when capture exits with an error.
 LiveCaptureReport capture_asio_live(double seconds, live::LiveTranscriptionSession& session,
                                     std::stop_token stop_token = {},
                                     const std::function<void(double)>& progress_callback = {},
                                     const AsioCaptureOptions& capture_options = {},
                                     const std::function<void()>& update_callback = {});
 
-// Engine-compatible sink. Caller begins the stream at frame zero before capture, then
-// finishes it with report.frames_delivered. update_callback runs on the control thread.
+// Engine-compatible sink. Its push() is called by the RtAudio callback and must be
+// single-producer realtime-safe: no locks, allocation, blocking or analysis. Caller
+// begins the stream at frame zero before capture, then finishes it with
+// report.frames_delivered. update_callback runs on the control thread.
 LiveCaptureReport capture_asio_stream(double seconds, live::AudioInputSink& sink,
                                     std::stop_token stop_token = {},
                                     const std::function<void(double)>& progress_callback = {},

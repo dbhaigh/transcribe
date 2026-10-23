@@ -1,10 +1,12 @@
 # Incremental live transcription
 
-`transcribe::live` (`include/transcribe/live.hpp`) is an opt-in, additive pipeline
-for responsive live note events with a separate offline refinement pass. The
-existing `RealtimeTranscriber`, `--asio`/`--live` CLI capture, both GUIs and all
-default CLI outputs are unchanged. It lives in `transcriber_core` and adds no
-dependencies; Basic Pitch requires the existing optional ONNX build.
+`transcribe::live` (`include/transcribe/live.hpp`) is an additive pipeline for
+responsive live note events with a separate offline refinement pass. Existing
+`RealtimeTranscriber`, `--asio`/`--live` CLI capture, and default CLI output
+behavior remain compatible. The optional Windows ASIO/WebView2 workstation
+uses this pipeline for live capture and editing. It lives in
+`transcriber_core` and adds no dependencies; Basic Pitch requires the existing
+optional ONNX build.
 
 ## Architecture
 
@@ -337,13 +339,33 @@ historical label for input queue wait, **not** physical capture latency.
 Percentiles use the most recent 4,096 observations per summary; count, mean and
 maximum cover its lifetime.
 
-The WebView GUI separately displays the reported driver latency (unknown when
+The WebView workstation separately displays the reported driver latency (unknown when
 unavailable), negotiated callback period, analysis-window delay, input/analysis
 wait, analysis execution, confirmation, event wait and native UI dispatch delay.
 Dispatch measures worker post → native message handler, not WebView IPC, browser
-rendering or display/paint. `OVERLOAD` is cumulative queue/worker pressure;
-`INPUT GAP` indicates known missing input without worker overload. Both expose
-loss counts rather than substituting successful-looking output.
+rendering or display/paint. `OVERLOAD` indicates current queue/worker pressure
+and clears after pressure subsides; its loss counters remain cumulative.
+`INPUT GAP` separately indicates known missing input. Both expose loss counts
+rather than substituting successful-looking output.
+
+### Hardware-independent workstation replay
+
+`ui_live_callback_replay` replays `samples/guitar_scale.wav` at real-time pace
+through `LiveCaptureTransport`, `LiveTranscriptionSession`, the production
+bridge coalescer and the browser mock host. It checks provisional, stabilized
+and finalized delivery on the same stable ID for each expected sample note.
+The 500 ms analysis-delay probe checks that the UI displays OVERLOAD during
+worker lag and clears it after recovery; skipped frames remain visible as
+losses. This is a callback/bridge/UI integration check, not a test of a physical
+ASIO driver or native browser paint latency.
+
+The recorded realtime synthetic-v1 callback evaluations matched their prior
+live note-event F1 baselines: YIN **0.696** and Spectral **0.851**. Both
+`--check` runs passed with zero refused input blocks, skipped frames, dropped
+events, or known missing input. These synthetic results do not qualify
+hardware latency or real-recording accuracy. See the
+[ASIO manual acceptance checklist](live-manual-acceptance.md); hardware results
+are not yet validated.
 
 ## Refinement and the editable document
 

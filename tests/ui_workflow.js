@@ -37,42 +37,246 @@ window.runTranscriberWorkflowTests = async (studio) => {
   host({ type: "ready", onnx: true, asio: true, verovio: false });
   host({ type: "asio-devices", devices: [{ id: 0, name: "Test ASIO", default: true,
     channels: 2, sample_rates: [44100, 48000], preferred_sample_rate: 48000 }] });
+  $("live-backend").value = "spectral";
+  $("live-backend").dispatchEvent(new studio.Event("change", { bubbles: true }));
+  doc.querySelector('.segment[data-mode="asio"]').click();
+  $("live-hop-ms").value = "375";
+  $("live-hop-ms").dispatchEvent(new studio.Event("change", { bubbles: true }));
+  require(!$("live-hop-ms").disabled,
+    "Windowed-backend hop interval stayed disabled for ASIO Spectral capture");
+  require(JSON.parse(studio.localStorage.getItem("transcribe.paths") || "{}").liveHopMs === "375",
+    "Windowed-backend hop interval was not persisted with workstation settings");
   $("record-button").click();
-  require(studio.__messages.some(message => message.startsWith("transcribe|") &&
-    new URLSearchParams(message.split("|")[1]).get("mode") === "asio"),
+  require(studio.__messages.at(-1).startsWith("start-capture|") &&
+    new URLSearchParams(studio.__messages.at(-1).split("|")[1]).get("version") === "1",
     "Record did not reach the production backend protocol");
+  require(new URLSearchParams(studio.__messages.at(-1).split("|")[1]).get("live_hop_ms") === "375",
+    "Windowed-backend hop interval was not exposed or sent with capture");
   require(!$("pause-analysis").classList.contains("hidden"), "Capture pause control is missing");
+  host({ type: "live-status", version: 1, job: 1, state: "arming", status: "Starting capture" });
+  host({ type: "live-status", version: 1, job: 1, state: "capturing",
+    status: "Recording; live analysis active" });
+  require(doc.body.classList.contains("engraving-draft"),
+    "The editable canvas was not kept active during capture");
+  host({ type: "audio-preview", offset: 0, replace: true, duration: 1, columns: 2,
+    bands: 1, minimum_frequency_hz: 55, maximum_frequency_hz: 24000,
+    waveform: [.4, .5], spectrogram: [.2, .4] });
+  host({ type: "audio-preview", offset: 1, replace: false, duration: 1, columns: 1,
+    bands: 1, minimum_frequency_hz: 55, maximum_frequency_hz: 24000,
+    waveform: [1], spectrogram: [.6] });
+  require(Number($("input-level-meter").value) === 1 &&
+    $("clipping-warning").textContent.includes("Clipping detected"),
+    `Live note rendering displaced the input meter or clipping warning: ` +
+    `${$("input-level-meter").value}, ${$("clipping-warning").textContent}`);
   const delivered = [];
   studio.addEventListener("transcribe:live-events", event => delivered.push(...event.detail));
   const liveNote = { id: "take/live-1", midi: 64, name: "E4", start: .2, duration: .5,
     state: "provisional", revision: 1 };
-  host({ type: "live", notes: [liveNote], recording_seconds: 12.3,
-    events: [{ type: "provisional", id: liveNote.id, sequence: 1, midi: 64, time: .2 }] });
-  host({ type: "live", notes: [{ ...liveNote, finalized: true, revision: 2 }], recording_seconds: 12.3,
-    metrics: { end_to_end: { p95_ms: 42 }, input_queue_high_water: 3, input_queue_capacity: 8 },
-    events: [{ type: "finalized", id: liveNote.id, sequence: 2, midi: 64, time: .7 }] });
+  const observed = { count: 4, p50_ms: 12, p95_ms: 24, p99_ms: 30 };
+  const sendBatch = (sequence, detail = {}, job = 1) => host({
+    type: "live-event-batch",
+    version: 1,
+    job,
+    sequence,
+    sample_rate: 48000,
+    resync: false,
+    upserts: {},
+    retractions: [],
+    finalizations: [],
+    gaps: [],
+    events: [],
+    metrics: {
+      end_to_end: observed,
+      analysis_window: observed,
+      capture: observed,
+      analysis_queue: observed,
+      analysis: observed,
+      stabilization: observed,
+      confirmation: observed,
+      publication_queue: observed,
+      ui_dispatch: observed,
+      target_provisional_seconds: .2,
+      target_stabilized_seconds: .3,
+      provisional_target_misses: 1,
+      stabilized_target_misses: 2,
+      input_queue_depth: 3,
+      input_queue_high_water: 3,
+      input_queue_capacity: 8,
+      event_queue_depth: 1,
+      event_queue_capacity: 64,
+      blocks_refused: 0,
+      events_dropped: 0,
+      gap_frames: 0,
+      sequence_gaps: 0,
+      discontinuities: 0,
+    },
+    driver_input_latency_ms: 2.5,
+    callback_period_ms: 10,
+    status: { state: "capturing", message: "Recording; live analysis active" },
+    ...detail,
+  });
+  const recordedLiveStream = [
+    { sequence: 1, upserts: { [liveNote.id]: { revision: 1, note: liveNote } },
+      recording_seconds: 12.3,
+      events: [{ type: "provisional", id: liveNote.id, sequence: 1, midi: 64, time: .2 }] },
+    { sequence: 2, upserts: { [liveNote.id]: { revision: 2,
+      note: { ...liveNote, state: "stabilized", revision: 2 } } },
+      recording_seconds: 12.3,
+      events: [{ type: "stabilized", id: liveNote.id, sequence: 2, midi: 64, time: .2 }] },
+    { sequence: 3, retractions: [{ id: liveNote.id, revision: 3 }],
+      events: [{ type: "retracted", id: liveNote.id, sequence: 3, midi: 64, time: .2 }] },
+    { sequence: 4, resync: true, recording_seconds: 30,
+      upserts: { "take/live-2": { revision: 4, note: {
+        id: "take/live-2", midi: 67, name: "G4", start: 29,
+        duration: .4, state: "stabilized", revision: 4,
+      } } },
+      gaps: [{ first_frame: 1392000, end_frame: 1416000,
+        start_seconds: 29, end_seconds: 29.5, message: "analysis skipped" }],
+      events: [{ type: "gap", sequence: 4, first_frame: 1392000,
+        end_frame: 1416000, time: 29, message: "analysis skipped" }] },
+    { sequence: 5, recording_seconds: 30.1,
+      upserts: { "take/live-2": { revision: 5, note: {
+        id: "take/live-2", midi: 67, name: "G4", start: 29.1,
+        duration: .4, state: "stabilized", revision: 5,
+      } } },
+      events: [{ type: "corrected", id: "take/live-2", sequence: 5,
+        midi: 67, time: 29.1 }] },
+  ];
+  recordedLiveStream.slice(0, 2).forEach(batch => sendBatch(batch.sequence, batch));
   await tick();
-  require(delivered.length === 2 && $("note-list").textContent.includes("FINALIZED"),
-    "Coalescing lost note revisions or finalized styling");
+  require(delivered.length === 2 && $("note-list").textContent.includes("STABILIZED") &&
+    $("piano-roll").dataset.stabilizedNotes === "1",
+    "Coalescing lost note revisions or stabilized rendering");
   require($("recording-timer").textContent === "00:12.3", "Recording timer is not sample-time based");
   require($("live-diagnostics").textContent.includes("queue 3/8") &&
     $("status-text").textContent === "Recording; live analysis active",
     "Detailed telemetry displaced concise, accessible capture status");
+  require(!$("live-health-strip").hidden &&
+    $("health-driver").textContent.includes("2.5 ms reported") &&
+    $("health-callback").textContent.includes("10.0 ms") &&
+    $("health-window").textContent === "p50 12.0 / p95 24.0 ms" &&
+    $("health-ui-dispatch").textContent === "p50 12.0 / p95 24.0 ms" &&
+    $("health-provisional-target").textContent.includes("1 misses / 4 observations") &&
+    $("health-provisional-target").textContent.includes("target 200 ms") &&
+    $("health-stabilized-target").textContent.includes("2 misses / 4 observations") &&
+    $("health-stabilized-target").textContent.includes("target 300 ms"),
+    "The live health strip omitted stage percentiles, dispatch or target misses");
+  require($("follow-live").checked &&
+    Math.abs(timeline.bounds(12.3).end - 12.3) < .01,
+    "Live viewport did not follow the newest evidence edge");
+  sendBatch(recordedLiveStream[2].sequence, recordedLiveStream[2]);
+  await tick();
+  require($("piano-roll").dataset.retractedNotes === "1" &&
+    $("note-list").textContent.includes("RETRACTED"),
+    "Retracted notes were not shown with a distinct fading state");
+  await new Promise(resolve => setTimeout(resolve, 550));
+  await tick();
+  require(!$("note-list").textContent.includes("E4"),
+    "Retracted note was not removed after its fade");
+
+  recordedLiveStream.slice(3).forEach(batch => sendBatch(batch.sequence, batch));
+  await tick();
+  require($("note-list").textContent.includes("G4") &&
+    !$("note-list").textContent.includes("E4") &&
+    $("note-list").textContent.includes("CORRECTED"),
+    "Resync did not replace stale notes or correction highlight was missing");
+  require($("piano-roll").dataset.gapRegions === "1" &&
+    $("staff-view").dataset.gapRegions === "1" &&
+    $("tab-view").dataset.gapRegions === "1" &&
+    $("tab-view").dataset.unresolvedTabNotes === "1",
+    "Analysis gaps or unresolved tablature were not rendered across synchronized canvases");
+  checks.push("mock-host live stream: provisional, stabilized, retraction fade, correction, resync and gap overlays");
+
+  sendBatch(6, { finalizations: [{ id: "take/live-2", revision: 6,
+    note: { id: "take/live-2", midi: 67, name: "G4", start: 29.1,
+      duration: .4, revision: 6, state: "finalized", finalized: true } }],
+    events: [{ type: "finalized", id: "take/live-2", sequence: 6,
+      midi: 67, time: 29.5 }],
+    driver_input_latency_ms: null,
+    callback_period_ms: 0,
+    metrics: {
+      end_to_end: { count: 0, p50_ms: 0, p95_ms: 0 },
+      analysis_window: { count: 0, p50_ms: 0, p95_ms: 0 },
+      capture: { count: 0, p50_ms: 0, p95_ms: 0 },
+      analysis_queue: { count: 0, p50_ms: 0, p95_ms: 0 },
+      analysis: { count: 0, p50_ms: 0, p95_ms: 0 },
+      stabilization: { count: 0, p50_ms: 0, p95_ms: 0 },
+      publication_queue: { count: 0, p50_ms: 0, p95_ms: 0 },
+      ui_dispatch: { count: 0, p50_ms: 0, p95_ms: 0 },
+      target_provisional_seconds: .2,
+      target_stabilized_seconds: .3,
+      provisional_target_misses: 0,
+      stabilized_target_misses: 0,
+      overloaded: true,
+      input_queue_depth: 8,
+      input_queue_capacity: 8,
+      event_queue_depth: 64,
+      event_queue_capacity: 64,
+      blocks_refused: 3,
+      events_dropped: 2,
+      gap_frames: 960,
+      sequence_gaps: 2,
+      discontinuities: 1,
+      skipped_frames: 40,
+      windows_coalesced: 1,
+      tracked_notes_refused: 1,
+    } });
+  await tick();
+  require($("piano-roll").dataset.finalizedNotes === "1" &&
+    $("note-list").textContent.includes("FINALIZED"),
+    "Finalized notes did not return to normal solid rendering");
+  require($("health-driver").textContent === "unknown" &&
+    $("health-callback").textContent === "unmeasured" &&
+    $("health-analysis-execution").textContent === "unmeasured" &&
+    $("health-ui-dispatch").textContent === "unmeasured" &&
+    $("health-provisional-target").textContent.startsWith("unmeasured") &&
+    $("health-overload").textContent.includes("OVERLOAD: active") &&
+    $("health-overload").textContent.includes("3 blocks") &&
+    $("health-input-gap").textContent.includes("INPUT GAP: detected") &&
+    $("health-input-gap").textContent.includes("960 missing frames") &&
+    $("live-diagnostics").textContent.includes("not physical end-to-end latency"),
+    "Zero observations, queue overload and known input gaps were not reported distinctly");
+
+  const paintCount = Number($("piano-roll").dataset.paintCount);
+  for (let sequence = 7; sequence < 17; sequence += 1) {
+    const id = `take/burst-${sequence}`;
+    const note = { id, midi: 60 + sequence % 12, name: "C4", start: 20 + sequence / 10,
+      duration: .2, state: "provisional", revision: 1 };
+    sendBatch(sequence, { upserts: { [id]: { revision: 1, note } },
+      recording_seconds: 30.1, events: [] });
+  }
+  await tick();
+  require(Number($("piano-roll").dataset.paintCount) - paintCount <= 1,
+    "Burst updates redrew the live timeline more than once per animation frame");
+  $("timeline-scroll").value = "0";
+  $("timeline-scroll").dispatchEvent(new studio.Event("input", { bubbles: true }));
+  require(!$("follow-live").checked && !$("jump-live").hidden,
+    "Manual timeline navigation did not disable Follow live and offer Jump to live");
+  $("jump-live").click();
+  require(Math.abs(timeline.bounds(30.1).end - 30.1) < .01 &&
+    !$("follow-live").checked, "Jump to live failed or unexpectedly re-enabled following");
+  $("follow-live").checked = true;
+  $("follow-live").dispatchEvent(new studio.Event("change"));
+  $("timeline-zoom-in").click();
+  require(!$("follow-live").checked && !$("jump-live").hidden,
+    "Manual zoom did not disable Follow live and expose Jump to live");
+
   $("pause-analysis").click();
   require(studio.__messages.at(-1) === "pause-analysis|paused=1", "Pause did not reach the backend");
   host({ type: "analysis-paused", paused: true });
-  host({ type: "live", notes: [], recording_seconds: 13.4, events: [] });
+  sendBatch(17, { recording_seconds: 31.4, events: [] });
   await tick();
-  require($("note-list").textContent.includes("E4") &&
-    $("recording-timer").textContent === "00:13.4" &&
+  require($("note-list").textContent.includes("G4") &&
+    $("recording-timer").textContent === "00:31.4" &&
     $("pause-analysis").getAttribute("aria-pressed") === "true",
     "Paused analysis stopped the capture timer or erased displayed notes");
   $("pause-analysis").click();
   require(studio.__messages.at(-1) === "pause-analysis|paused=0", "Resume did not reach the backend");
   host({ type: "analysis-paused", paused: false });
   $("cancel-button").click();
-  require(studio.__messages.at(-1).startsWith("cancel|"), "Stop capture did not reach the backend");
-  checks.push("record/stop protocol, sample-time timer, pause/resume and lossless revision coalescing");
+  require(studio.__messages.at(-1).startsWith("stop-capture|"),
+    "Graceful stop capture did not reach the backend");
+  checks.push("start/stop protocol, sample-time timer, pause/resume and live-follow controls");
   const metadata = { score_id: "workflow", score_revision: 1, tempo: 120, tempo_inferred: true,
     time_numerator: 4, time_denominator: 4, key_fifths: 0, tempo_map: map, source_sample_rate: 48000 };
   const notes = [
@@ -82,10 +286,32 @@ window.runTranscriberWorkflowTests = async (studio) => {
   host({ type: "complete", success: true, notes, metadata, fingering: {
     notes: [{ string: 1, fret: 0, candidates: [] }, { string: 1, fret: 5, candidates: [] }],
   }, summary: "fixture" });
+  $("record-button").click();
+  host({ type: "live-status", version: 1, job: 2, state: "capturing",
+    status: "Recording; live analysis active" });
+  const retakeNote = { id: "take/retake-1", midi: 65, name: "F4",
+    start: .1, duration: .3, state: "provisional", revision: 1 };
+  sendBatch(1, { job: 2, recording_seconds: .5,
+    upserts: { [retakeNote.id]: { revision: 1, note: retakeNote } },
+    events: [{ type: "provisional", id: retakeNote.id, midi: 65, time: .1 }] }, 2);
+  await tick();
+  require($("note-list").textContent.includes("F4") &&
+    !$("note-list").textContent.includes("A4"),
+    "A new live capture did not render on top of the existing accepted score");
+  host({ type: "live-status", version: 1, job: 2, state: "finished",
+    status: "Capture finished" });
+  host({ type: "proposal", success: true, accepted_revision: 1, notes: [retakeNote] });
+  require($("note-list").textContent.includes("E4") &&
+    $("note-list").textContent.includes("A4") &&
+    !$("note-list").textContent.includes("F4"),
+    "Proposal-only completion did not restore the previously accepted score");
   send("engraving-select", { id: "one" });
   $("edit-duration").value = "2";
   $("apply-note-edit").click();
-  require($("edit-instructions").textContent.includes("overlapping"), "Invalid duration edit was not rejected");
+  require($("edit-instructions").textContent.includes("overlapping"),
+    `Invalid duration edit was not rejected: ${$("edit-instructions").textContent}; ` +
+    `string ${$("edit-string").value}, fret ${$("edit-fret").value}, start ${$("edit-start").value}, ` +
+    `duration ${$("edit-duration").value}, selection ${$("selection-label").textContent}`);
   require($("edit-duration").value === "0.50", "Failed transaction did not roll back");
   key("ArrowUp");
   require($("edit-pitch").value === "65", "Pitch keyboard edit");

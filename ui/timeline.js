@@ -46,7 +46,7 @@
       line.style.bottom = "auto";
     });
   }
-  function setView(start, span, duration = sourceDuration) {
+  function setView(start, span, duration = sourceDuration, manual = false) {
     sourceDuration = Math.max(1, duration);
     if (span === null) viewport = null;
     else {
@@ -57,6 +57,9 @@
     updateControls();
     const view = bounds(sourceDuration);
     window.dispatchEvent(new CustomEvent("transcribe:viewport", { detail: view }));
+    if (manual) {
+      window.dispatchEvent(new CustomEvent("transcribe:viewport-manual", { detail: view }));
+    }
     updateCursors();
   }
   function updateControls() {
@@ -124,16 +127,17 @@
     });
     document.getElementById("timeline-zoom-in").addEventListener("click", () => {
       const view = bounds(sourceDuration);
-      setView(cursor ?? view.start, (view.end - view.start) / 2);
+      setView(cursor ?? view.start, (view.end - view.start) / 2, sourceDuration, true);
     });
     document.getElementById("timeline-zoom-out").addEventListener("click", () => {
       const view = bounds(sourceDuration);
-      setView(view.start, (view.end - view.start) * 2);
+      setView(view.start, (view.end - view.start) * 2, sourceDuration, true);
     });
-    document.getElementById("timeline-fit").addEventListener("click", () => setView(0, null));
+    document.getElementById("timeline-fit").addEventListener("click", () =>
+      setView(0, null, sourceDuration, true));
     document.getElementById("timeline-scroll").addEventListener("input", (event) => {
       const view = bounds(sourceDuration);
-      setView(Number(event.target.value), view.end - view.start);
+      setView(Number(event.target.value), view.end - view.start, sourceDuration, true);
     });
     document.querySelectorAll(".time-surface").forEach((surface) => {
       surface.addEventListener("wheel", (event) => {
@@ -142,13 +146,15 @@
         if (!viewport) return;
         event.preventDefault();
         setView(view.start + (event.deltaX || event.deltaY) /
-          Math.max(1, surface.clientWidth) * (view.end - view.start), view.end - view.start);
+          Math.max(1, surface.clientWidth) * (view.end - view.start),
+          view.end - view.start, sourceDuration, true);
       }, { passive: false });
     });
     for (const direction of [-1, 1]) {
       document.getElementById(direction < 0 ? "timeline-prev" : "timeline-next").addEventListener("click", () => {
         const view = bounds(sourceDuration);
-        setView(view.start + direction * (view.end - view.start) * .8, view.end - view.start);
+        setView(view.start + direction * (view.end - view.start) * .8,
+          view.end - view.start, sourceDuration, true);
       });
     }
   });

@@ -2,6 +2,7 @@
 #include "transcribe/audio.hpp"
 #include "transcribe/inference.hpp"
 #include "transcribe/live.hpp"
+#include "transcribe/live_bridge.hpp"
 #include "../src/asio_transport.hpp"
 
 #include <algorithm>
@@ -132,6 +133,167 @@ std::string registry_id(const std::string& backend) {
     if (backend == "onnx") return "onnx:basic-pitch-v1";
     return backend;
 }
+
+const char* bridge_event_name(LiveEventKind kind) {
+    switch (kind) {
+    case LiveEventKind::NoteOn: return "provisional";
+    case LiveEventKind::NoteStabilized: return "stabilized";
+    case LiveEventKind::NoteOff: return "note_off";
+    case LiveEventKind::NoteFinalized: return "finalized";
+    case LiveEventKind::NoteCorrected: return "corrected";
+    case LiveEventKind::NoteRetracted: return "retracted";
+    case LiveEventKind::AnalysisGap: return "gap";
+    case LiveEventKind::Status: return "status";
+    }
+    return "unknown";
+}
+
+const char* lifecycle_name(EventLifecycle state) {
+    switch (state) {
+    case EventLifecycle::Provisional: return "provisional";
+    case EventLifecycle::Stabilized: return "stabilized";
+    case EventLifecycle::Refined: return "refined";
+    case EventLifecycle::ManuallyCorrected: return "manually_corrected";
+    case EventLifecycle::Rejected: return "rejected";
+    }
+    return "unknown";
+}
+
+void write_bridge_note(std::ostream& output, const LiveNote& note, double recording_seconds) {
+    const double start = note.onset_seconds();
+    const double end = note.offset_seconds().value_or(recording_seconds);
+    output << "{\"id\":" << json_string(note.id)
+           << ",\"midi\":" << note.midi_pitch
+           << ",\"name\":" << json_string(midi_note_name(note.midi_pitch))
+           << ",\"start\":" << start
+           << ",\"duration\":" << std::max(0.001, end - start)
+           << ",\"finalized\":" << (note.finalized ? "true" : "false")
+           << ",\"revision\":" << note.revision
+           << ",\"state\":" << json_string(lifecycle_name(note.state))
+           << ",\"uncertain\":" << (note.onset_truncated ? "true" : "false")
+           << ",\"source_model\":" << json_string(note.source_model)
+           << ",\"detection_method\":" << json_string(note.detection_method) << '}';
+}
+
+void write_bridge_latency(std::ostream& output, const LatencySummary& summary) {
+    output << "{\"count\":" << summary.count
+           << ",\"p50_ms\":" << summary.p50_seconds * 1000.0
+           << ",\"p95_ms\":" << summary.p95_seconds * 1000.0
+           << ",\"p99_ms\":" << summary.p99_seconds * 1000.0 << '}';
+}
+
+void write_bridge_message(std::ostream& output, const bridge::Message& message,
+                          double recording_seconds, std::uint32_t sample_rate,
+                          double callback_period_ms) {
+    const auto& metrics = message.metrics;
+    const double safe_sample_rate = sample_rate == 0 ? 1.0 : sample_rate;
+    output << "{\"type\":\"live-event-batch\",\"version\":" << message.version
+           << ",\"job\":1,\"sequence\":" << message.sequence
+           << ",\"resync\":" << (message.resync ? "true" : "false")
+           << ",\"sample_rate\":" << sample_rate << ",\"upserts\":{";
+    bool first = true;
+    for (const auto& [id, note] : message.upserts) {
+        if (!first) output << ',';
+        first = false;
+        output << json_string(id) << ":{\"revision\":" << note.revision << ",\"note\":";
+        write_bridge_note(output, note, recording_seconds);
+        output << '}';
+    }
+    output << "},\"retractions\":[";
+    first = true;
+    for (const auto& [id, revision] : message.retractions) {
+        if (!first) output << ',';
+        first = false;
+        output << "{\"id\":" << json_string(id) << ",\"revision\":" << revision << '}';
+    }
+    output << "],\"finalizations\":[";
+    first = true;
+    for (const auto& [id, note] : message.finalizations) {
+        if (!first) output << ',';
+        first = false;
+        output << "{\"id\":" << json_string(id) << ",\"revision\":" << note.revision
+               << ",\"note\":";
+        write_bridge_note(output, note, recording_seconds);
+        output << '}';
+    }
+    output << "],\"gaps\":[";
+    for (std::size_t i = 0; i < message.gaps.size(); ++i) {
+        if (i) output << ',';
+        const auto& gap = message.gaps[i];
+        output << "{\"first_frame\":" << gap.first_frame << ",\"end_frame\":" << gap.end_frame
+               << ",\"start_seconds\":" << gap.first_frame / safe_sample_rate
+               << ",\"end_seconds\":" << gap.end_frame / safe_sample_rate
+               << ",\"message\":" << json_string(gap.message) << '}';
+    }
+    output << "],\"events\":[";
+    for (std::size_t i = 0; i < message.events.size(); ++i) {
+        if (i) output << ',';
+        const auto& event = message.events[i];
+        double time = event.note.onset_seconds();
+        if (event.kind == LiveEventKind::NoteOff && event.note.offset_frame) {
+            time = static_cast<double>(*event.note.offset_frame) / safe_sample_rate;
+        }
+        const double latency_ms = std::chrono::duration<double, std::milli>(
+            event.timing.emitted_time - event.timing.onset_capture_time).count();
+        output << "{\"type\":" << json_string(bridge_event_name(event.kind))
+               << ",\"id\":" << json_string(event.note.id)
+               << ",\"revision\":" << event.note.revision
+               << ",\"sequence\":" << event.sequence
+               << ",\"finalized\":" << (event.note.finalized ? "true" : "false")
+               << ",\"midi\":" << event.note.midi_pitch
+               << ",\"time\":" << time
+               << ",\"latency_ms\":" << std::max(0.0, latency_ms)
+               << ",\"message\":" << json_string(event.message);
+        if (event.kind == LiveEventKind::AnalysisGap) {
+            output << ",\"first_frame\":" << event.gap_first_frame
+                   << ",\"end_frame\":" << event.gap_end_frame;
+        }
+        output << '}';
+    }
+    output << "],\"coalesced_events_dropped\":" << message.coalesced_events_dropped
+           << ",\"metrics\":{\"capture\":";
+    write_bridge_latency(output, metrics.capture_latency);
+    output << ",\"analysis\":";
+    write_bridge_latency(output, metrics.analysis_latency);
+    output << ",\"end_to_end\":";
+    write_bridge_latency(output, metrics.end_to_end_latency);
+    output << ",\"analysis_window\":";
+    write_bridge_latency(output, metrics.algorithmic_latency);
+    output << ",\"stabilization\":";
+    write_bridge_latency(output, metrics.stabilization_delay);
+    output << ",\"analysis_queue\":";
+    write_bridge_latency(output, metrics.analysis_queue_latency);
+    output << ",\"confirmation\":";
+    write_bridge_latency(output, metrics.confirmation_latency);
+    output << ",\"publication_queue\":";
+    write_bridge_latency(output, metrics.publication_queue_latency);
+    output << ",\"ui_dispatch\":{\"count\":0,\"p50_ms\":0,\"p95_ms\":0,\"p99_ms\":0}"
+           << ",\"overloaded\":" << (metrics.overloaded ? "true" : "false")
+           << ",\"input_queue_depth\":" << metrics.input_queue_depth
+           << ",\"input_queue_capacity\":" << metrics.input_queue_capacity
+           << ",\"input_queue_high_water\":" << metrics.input_queue_high_water
+           << ",\"event_queue_depth\":" << metrics.event_queue_depth
+           << ",\"event_queue_capacity\":" << metrics.event_queue_capacity
+           << ",\"event_queue_high_water\":" << metrics.event_queue_high_water
+           << ",\"blocks_refused\":" << metrics.blocks_refused
+           << ",\"events_dropped\":" << metrics.events_dropped
+           << ",\"gap_frames\":" << metrics.gap_frames
+           << ",\"sequence_gaps\":" << metrics.sequence_gaps
+           << ",\"discontinuities\":" << metrics.discontinuities
+           << ",\"skipped_frames\":" << metrics.skipped_frames
+           << ",\"windows_coalesced\":" << metrics.windows_coalesced
+           << ",\"tracked_notes_refused\":" << metrics.tracked_notes_refused
+           << ",\"target_provisional_seconds\":" << metrics.target_provisional_seconds
+           << ",\"target_stabilized_seconds\":" << metrics.target_stabilized_seconds
+           << ",\"provisional_target_misses\":" << metrics.provisional_target_misses
+           << ",\"stabilized_target_misses\":" << metrics.stabilized_target_misses << '}'
+           << ",\"status\":{\"state\":"
+           << json_string(std::string(bridge::capture_state_name(message.state)))
+           << ",\"message\":" << json_string(message.status) << '}'
+           << ",\"recording_seconds\":" << recording_seconds
+           << ",\"driver_input_latency_ms\":null,\"callback_period_ms\":" << callback_period_ms
+           << ",\"fingerings\":{}}";
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -142,7 +304,7 @@ int main(int argc, char** argv) {
                 " [--model path] [--pace realtime|none] [--policy lossless|skip]"
                 " [--block-frames N] [--window-seconds S] [--hop-seconds S]"
                 " [--refine-backend yin|spectral|onnx|none] [--refine-mode auto|full|windowed]"
-                " [--callback-replay 0|1] [--analysis-delay-ms 0-1000]"
+                " [--callback-replay 0|1] [--bridge-replay 0|1] [--analysis-delay-ms 0-1000]"
                 " [--max-lag-seconds S]");
         }
         const std::filesystem::path input = argv[1];
@@ -156,6 +318,7 @@ int main(int argc, char** argv) {
         std::size_t block_frames = 256;
         bool dump_events = false;
         bool callback_replay = false;
+        bool bridge_replay = false;
         double analysis_delay_ms = 0;
         LiveOptions options;
         for (int i = 3; i < argc; ++i) {
@@ -170,6 +333,7 @@ int main(int argc, char** argv) {
             else if (flag == "--refine-mode") refine_mode = value;
             else if (flag == "--dump-events") dump_events = number(value) != 0;
             else if (flag == "--callback-replay") callback_replay = number(value) != 0;
+            else if (flag == "--bridge-replay") bridge_replay = number(value) != 0;
             else if (flag == "--analysis-delay-ms") {
                 analysis_delay_ms = number(value);
                 if (analysis_delay_ms < 0 || analysis_delay_ms > 1000) {
@@ -212,6 +376,9 @@ int main(int argc, char** argv) {
         if (policy != "lossless" && policy != "skip") throw std::invalid_argument("Unknown policy: " + policy);
         if (callback_replay && policy != "skip") {
             throw std::invalid_argument("Callback replay requires --policy skip (no producer blocking/retry)");
+        }
+        if (bridge_replay && (!callback_replay || pace != "realtime")) {
+            throw std::invalid_argument("--bridge-replay requires real-time --callback-replay");
         }
         if ((backend == "onnx" || refine_backend == "onnx") && model_path.empty()) {
             throw std::invalid_argument("The onnx backend requires --model");
@@ -256,10 +423,21 @@ int main(int argc, char** argv) {
         callback_times.reserve((info.frames + block_frames - 1) / block_frames);
         std::map<std::string, std::size_t> kinds;
         std::vector<LiveEvent> log;
+        struct BridgeReplayMessage {
+            bridge::Message message;
+            double recording_seconds{};
+        };
+        bridge::Coalescer bridge_coalescer;
+        std::vector<BridgeReplayMessage> bridge_messages;
         std::uint64_t retries = 0, dropped_blocks = 0, resyncs = 0;
         double first_event_wall = -1;
+        const auto wall_start = Clock::now();
+        auto last_bridge_tick = wall_start;
         const auto consume = [&](const Clock::time_point start) {
             auto batch = session.poll_events();
+            if (bridge_replay && (!batch.events.empty() || batch.resync_required)) {
+                bridge_coalescer.append(batch);
+            }
             if (batch.events.empty() && !batch.resync_required) return;
             if (first_event_wall < 0) {
                 for (const auto& event : batch.events) {
@@ -278,7 +456,18 @@ int main(int argc, char** argv) {
             }
         };
 
-        const auto wall_start = Clock::now();
+        const auto publish_bridge_tick = [&](bridge::CaptureState state, std::string status,
+                                             bool force) {
+            if (!bridge_replay) return;
+            constexpr auto tick_period = std::chrono::microseconds(16667);
+            const auto now = Clock::now();
+            if (force || now - last_bridge_tick >= tick_period) {
+                bridge_messages.push_back({
+                    bridge_coalescer.take(session.metrics(), state, std::move(status)),
+                    static_cast<double>(session.ingested_frames()) / audio.sample_rate});
+                last_bridge_tick = now;
+            }
+        };
         std::uint64_t sequence = 0;
         read_wav_blocks(input, block_frames, [&](const AudioBlockView& source) {
             const auto offset = source.first_frame;
@@ -312,10 +501,13 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Live session rejected audio block");
             }
             consume(wall_start);
+            publish_bridge_tick(bridge::CaptureState::Capturing,
+                                "Recording; live analysis active", false);
         });
         session.end_input(info.frames);
         session.finish();
         consume(wall_start);
+        publish_bridge_tick(bridge::CaptureState::Finished, "Capture finished", true);
         const double live_wall = std::chrono::duration<double>(Clock::now() - wall_start).count();
         const auto metrics = session.metrics();
         const auto live_notes = document.to_notes(duration);
@@ -358,6 +550,7 @@ int main(int argc, char** argv) {
                << ",\"block_frames\":" << block_frames
                << ",\"callback_replay\":" << (callback_replay ? "true" : "false")
                << ",\"injected_analysis_delay_ms\":" << analysis_delay_ms
+               << ",\"bridge_replay\":" << (bridge_replay ? "true" : "false")
                << ",\"window_seconds\":" << options.window.window_seconds
                << ",\"hop_seconds\":" << options.window.hop_seconds
                << ",\"neural_decoder\":" << json_string(
@@ -463,6 +656,17 @@ int main(int argc, char** argv) {
                        << ",\"evidence_end_seconds\":"
                        << static_cast<double>(e.timing.evidence_end_frame) / audio.sample_rate
                        << ",\"message\":" << json_string(e.message) << '}';
+            }
+            output << ']';
+        }
+        if (bridge_replay) {
+            output << ",\"bridge_batches\":[";
+            for (std::size_t i = 0; i < bridge_messages.size(); ++i) {
+                if (i) output << ',';
+                write_bridge_message(output, bridge_messages[i].message,
+                                     bridge_messages[i].recording_seconds,
+                                     audio.sample_rate,
+                                     static_cast<double>(block_frames) * 1000.0 / audio.sample_rate);
             }
             output << ']';
         }

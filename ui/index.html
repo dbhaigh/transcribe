@@ -251,6 +251,15 @@
               <option value="spectral">Spectral · polyphonic, windowed</option>
               <option value="onnx">ONNX model · windowed inference</option>
             </select>
+            <label class="field-label" for="live-hop-ms">Windowed-backend hop interval</label>
+            <div class="duration-row">
+              <input id="live-hop-ms" type="number" min="10" max="1800" step="10" value="250"
+                     aria-describedby="live-hop-help">
+              <span>ms</span>
+            </div>
+            <p id="live-hop-help" class="field-hint">
+              Applies to Spectral and ONNX live capture. The selected interval must fit the model window.
+            </p>
             <label class="check-row" for="polyphonic">
               <input id="polyphonic" type="checkbox" disabled>
               <span class="check-custom" aria-hidden="true"></span>
@@ -349,6 +358,13 @@
                   <button class="button button-quiet browse-button" type="button" data-field="midi">Choose</button></div>
               </div>
             </div>
+            <div class="output-item">
+              <span class="output-symbol" aria-hidden="true">{ }</span>
+              <div class="output-main"><label class="field-label" for="json-path">Accepted score · JSON</label>
+                <div class="path-row"><input id="json-path" autocomplete="off" spellcheck="false" value="transcription.score.json">
+                  <button class="button button-quiet browse-button" type="button" data-field="json">Choose</button></div>
+              </div>
+            </div>
           </div>
         </details>
         <button id="open-folder-button" class="button button-quiet open-folder" type="button"
@@ -405,6 +421,13 @@
             <input id="follow-playhead" type="checkbox" checked>
             <span class="check-custom" aria-hidden="true"></span><span>Follow playhead</span>
           </label>
+          <label class="check-row follow-control" for="follow-live">
+            <input id="follow-live" type="checkbox" checked disabled>
+            <span class="check-custom" aria-hidden="true"></span><span>Follow live</span>
+          </label>
+          <button id="jump-live" class="button button-quiet" type="button"
+                  aria-label="Jump to the latest live evidence" title="Jump to the latest live evidence"
+                  disabled hidden>Jump to live</button>
           <div class="score-zoom" aria-label="Notation zoom controls">
             <button id="engraving-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
             <button id="engraving-fit" type="button" title="Fit score to panel">Fit</button>
@@ -413,8 +436,12 @@
           <span id="selection-label" aria-live="polite">No selection</span>
         </div>
         <div class="note-legend" aria-label="Note state legend">
-          <span class="provisional">Provisional · dashed</span>
-          <span class="finalized">Finalized · solid</span>
+          <span class="provisional">Provisional · hollow/dashed</span>
+          <span class="stabilized">Stabilized · solid + S</span>
+          <span class="finalized">Finalized · normal</span>
+          <span class="corrected">Corrected · outlined</span>
+          <span class="retracted">Retracted · crossed/fading</span>
+          <span class="analysis-gap">Analysis gap · hatched/unanalysed</span>
           <span class="manual">Manual edit · gold</span>
           <span class="uncertain">Uncertain · coral</span>
         </div>
@@ -593,12 +620,27 @@
         <span id="status-capture">Ready</span><span class="status-divider">·</span>
         <span id="status-text" role="status" aria-live="polite">Open a recording or start a capture</span>
       </div>
+      <div id="live-health-strip" class="live-health-strip"
+           aria-label="Live pipeline stage timings; not physical end-to-end latency" hidden>
+        <span class="health-metric"><b>Driver latency</b><output id="health-driver">unknown</output></span>
+        <span class="health-metric"><b>Callback period</b><output id="health-callback">unmeasured</output></span>
+        <span class="health-metric"><b>Analysis-window delay</b><output id="health-window">unmeasured</output></span>
+        <span class="health-metric"><b>Input wait</b><output id="health-input-wait">unmeasured</output></span>
+        <span class="health-metric"><b>Analysis wait</b><output id="health-analysis-wait">unmeasured</output></span>
+        <span class="health-metric"><b>Analysis execution</b><output id="health-analysis-execution">unmeasured</output></span>
+        <span class="health-metric"><b>Confirmation latency</b><output id="health-confirmation">unmeasured</output></span>
+        <span class="health-metric"><b>Event wait</b><output id="health-event-wait">unmeasured</output></span>
+        <span class="health-metric"><b>Native UI dispatch</b><output id="health-ui-dispatch">unmeasured</output></span>
+        <span class="health-metric"><b>Provisional target</b><output id="health-provisional-target">unmeasured</output></span>
+        <span class="health-metric"><b>Stabilized target</b><output id="health-stabilized-target">unmeasured</output></span>
+        <span id="health-overload" class="health-indicator" data-state="none">OVERLOAD: none observed</span>
+        <span id="health-input-gap" class="health-indicator" data-state="none">INPUT GAP: none observed</span>
+      </div>
       <div class="status-progress" aria-label="Current phase progress">
         <div id="phase-progress" class="progress-track" role="progressbar" aria-label="Current processing phase"
              aria-valuemin="0" aria-valuemax="100"><div id="progress-bar"></div></div>
         <span id="progress-value">—</span>
       </div>
-      <span class="status-metric">Latency <b id="latency-value">—</b></span>
       <button id="status-output-folder" class="status-link" type="button" title="Open the output folder">Output folder</button>
     </footer>
   </div>

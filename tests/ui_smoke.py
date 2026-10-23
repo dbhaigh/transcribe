@@ -78,11 +78,28 @@ def main():
         "measure-display",
         "tempo-auto",
         "follow-playhead",
+        "follow-live",
+        "jump-live",
         "input-device-label",
         "input-level-meter",
         "clipping-warning",
         "status-capture",
-        "latency-value",
+        "live-health-strip",
+        "health-driver",
+        "health-callback",
+        "health-window",
+        "health-input-wait",
+        "health-analysis-wait",
+        "health-analysis-execution",
+        "health-confirmation",
+        "health-event-wait",
+        "health-ui-dispatch",
+        "health-provisional-target",
+        "health-stabilized-target",
+        "health-overload",
+        "health-input-gap",
+        "live-hop-ms",
+        "json-path",
         "model-status",
         "detected-pitch",
         "detected-onset",
@@ -166,6 +183,13 @@ def main():
             "Tablature edits must not change a note's sounding pitch")
     require("transcribe:accepted-score" in app and "musicxml" in app,
             "Accepted score MusicXML is not connected to the renderer")
+    require("json: inputs.json.value" in app and
+            'json: $("json-path").value' in editor and
+            "serialize_score_document(result.score)" in webview_backend,
+            "Accepted score JSON is not wired to the workstation export path")
+    require('if (backend_id.starts_with("onnx:"))' in webview_backend and
+            "options.windowed = window" in webview_backend,
+            "Automatic live refinement must use windows only for ONNX backends")
     require("transcribe:engraving-select" in editor and
             "note.id === event.detail?.id" in editor,
             "Engraved note selection is not connected to canonical editor IDs")
@@ -241,9 +265,11 @@ def main():
             "captureActive = Boolean(busy && liveCapture)" in app,
             "Offline worker operations are incorrectly exposed as active capture")
     require("(!cancellable && !captureActive)" in app and
-            'captureActive ? "Stop capture" : "Cancel analysis"' in app and
+            'liveCaptureState === "finishing" ? "Cancel capture" : "Stop capture"' in app and
+            'send(mode === "asio" ? "start-capture" : "transcribe"' in app and
+            'send("stop-capture")' in app and
             'setBusy(true, hasAcceptedScore, mode === "asio", true)' in app,
-            "File-analysis cancellation is missing or exposed for non-cancellable export jobs")
+            "Versioned start, stop, and cancel capture controls are not wired")
     require('id="bounded-inference"' in html_path.read_text(encoding="utf-8") and
             "bounded_inference:" in app and
             "request.bounded_inference" in webview_backend,
@@ -252,10 +278,60 @@ def main():
             "post_coalesced(state, message_progress" in webview_backend and
             "state.pending_audio_preview" in webview_backend,
             "Transcription updates lack stale-job protection or bounded preview queues")
-    require("latest.metrics.overloaded" in app and '"OVERLOAD"' in app and
-            "ui_dispatch_delay_ms" in app and "analysis_queue" in webview_backend and
-            "publication_queue" in webview_backend and "confirmation" in webview_backend,
-            "Live overload or separated queue/stabilization/UI diagnostics are not exposed")
+    require("metrics.overloaded" in app and "OVERLOAD:" in app and
+            "function liveLatencyText(summary)" in app and
+            '"unmeasured"' in app and "target_provisional_seconds" in app and
+            "target_stabilized_seconds" in app and
+            "health-input-gap" in app and "health-overload" in app and
+            "not physical end-to-end latency" in app and
+            'live_hop_ms: $("live-hop-ms").value' in app and
+            "request.live_hop_ms = parse_number" in webview_backend and
+            "The live hop interval is too large for this model's analysis window." in webview_backend and
+            'message.type === "live-event-batch"' in app and
+            "message.sequence <= lastLiveSequence" in app and
+            "Number(item.revision)" in app and
+            "mutation.revision <= currentRevision" in app and
+            "const fingerings = message.fingerings || {}" in app and
+            "stabilization" in webview_backend and
+            "publication_queue" in webview_backend,
+            "Versioned live deltas or latency diagnostics are not exposed")
+    require(all(action in webview_backend for action in
+                ("start-capture", "stop-capture", "cancel")) and
+            "operation_allowed(action)" in webview_backend and
+            "session->poll_events()" in webview_backend and
+            "bridge->document.resync(batch.resync_snapshot)" in webview_backend and
+            "SetTimer(window, live_session_timer, 17, nullptr)" in webview_backend,
+            "UI-thread event draining, allowlisting, or resync is not wired")
+    require(all(token in webview_backend for token in (
+                "live-event-batch", "upserts", "retractions", "finalizations",
+                "gaps", "metrics", "p50_ms", "p95_ms", "p99_ms",
+                "ui_dispatch", "target_provisional_seconds",
+                "target_stabilized_seconds", "sequence_gaps", "discontinuities",
+                "recording_seconds", "callback_period_ms",
+                "coalesced_events_dropped", r'\"sample_rate\":',
+                r'\"start_seconds\":', r'\"end_seconds\":')) and
+            "message.status" in app,
+            "Versioned live event messages do not expose the required batch snapshot")
+    require('id="live-hop-ms"' in html_path.read_text(encoding="utf-8") and
+            'id="live-health-strip"' in html_path.read_text(encoding="utf-8") and
+            "aria-label=\"Live pipeline stage timings; not physical end-to-end latency\"" in html_path.read_text(encoding="utf-8"),
+            "Live health or windowed-backend hop controls are not present in the UI")
+    timeline = javascript[5].read_text(encoding="utf-8")
+    notation = javascript[3].read_text(encoding="utf-8")
+    stylesheet = (ui_directory / "styles.css").read_text(encoding="utf-8")
+    require("live_visual_state" in app and "liveRetractions" in app and
+            "transcribe:live-overlays" in app and "drawUnanalysedRegions" in editor and
+            "unresolvedTabNotes" in editor and
+            all(token in stylesheet for token in (
+                'data-live-state="provisional"', 'data-live-state="retracted"',
+                ".note-legend .corrected", ".note-legend .analysis-gap",
+                ".check-row:has(input:focus-visible)")),
+            "Live note states, analysis gaps, or unresolved tablature are not visually wired")
+    require("transcribe:viewport-manual" in timeline and
+            "transcribe:viewport-manual" in app and
+            "follow-live" in app and "jump-live" in app and
+            "transcribe:live-capture-state" in notation,
+            "Live following, manual viewport detection, or deferred engraving is not wired")
     require("unsupported operation" in
             (ui_directory.parent / "src" / "gui_webview.cpp").read_text(encoding="utf-8"),
             "WebView2 bridge does not reject unknown commands")

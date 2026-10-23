@@ -8,6 +8,7 @@
 <script>
 (async () => {
   const result = document.getElementById("result");
+  const liveReplay = new URLSearchParams(location.search).has("live-replay");
   try {
     const response = await fetch("../ui/index.html");
     if (!response.ok) throw new Error(`UI fetch failed: ${response.status}`);
@@ -31,8 +32,25 @@
       frame.srcdoc = html.replace("<head>", "<head>" + bootstrap);
     });
     const script = document.createElement("script");
-    script.src = "ui_workflow.js";
+    script.src = liveReplay ? "live_ui_replay.js" : "ui_workflow.js";
     await new Promise((resolve, reject) => { script.onload = resolve; script.onerror = reject; document.head.append(script); });
+    if (liveReplay) {
+      window.runLiveReplay = async replay => {
+        try {
+          const checks = await runTranscriberCallbackReplayTests(frame.contentWindow, replay);
+          result.textContent = JSON.stringify({passed: true, checks}, null, 2);
+          document.body.dataset.result = "passed";
+          return checks;
+        } catch (error) {
+          result.textContent = String(error.stack || error);
+          document.body.dataset.result = "failed";
+          throw error;
+        }
+      };
+      result.textContent = "Ready for callback replay";
+      document.body.dataset.result = "ready";
+      return;
+    }
     const checks = await runTranscriberWorkflowTests(frame.contentWindow);
     result.textContent = JSON.stringify({passed: true, checks}, null, 2);
     document.body.dataset.result = "passed";

@@ -280,6 +280,12 @@ TEST_CASE("overlapping windows reconcile into exact unique notes independent of 
         REQUIRE(on != result.events.end());
         REQUIRE_FALSE(on->note.offset_frame);
         REQUIRE(on->timing.evidence_end_frame <= frame(0.75));
+        std::vector<LiveEventKind> lifecycle;
+        for (const auto& event : result.events) {
+            if (event.note.id == long_id) lifecycle.push_back(event.kind);
+        }
+        REQUIRE(lifecycle == std::vector<LiveEventKind>{LiveEventKind::NoteOn,
+            LiveEventKind::NoteStabilized, LiveEventKind::NoteOff, LiveEventKind::NoteFinalized});
         if (!reference) {
             reference = result;
             continue;
@@ -320,6 +326,75 @@ TEST_CASE("live windows correct pitch, retract unreproduced notes and never dupl
     REQUIRE(retracted->note.state == EventLifecycle::Rejected);
     REQUIRE(count(result.events, LiveEventKind::NoteRetracted) == 1);
     REQUIRE(count(result.events, LiveEventKind::NoteOn) == fake_truth.size() + 1);
+}
+
+TEST_CASE("window timing corrections require changes beyond the configured threshold", "[live]") {
+    const auto run = [](bool onset, double displacement, double correction_seconds = 0.01) {
+        auto options = window_options();
+        options.window.correction_seconds = correction_seconds;
+        auto backend = std::make_unique<FakeBackend>(std::vector<Truth>{{60, 0.5, 1.5}}, fake_rate);
+        backend->perturb = [=](std::size_t, std::uint64_t, std::uint64_t end,
+                               std::vector<Note>& notes) {
+            if ((onset && end != frame(1.0)) || (!onset && end != frame(2.0))) return;
+            for (auto& note : notes) {
+                if (note.midi_pitch != 60) continue;
+                if (onset) note.start_seconds += displacement;
+                else note.duration_seconds += displacement;
+            }
+        };
+        return replay(options, std::move(backend), frame_index_audio(frame(3.0)), 512);
+    };
+
+    SECTION("an onset change exactly at the threshold is not reported") {
+        const auto result = run(true, 0.01);
+        REQUIRE(count(result.events, LiveEventKind::NoteCorrected) == 0);
+        require_truth(result.notes, {{60, 0.5, 1.5}});
+    }
+    SECTION("an onset change beyond the threshold is corrected with the same ID") {
+        const auto result = run(true, 0.0125);
+        const auto corrected = std::find_if(result.events.begin(), result.events.end(),
+            [](const LiveEvent& event) {
+                return event.kind == LiveEventKind::NoteCorrected && event.previous &&
+                    event.note.onset_frame != event.previous->onset_frame;
+            });
+        REQUIRE(corrected != result.events.end());
+        REQUIRE(corrected->note.id == corrected->previous->id);
+        REQUIRE(std::abs(static_cast<double>(corrected->note.onset_frame) -
+                         static_cast<double>(corrected->previous->onset_frame)) / fake_rate > 0.01);
+        require_truth(result.notes, {{60, 0.5, 1.5}});
+    }
+    SECTION("an offset change exactly at the threshold is not reported") {
+        const auto result = run(false, 0.01);
+        REQUIRE(count(result.events, LiveEventKind::NoteCorrected) == 0);
+        require_truth(result.notes, {{60, 0.5, 1.5}});
+    }
+    SECTION("an offset change beyond the threshold is corrected with the same ID") {
+        const auto result = run(false, 0.0125);
+        const auto corrected = std::find_if(result.events.begin(), result.events.end(),
+            [](const LiveEvent& event) {
+                return event.kind == LiveEventKind::NoteCorrected && event.previous &&
+                    event.note.offset_frame != event.previous->offset_frame;
+            });
+        REQUIRE(corrected != result.events.end());
+        REQUIRE(corrected->note.id == corrected->previous->id);
+        REQUIRE(corrected->note.offset_frame);
+        REQUIRE(corrected->previous->offset_frame);
+        REQUIRE(std::abs(static_cast<double>(*corrected->note.offset_frame) -
+                         static_cast<double>(*corrected->previous->offset_frame)) / fake_rate > 0.01);
+        require_truth(result.notes, {{60, 0.5, 1.5}});
+    }
+    SECTION("a one-frame change beyond a sub-frame threshold is corrected") {
+        const auto result = run(true, 1.0 / fake_rate, 0.0001);
+        const auto corrected = std::find_if(result.events.begin(), result.events.end(),
+            [](const LiveEvent& event) {
+                return event.kind == LiveEventKind::NoteCorrected && event.previous &&
+                    event.note.onset_frame != event.previous->onset_frame;
+            });
+        REQUIRE(corrected != result.events.end());
+        REQUIRE(corrected->note.id == corrected->previous->id);
+        REQUIRE(corrected->note.onset_frame != corrected->previous->onset_frame);
+        require_truth(result.notes, {{60, 0.5, 1.5}});
+    }
 }
 
 TEST_CASE("notes whose attack precedes a window are continued, not duplicated", "[live]") {
@@ -380,6 +455,14 @@ TEST_CASE("simulated clocks give exact capture, analysis, end-to-end and stabili
     REQUIRE_FALSE(batch.events.empty());
     REQUIRE(session.metrics().publication_queue_latency.count == batch.events.size());
     REQUIRE(session.metrics().publication_queue_latency.maximum_seconds >= .007);
+    const auto measured = session.metrics();
+    for (const auto* summary : {&measured.capture_latency, &measured.analysis_latency,
+                                &measured.end_to_end_latency, &measured.stabilization_delay,
+                                &measured.publication_queue_latency}) {
+        REQUIRE(summary->count > 0);
+        REQUIRE(summary->p50_seconds <= summary->p95_seconds);
+        REQUIRE(summary->p95_seconds <= summary->p99_seconds);
+    }
     session.finish();
 }
 
@@ -555,6 +638,13 @@ TEST_CASE("forced analysis lag coalesces windows or skips with an explicit gap",
         REQUIRE(gap != result.events.end());
         REQUIRE(gap->gap_first_frame == 0);
         REQUIRE(gap->gap_end_frame == frame(3.0));
+        std::uint64_t reported_gap_frames = 0;
+        for (const auto& event : result.events) {
+            if (event.kind == LiveEventKind::AnalysisGap) {
+                reported_gap_frames += event.gap_end_frame - event.gap_first_frame;
+            }
+        }
+        REQUIRE(result.metrics.skipped_frames == reported_gap_frames);
         REQUIRE(result.recording.samples.size() == audio.size());
         require_no_duplicates(result.notes);
     }
@@ -643,10 +733,21 @@ TEST_CASE("bounded event queues request resynchronization from snapshots", "[liv
     }
     session.finish();
     const auto batch = session.poll_events(1);
+    const auto expected_snapshot = session.snapshot();
     REQUIRE(batch.events.size() == 1);
     REQUIRE(batch.resync_required);
     REQUIRE(batch.dropped_events > 0);
     REQUIRE(session.metrics().event_queue_high_water == 3);
+    REQUIRE(batch.resync_snapshot.size() == expected_snapshot.size());
+    for (std::size_t i = 0; i < expected_snapshot.size(); ++i) {
+        REQUIRE(batch.resync_snapshot[i].id == expected_snapshot[i].id);
+        REQUIRE(batch.resync_snapshot[i].revision == expected_snapshot[i].revision);
+        REQUIRE(batch.resync_snapshot[i].midi_pitch == expected_snapshot[i].midi_pitch);
+        REQUIRE(batch.resync_snapshot[i].onset_frame == expected_snapshot[i].onset_frame);
+        REQUIRE(batch.resync_snapshot[i].offset_frame == expected_snapshot[i].offset_frame);
+        REQUIRE(batch.resync_snapshot[i].state == expected_snapshot[i].state);
+        REQUIRE(batch.resync_snapshot[i].finalized == expected_snapshot[i].finalized);
+    }
     TranscriptionDocument document(fake_rate);
     document.apply(batch);
     REQUIRE(document.requires_resync());
@@ -727,6 +828,56 @@ TEST_CASE("documents preserve history and never let live or refined updates over
     REQUIRE(document.to_notes(7.0).size() == document.notes().size());
 }
 
+TEST_CASE("manual edits supersede live updates while preserving the original event stream", "[live]") {
+    TranscriptionDocument document(fake_rate);
+    LiveEvent onset;
+    onset.kind = LiveEventKind::NoteOn;
+    onset.note = make_note("live-note-1", 60, frame(0.3), frame(0.7),
+                           EventLifecycle::Provisional);
+    onset.note.offset_frame.reset();
+    document.apply(onset);
+
+    auto manual = onset.note;
+    manual.midi_pitch = 61;
+    manual.offset_frame = frame(0.75);
+    manual.state = EventLifecycle::ManuallyCorrected;
+    document.edit_manual_note(manual, "corrected during capture");
+
+    LiveEvent correction;
+    correction.kind = LiveEventKind::NoteCorrected;
+    correction.note = onset.note;
+    correction.note.midi_pitch = 62;
+    correction.note.offset_frame = frame(0.8);
+    correction.note.revision = 10;
+    correction.note.state = EventLifecycle::Stabilized;
+    document.apply(correction);
+
+    REQUIRE(document.note(manual.id)->midi_pitch == 61);
+    REQUIRE(document.note(manual.id)->state == EventLifecycle::ManuallyCorrected);
+    REQUIRE(document.history(manual.id).back().origin == RevisionOrigin::Live);
+    REQUIRE(document.history(manual.id).back().superseded_by_manual);
+    REQUIRE(document.original_events().size() == 2);
+    REQUIRE(document.original_events().back().note.midi_pitch == 62);
+}
+
+TEST_CASE("proposal review rejects application after the accepted document changes", "[live]") {
+    TranscriptionDocument document(fake_rate);
+    ScoreProposal proposal;
+    proposal.id = "stale-review";
+    proposal.notes.push_back(make_note("refined-note", 64, frame(1.0), frame(1.5),
+                                       EventLifecycle::Refined));
+    const auto review = document.review(proposal);
+    REQUIRE(review.base_revision == document.revision());
+
+    const auto manual_id = document.add_manual_note(
+        make_note("manual-note", 50, frame(2.0), frame(2.5),
+                  EventLifecycle::ManuallyCorrected));
+    REQUIRE(document.revision() != review.base_revision);
+    REQUIRE_THROWS_AS(document.apply(review), std::logic_error);
+    REQUIRE(document.note(manual_id)->midi_pitch == 50);
+    REQUIRE_FALSE(document.note("refined-note").has_value());
+}
+
 TEST_CASE("live documents preserve manual IDs and detect refinement pitch conflicts", "[live]") {
     TranscriptionDocument document(fake_rate);
     auto manual = make_note("user-note-17", 60, frame(1.0), frame(1.5),
@@ -774,6 +925,13 @@ TEST_CASE("incremental YIN emits stabilized notes and retracts short blips", "[l
         REQUIRE(std::abs(result.notes[1].onset_seconds() - 0.9) < 0.08);
         REQUIRE(result.metrics.algorithmic_latency.count == 2);
         REQUIRE(result.metrics.stabilization_delay.count == 2);
+        const auto note_id = result.notes.front().id;
+        std::vector<LiveEventKind> lifecycle;
+        for (const auto& event : result.events) {
+            if (event.note.id == note_id) lifecycle.push_back(event.kind);
+        }
+        REQUIRE(lifecycle == std::vector<LiveEventKind>{LiveEventKind::NoteOn,
+            LiveEventKind::NoteStabilized, LiveEventKind::NoteOff, LiveEventKind::NoteFinalized});
     }
     LiveOptions strict;
     strict.format = {rate, 1};
@@ -783,6 +941,20 @@ TEST_CASE("incremental YIN emits stabilized notes and retracts short blips", "[l
     const auto blips = replay(strict, {}, audio, 512);
     REQUIRE(blips.notes.empty());
     REQUIRE(count(blips.events, LiveEventKind::NoteRetracted) == 2);
+    for (const auto& event : blips.events) {
+        if (event.kind != LiveEventKind::NoteOn) continue;
+        const auto retracted = std::find_if(blips.events.begin(), blips.events.end(),
+            [&](const LiveEvent& later) {
+                return later.note.id == event.note.id && later.kind == LiveEventKind::NoteRetracted;
+            });
+        REQUIRE(retracted != blips.events.end());
+        REQUIRE(retracted->note.id == event.note.id);
+        REQUIRE(std::none_of(std::next(retracted), blips.events.end(), [&](const LiveEvent& later) {
+            return later.note.id == event.note.id &&
+                (later.kind == LiveEventKind::NoteStabilized || later.kind == LiveEventKind::NoteOff ||
+                 later.kind == LiveEventKind::NoteFinalized);
+        }));
+    }
 }
 
 TEST_CASE("analysis pause keeps recording and bounded input flowing then explicitly resynchronizes", "[live]") {
@@ -908,6 +1080,62 @@ TEST_CASE("threaded sessions cancel promptly and destructors join workers", "[li
     }
 }
 
+TEST_CASE("stop finalizes open notes while cancel discards without finalization", "[live]") {
+    struct CaptureResult {
+        std::vector<LiveEvent> events;
+        std::vector<LiveNote> notes;
+        LiveState state{};
+    };
+    const auto run_capture = [](bool cancel) {
+        auto options = window_options();
+        LiveTranscriptionSession session(
+            options, std::make_unique<FakeBackend>(
+                         std::vector<Truth>{{67, 0.5, 5.5}}, fake_rate));
+        REQUIRE(std::holds_alternative<std::monostate>(session.start()));
+        session.begin_input(0);
+        const auto audio = frame_index_audio(frame(3.0));
+        CaptureResult result;
+        constexpr std::size_t block_frames = 500;
+        for (std::size_t offset = 0; offset < audio.size(); offset += block_frames) {
+            const auto count = std::min(block_frames, audio.size() - offset);
+            REQUIRE(session.push({
+                options.format, offset,
+                std::span(audio).subspan(offset, count), {}, false}) ==
+                PushStatus::Accepted);
+            session.pump();
+            auto batch = session.poll_events();
+            result.events.insert(result.events.end(), batch.events.begin(),
+                                 batch.events.end());
+        }
+        session.end_input(audio.size());
+        if (cancel) {
+            session.cancel();
+        } else {
+            session.finish();
+        }
+        auto batch = session.poll_events();
+        result.events.insert(result.events.end(), batch.events.begin(),
+                             batch.events.end());
+        result.notes = session.snapshot();
+        result.state = session.state();
+        return result;
+    };
+
+    const auto stopped = run_capture(false);
+    REQUIRE(stopped.state == LiveState::Finished);
+    REQUIRE(count(stopped.events, LiveEventKind::NoteOn) == 1);
+    REQUIRE(count(stopped.events, LiveEventKind::NoteFinalized) == 1);
+    REQUIRE(stopped.notes.size() == 1);
+    REQUIRE(stopped.notes.front().finalized);
+
+    const auto cancelled = run_capture(true);
+    REQUIRE(cancelled.state == LiveState::Cancelled);
+    REQUIRE(count(cancelled.events, LiveEventKind::NoteOn) == 1);
+    REQUIRE(count(cancelled.events, LiveEventKind::NoteFinalized) == 0);
+    REQUIRE(cancelled.notes.size() == 1);
+    REQUIRE_FALSE(cancelled.notes.front().finalized);
+}
+
 TEST_CASE("sustained threaded capture stays bounded and lossless", "[live][stress]") {
     constexpr std::uint32_t rate = 22050;
     std::vector<std::pair<double, double>> parts;
@@ -965,18 +1193,63 @@ TEST_CASE("overloaded threaded analysis skips audio but keeps queues and notes b
     REQUIRE(std::holds_alternative<std::monostate>(session.start()));
     const auto audio = frame_index_audio(frame(18.5));
     const auto block = frame(0.05);
+    bool observed_overload = false;
     for (std::size_t offset = 0; offset < audio.size(); offset += block) {
         // 10x faster than real time; QueueFull blocks are dropped like a real-time producer.
         (void)session.push({options.format, offset,
                             std::span(audio).subspan(offset, std::min(block, audio.size() - offset)), {}, false});
+        observed_overload = observed_overload || session.metrics().overloaded;
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     session.finish();
     const auto metrics = session.metrics();
     REQUIRE(session.state() == LiveState::Finished);
+    REQUIRE(observed_overload);
+    REQUIRE_FALSE(metrics.overloaded);
     REQUIRE(metrics.skipped_frames + metrics.windows_coalesced > 0);
     REQUIRE(metrics.input_queue_high_water <= options.input_queue_blocks);
     REQUIRE(metrics.tracked_notes_high_water <= options.max_tracked_notes);
     REQUIRE(metrics.events_dropped == 0);
     require_no_duplicates(session.snapshot());
+}
+
+TEST_CASE("threaded event overflow resynchronizes to a coherent bounded snapshot", "[live][stress]") {
+    constexpr std::uint32_t rate = 22050;
+    std::vector<std::pair<double, double>> parts;
+    for (int i = 0; i < 40; ++i) {
+        parts.push_back({440.0 * std::pow(2.0, (i % 12) / 12.0), 0.35});
+        parts.push_back({0, 0.15});
+    }
+    const auto audio = tones(rate, parts);
+    LiveOptions options;
+    options.format = {rate, 1};
+    options.lag_policy = LagPolicy::Lossless;
+    options.event_queue_capacity = 8;
+    options.input_queue_blocks = 32;
+    LiveTranscriptionSession session(options);
+    REQUIRE(std::holds_alternative<std::monostate>(session.start()));
+    for (std::size_t offset = 0; offset < audio.size(); offset += 512) {
+        const auto block = std::span(audio).subspan(offset, std::min<std::size_t>(512, audio.size() - offset));
+        while (session.push({options.format, offset, block, {}, false}) == PushStatus::QueueFull) {
+            std::this_thread::yield();
+        }
+    }
+    session.finish();
+    const auto batch = session.poll_events(1);
+    const auto expected_snapshot = session.snapshot();
+    const auto metrics = session.metrics();
+    REQUIRE(session.state() == LiveState::Finished);
+    REQUIRE(batch.resync_required);
+    REQUIRE(batch.dropped_events > 0);
+    REQUIRE(metrics.events_dropped > 0);
+    REQUIRE(batch.resync_snapshot.size() == expected_snapshot.size());
+    REQUIRE(expected_snapshot.size() >= 30);
+    for (std::size_t i = 0; i < expected_snapshot.size(); ++i) {
+        REQUIRE(batch.resync_snapshot[i].id == expected_snapshot[i].id);
+        REQUIRE(batch.resync_snapshot[i].revision == expected_snapshot[i].revision);
+        REQUIRE(batch.resync_snapshot[i].offset_frame == expected_snapshot[i].offset_frame);
+        REQUIRE(batch.resync_snapshot[i].state == expected_snapshot[i].state);
+        REQUIRE(batch.resync_snapshot[i].finalized == expected_snapshot[i].finalized);
+    }
+    require_no_duplicates(batch.resync_snapshot);
 }

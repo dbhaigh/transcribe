@@ -6,6 +6,7 @@
 #include "transcribe/musicxml.hpp"
 #include "transcribe/inference.hpp"
 #include "transcribe/engine.hpp"
+#include "transcribe/output.hpp"
 #include "transcribe/preprocessing.hpp"
 #include "transcribe/path.hpp"
 
@@ -366,7 +367,9 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
         request.instrument == InstrumentPrior::Piano ? "piano" :
         request.instrument == InstrumentPrior::Voice ? "voice" : "";
     if (!request.isolated_audio_path.empty()) {
-        const std::array outputs{request.musicxml_path, request.tab_path, request.midi_path};
+        const std::array outputs{
+            request.musicxml_path, request.tab_path, request.midi_path,
+            request.json_path};
         protect_preprocessing_inputs({request.input_path, request.isolated_audio_path, target, false}, outputs);
     }
     report_progress(progress_callback, 0.0, "Validating optional isolated audio");
@@ -617,7 +620,7 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
         }
     }
     if (!request.proposal_only) {
-        const double output_count = request.midi_path.empty() ? 2.0 : 3.0;
+        const double output_count = request.midi_path.empty() ? 3.0 : 4.0;
         report_progress(progress_callback, 0.0, "Writing score exports");
 #ifdef TRANSCRIBE_ENABLE_VEROVIO
         write_musicxml(request.musicxml_path, result.score,
@@ -633,8 +636,11 @@ Result run_transcription(const Request& request, std::stop_token stop_token,
         report_progress(progress_callback, 2.0 / output_count, "Writing score exports");
         if (!request.midi_path.empty()) {
             write_midi(request.midi_path, result.score);
-            report_progress(progress_callback, 1.0, "Writing score exports");
+            report_progress(progress_callback, 3.0 / output_count, "Writing score exports");
         }
+        write_output_atomic(request.json_path,
+                            serialize_score_document(result.score) + '\n');
+        report_progress(progress_callback, 1.0, "Writing score exports");
     }
 
     if (live_preview_callback) {

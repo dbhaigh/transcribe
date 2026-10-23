@@ -30,6 +30,7 @@ struct Request {
     RealtimeOptions realtime_options;
     AsioCaptureOptions asio_capture_options;
     std::string live_backend{"yin"};
+    double live_hop_ms{250.0};
     GuitarTabOptions guitar_tab_options;
     InterpretationOptions interpretation_options;
     bool preserve_expressive_timing{};
@@ -40,6 +41,7 @@ struct Request {
     std::filesystem::path musicxml_path;
     std::filesystem::path tab_path;
     std::filesystem::path midi_path;
+    std::filesystem::path json_path;
 };
 
 struct Result {

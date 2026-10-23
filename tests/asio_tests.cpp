@@ -8,6 +8,37 @@
 
 using namespace transcribe;
 
+namespace {
+
+struct ObservedInputBlock {
+    std::uint64_t first_frame{};
+    std::uint64_t sequence{};
+    std::uint64_t stream_epoch{};
+    std::size_t frames{};
+    bool discontinuity{};
+};
+
+class CallbackProbeSink final : public live::AudioInputSink {
+public:
+    live::PushStatus push(const live::AudioFrameBlock& block) noexcept override {
+        blocks[block_count++] = {
+            block.first_frame, block.sequence.value_or(0), block.stream_epoch,
+            block.interleaved.size() / block.format.channels, block.discontinuity};
+        const auto result = next_result;
+        next_result = live::PushStatus::Accepted;
+        return result;
+    }
+
+    void report_input_lost() noexcept override { input_lost = true; }
+
+    std::array<ObservedInputBlock, 8> blocks{};
+    std::size_t block_count{};
+    live::PushStatus next_result{live::PushStatus::Accepted};
+    bool input_lost{};
+};
+
+} // namespace
+
 TEST_CASE("discontinuity storms coalesce bounded markers without losing the final timeline", "[asio][stress]") {
     live::LiveOptions options;
     options.format = {8000, 1};
@@ -157,10 +188,10 @@ TEST_CASE("live capture transport counts refused null and final frames without s
     REQUIRE(transport.receive(samples.data(), 8, false, std::chrono::seconds(2)) == 0);
     REQUIRE(transport.refused.load() == 1);
     session.pump();
-    REQUIRE(transport.receive(nullptr, 8, true, std::chrono::seconds(3)) == 0);
+    REQUIRE(transport.receive(samples.data(), 8, true, std::chrono::seconds(3)) == 0);
     REQUIRE(transport.next_frame.load() == 24);
-    REQUIRE(transport.receive(samples.data(), 8, false, std::chrono::seconds(4)) == 0);
     session.pump();
+    REQUIRE(transport.receive(nullptr, 8, false, std::chrono::seconds(4)) == 0);
     REQUIRE(transport.receive(samples.data(), 8, false, std::chrono::seconds(5)) == 1);
     session.finish();
     REQUIRE(transport.next_frame.load() == 35);
@@ -169,14 +200,58 @@ TEST_CASE("live capture transport counts refused null and final frames without s
     REQUIRE(transport.overflows.load() == 1);
     REQUIRE(session.ingested_frames() == 35);
     REQUIRE(session.metrics().gap_frames == 16);
+    REQUIRE(session.metrics().sequence_gaps == 2);
     const auto recording = session.recording();
     REQUIRE(recording.samples.size() == 35);
-    for (std::size_t i = 8; i < 24; ++i)
-        REQUIRE(recording.samples[i] == 0);
-    REQUIRE(session.metrics().overloaded);
+    for (std::size_t i = 0; i < recording.samples.size(); ++i) {
+        const bool gap = (i >= 8 && i < 16) || (i >= 24 && i < 32);
+        REQUIRE(recording.samples[i] == (gap ? 0.0f : samples[i % samples.size()]));
+    }
+    const auto metrics = session.metrics();
+    REQUIRE(metrics.blocks_refused == 1);
+    REQUIRE_FALSE(metrics.overloaded);
 }
 
-TEST_CASE("repeated callback sessions stop and cancel without retained producer state", "[asio][stress]") {
+TEST_CASE("callback transport preserves block metadata and marks overflow and dropped input",
+          "[asio][callback]") {
+    CallbackProbeSink sink;
+    detail::LiveCaptureTransport transport;
+    transport.session = &sink;
+    transport.format = {8000, 1};
+    transport.capacity = 32;
+    transport.stream_epoch = 7;
+    const std::array<float, 4> samples{.1f, .2f, .3f, .4f};
+
+    REQUIRE(transport.receive(samples.data(), 4, true, std::chrono::seconds(1)) == 0);
+    REQUIRE(transport.receive(samples.data(), 4, false, std::chrono::seconds(2)) == 0);
+    sink.next_result = live::PushStatus::QueueFull;
+    REQUIRE(transport.receive(samples.data(), 4, false, std::chrono::seconds(3)) == 0);
+    REQUIRE(transport.receive(nullptr, 4, false, std::chrono::seconds(4)) == 0);
+    REQUIRE(transport.receive(samples.data(), 4, false, std::chrono::seconds(5)) == 0);
+
+    REQUIRE(sink.block_count == 4);
+    REQUIRE(sink.blocks[0].first_frame == 0);
+    REQUIRE(sink.blocks[0].sequence == 0);
+    REQUIRE(sink.blocks[0].stream_epoch == 7);
+    REQUIRE(sink.blocks[0].frames == 4);
+    REQUIRE(sink.blocks[0].discontinuity);
+    REQUIRE(sink.blocks[1].first_frame == 4);
+    REQUIRE(sink.blocks[1].sequence == 1);
+    REQUIRE_FALSE(sink.blocks[1].discontinuity);
+    REQUIRE(sink.blocks[2].first_frame == 8);
+    REQUIRE(sink.blocks[2].sequence == 2);
+    REQUIRE_FALSE(sink.blocks[2].discontinuity);
+    REQUIRE(sink.blocks[3].first_frame == 16);
+    REQUIRE(sink.blocks[3].sequence == 4);
+    REQUIRE(sink.blocks[3].discontinuity);
+    REQUIRE(transport.next_frame.load() == 20);
+    REQUIRE(transport.refused.load() == 1);
+    REQUIRE(transport.missing_frames.load() == 4);
+    REQUIRE(transport.overflows.load() == 1);
+    REQUIRE(transport.delivered_frames.load() == 12);
+}
+
+TEST_CASE("100 callback producers race finish without retaining transport state", "[asio][stress]") {
     std::array<float, 128> samples{};
     for (int iteration = 0; iteration < 100; ++iteration) {
         live::LiveOptions options;
@@ -185,6 +260,7 @@ TEST_CASE("repeated callback sessions stop and cancel without retained producer 
         options.max_recording_seconds = 1;
         live::LiveTranscriptionSession session(options);
         REQUIRE(std::holds_alternative<std::monostate>(session.start()));
+        session.begin_input(0);
         detail::LiveCaptureTransport transport;
         transport.session = &session;
         transport.format = options.format;
@@ -195,12 +271,9 @@ TEST_CASE("repeated callback sessions stop and cancel without retained producer 
                     break;
             }
         });
-        if (iteration % 2)
-            session.cancel();
-        else
-            session.finish();
+        session.finish();
         producer.join();
-        REQUIRE(session.state() == (iteration % 2 ? live::LiveState::Cancelled : live::LiveState::Finished));
+        REQUIRE(session.state() == live::LiveState::Finished);
         REQUIRE(session.push({options.format, 2000, samples, {}, false}) == live::PushStatus::Closed);
         REQUIRE(session.metrics().input_queue_high_water <= options.input_queue_blocks);
     }

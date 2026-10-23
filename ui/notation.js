@@ -253,6 +253,26 @@
   window.addEventListener("transcribe:config", (event) => initializeRenderer(event.detail));
   window.addEventListener("transcribe:accepted-score", (event) =>
     renderAcceptedScore(event.detail));
+  window.addEventListener("transcribe:live-capture-state", (event) => {
+    const state = event.detail?.state;
+    const active = ["arming", "capturing", "interrupted", "finishing", "finished"]
+      .includes(state);
+    if (active) {
+      document.body.classList.add("engraving-draft");
+      host.classList.add("hidden");
+      updatePlayback(NaN);
+      $("score-hint").textContent =
+        "Live notes are shown on the editable canvas; engraving updates after capture.";
+      return;
+    }
+    if (latestScore && enabled) {
+      document.body.classList.remove("engraving-draft");
+      host.classList.remove("hidden");
+    } else {
+      document.body.classList.add("engraving-draft");
+      host.classList.add("hidden");
+    }
+  });
   window.addEventListener("transcribe:edited", () => {
     if (!enabled) return;
     requestId += 1;

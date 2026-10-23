@@ -36,6 +36,8 @@
   let edited = false;
   let transcriptionBusy = false;
   let liveCaptureActive = false;
+  let liveCaptureSavedPositions = null;
+  let liveGapRegions = [];
   let editBaselineNotes = new Map();
   let editBaselineFingerings = new Map();
   let pendingLiveDeletes = new Set();
@@ -245,6 +247,39 @@
     return timeline.x(note.start, totalDuration(), width);
   }
 
+  function drawUnanalysedRegions(context, width, height) {
+    const view = timeline.bounds(totalDuration());
+    const visible = liveGapRegions.filter((gap) =>
+      gap.end_seconds > view.start && gap.start_seconds < view.end);
+    const canvas = context.canvas;
+    if (canvas) canvas.dataset.gapRegions = String(visible.length);
+    for (const gap of visible) {
+      const left = Math.max(36, timeline.x(Math.max(view.start, gap.start_seconds),
+        totalDuration(), width));
+      const right = Math.min(width - 10, timeline.x(Math.min(view.end, gap.end_seconds),
+        totalDuration(), width));
+      if (right <= left) continue;
+      context.save();
+      context.beginPath();
+      context.rect(left, 0, right - left, height);
+      context.clip();
+      context.fillStyle = "rgba(233, 197, 120, .12)";
+      context.fillRect(left, 0, right - left, height);
+      context.strokeStyle = "rgba(233, 197, 120, .5)";
+      context.lineWidth = 1;
+      for (let x = left - height; x < right; x += 9) {
+        context.beginPath();
+        context.moveTo(x, height);
+        context.lineTo(x + height, 0);
+        context.stroke();
+      }
+      context.fillStyle = canvasColor("--text", "#ecf2f4");
+      context.font = 'bold 9px "DM Mono", Consolas, monospace';
+      context.fillText("UNANALYSED", left + 4, 13);
+      context.restore();
+    }
+  }
+
   function playbackTime() {
     if (playbackMode === "midi") return Math.max(0, audioContext.currentTime - playbackStarted);
     if (playbackMode === "original") return originalPosition;
@@ -265,6 +300,7 @@
     context.clearRect(0, 0, width, height);
     context.fillStyle = background;
     context.fillRect(0, 0, width, height);
+    drawUnanalysedRegions(context, width, height);
     const margin = 36;
     const lineGap = 11;
     const step = lineGap / 2;
@@ -320,6 +356,10 @@
       const radius = index === selectedIndex ? 6 : 5;
       const selected = index === selectedIndex;
       const stateColor = noteColor(note);
+      const visualState = note.live_visual_state ||
+        (note.finalized ? "finalized" : note.state);
+      const opacity = Number.isFinite(note.live_visual_opacity)
+        ? note.live_visual_opacity : 1;
       context.save();
       context.strokeStyle = "rgba(207, 223, 225, .4)";
       const diatonic = 30 + Math.round((baseY - y) / step);
@@ -334,17 +374,34 @@
         }
       }
       context.fillStyle = selected ? canvasColor("--text", "#ecf2f4") : stateColor;
-      context.globalAlpha = note.state === "provisional" ? .68 : .88;
-      if (note.state === "provisional") context.setLineDash([2, 2]);
+      context.globalAlpha = opacity * (visualState === "provisional" ? .68 : .88);
+      if (visualState === "provisional") context.setLineDash([2, 2]);
       context.beginPath();
       context.ellipse(x, y, radius, radius * .72, -.28, 0, Math.PI * 2);
-      context.globalAlpha = 1;
       context.strokeStyle = selected ? "#fff2bd" : stateColor;
       const beats = note.rhythm_denominator > 0 && !note.user_authored
         ? 4 / note.rhythm_denominator
         : quartersAt(note.start + note.duration) - quartersAt(note.start);
-      if (beats < 1.8) context.fill();
+      if (visualState === "provisional") context.stroke();
+      else if (visualState === "stabilized" || beats < 1.8) context.fill();
       else context.stroke();
+      if (visualState === "stabilized") {
+        context.fillStyle = stateColor;
+        context.font = 'bold 8px "DM Mono", Consolas, monospace';
+        context.fillText("S", x + radius + 2, y - radius);
+      } else if (visualState === "corrected") {
+        context.lineWidth = 2;
+        context.beginPath();
+        context.ellipse(x, y, radius + 3, radius * .72 + 3, -.28, 0, Math.PI * 2);
+        context.stroke();
+      } else if (visualState === "retracted") {
+        context.beginPath();
+        context.moveTo(x - radius, y - radius);
+        context.lineTo(x + radius, y + radius);
+        context.moveTo(x + radius, y - radius);
+        context.lineTo(x - radius, y + radius);
+        context.stroke();
+      }
       if (beats < 3.8) {
         const stemUp = note.voice > 1 ? note.voice % 2 === 1 : y >= baseY - lineGap * 2;
         const stemX = stemUp ? x + radius - 1 : x - radius + 1;
@@ -470,6 +527,7 @@
     context.clearRect(0, 0, width, height);
     context.fillStyle = canvasColor("--field", "#0c1319");
     context.fillRect(0, 0, width, height);
+    drawUnanalysedRegions(context, width, height);
     const margin = 36;
     const top = 20;
     const stringCount = currentTuning().length;
@@ -495,28 +553,78 @@
     const tuning = currentTuning();
     $("tab-tuning-label").textContent =
       `${tuningLabels[$("guitar-tuning").value] || tuningLabels.standard} · capo ${currentCapo()}`;
+    let unresolvedTabNotes = 0;
     visibleEntries.forEach(({ note, index }) => {
       const position = tabPositions[index] || { string: 0, fret: -1 };
-      if (!position.string) return;
+      const visualState = note.live_visual_state ||
+        (note.finalized ? "finalized" : note.state);
+      const opacity = Number.isFinite(note.live_visual_opacity)
+        ? note.live_visual_opacity : 1;
+      if (!position.string || !Number.isInteger(position.fret) || position.fret < 0) {
+        unresolvedTabNotes += 1;
+        const x = noteX(note, width);
+        context.save();
+        context.globalAlpha = opacity;
+        context.strokeStyle = noteColor(note);
+        context.setLineDash([2, 3]);
+        context.beginPath();
+        context.moveTo(x, top);
+        context.lineTo(x, top + (stringCount - 1) * gap);
+        context.stroke();
+        context.setLineDash([]);
+        context.font = 'bold 11px "DM Mono", Consolas, monospace';
+        context.textAlign = "center";
+        context.fillText("?", x, top - 5);
+        context.restore();
+        return;
+      }
       const y = top + (position.string - 1) * gap;
       const x = noteX(note, width);
+      context.save();
+      context.globalAlpha = opacity * (visualState === "provisional" ? .68 : 1);
       context.fillStyle = index === selectedIndex
         ? canvasColor("--text", "#ecf2f4") : noteColor(note);
+      context.strokeStyle = noteColor(note);
       context.font = index === selectedIndex
         ? 'bold 10px "DM Mono", Consolas, monospace'
         : '9px "DM Mono", Consolas, monospace';
       context.textAlign = "center";
+      if (visualState === "provisional") {
+        context.beginPath();
+        context.arc(x, y, 7, 0, Math.PI * 2);
+        context.stroke();
+      }
       context.fillText(String(position.fret), x, y + 4);
+      context.strokeStyle = noteColor(note);
+      if (visualState === "stabilized") {
+        context.beginPath();
+        context.arc(x, y - 6, 2, 0, Math.PI * 2);
+        context.fill();
+      } else if (visualState === "corrected") {
+        context.lineWidth = 1.5;
+        context.beginPath();
+        context.arc(x, y, 8, 0, Math.PI * 2);
+        context.stroke();
+      } else if (visualState === "retracted") {
+        context.beginPath();
+        context.moveTo(x - 5, y - 5);
+        context.lineTo(x + 5, y + 5);
+        context.moveTo(x + 5, y - 5);
+        context.lineTo(x - 5, y + 5);
+        context.stroke();
+      }
       const endX = timeline.x(note.start + note.duration, totalDuration(), width);
       context.strokeStyle = noteColor(note);
-      context.setLineDash(note.state === "provisional" ? [3, 3] : []);
+      context.setLineDash(visualState === "provisional" ? [3, 3] : []);
       context.beginPath();
       context.moveTo(x + 6, y + 6);
       context.lineTo(Math.max(x + 7, endX), y + 6);
       context.stroke();
       context.setLineDash([]);
       context.textAlign = "left";
+      context.restore();
     });
+    canvas.dataset.unresolvedTabNotes = String(unresolvedTabNotes);
     context.fillStyle = "#768992";
     const view = timeline.bounds(totalDuration());
     context.font = '10px "Segoe UI", sans-serif';
@@ -1628,7 +1736,8 @@
       return note;
     });
     tabPositions = notes.map((note) => {
-      const prior = previousPositions.get(note.id);
+      const prior = previousPositions.get(note.id) ||
+        liveCaptureSavedPositions?.get(note.id);
       if (Number.isInteger(note.string) && Number.isInteger(note.fret)) {
         return {
           string: note.string,
@@ -1638,6 +1747,10 @@
       }
       return prior ? { ...prior } : {};
     });
+    if (liveCaptureSavedPositions &&
+        [...liveCaptureSavedPositions.keys()].some(id => incomingIds.has(id))) {
+      liveCaptureSavedPositions = null;
+    }
     assignTabPositions();
     selectedIndex = selectedId
       ? notes.findIndex((note) =>
@@ -2005,6 +2118,7 @@
       musicxml: $("musicxml-path").value,
       tab: $("tab-path").value,
       midi: $("midi-path").value,
+      json: $("json-path").value,
       ...extra,
     };
   }
@@ -2207,6 +2321,10 @@
     noteIndexDirty = true;
     acceptNotes(event.detail);
   });
+  window.addEventListener("transcribe:live-overlays", (event) => {
+    liveGapRegions = Array.isArray(event.detail?.gaps) ? event.detail.gaps : [];
+    drawAll();
+  });
   window.addEventListener("transcribe:project-active", (event) => {
     projectActive = Boolean(event.detail?.active);
   });
@@ -2326,8 +2444,13 @@
     const disabled = typeof state === "object"
       ? Boolean(state.busy) : Boolean(state);
     const preserveScore = typeof state === "object" && Boolean(state.preserveScore);
-    liveCaptureActive = typeof state === "object" &&
+    const nextLiveCapture = typeof state === "object" &&
       Boolean(state.liveCapture);
+    if (nextLiveCapture && !liveCaptureActive) {
+      liveCaptureSavedPositions = new Map(notes.map((note, index) =>
+        [note.id, tabPositions[index]]).filter(([id]) => id));
+    }
+    liveCaptureActive = nextLiveCapture;
     transcriptionBusy = disabled;
     if (disabled) stopPlayback();
     if (disabled && !preserveScore) {
@@ -2365,7 +2488,7 @@
     $("export-edits").textContent = message.success
       ? "Exported ✓" : "Retry export";
     $("status-text").textContent = message.success
-      ? "Edited notation, tablature, and MIDI exported"
+      ? "Accepted score exports completed"
       : `Export failed: ${message.error || "Unknown error"}`;
   });
   function invalidateLayout() { audioDirty = true; drawAll(); }

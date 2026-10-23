@@ -7,6 +7,7 @@
     musicxml: $("musicxml-path"),
     tab: $("tab-path"),
     midi: $("midi-path"),
+    json: $("json-path"),
   };
   const colors = ["#74e4bd", "#a994ff", "#e9c578", "#6ccfe0", "#ff9b8e", "#96b5ff"];
   let mode = "file";
@@ -31,6 +32,18 @@
   let autosaveTimer = 0;
   let projectEditGeneration = 0;
   let captureActive = false;
+  let liveCaptureState = "idle";
+  let liveStatusJob = 0;
+  let lastLiveSequence = 0;
+  let liveNotesById = new Map();
+  let liveNoteRevisions = new Map();
+  let liveRetractions = new Map();
+  let liveCorrectionTimers = new Map();
+  let liveGapRegions = [];
+  let acceptedNotesBeforeLiveCapture = null;
+  let liveViewportSpan = 12;
+  let applyingLiveBatch = false;
+  let stopRequested = false;
   let asioDevices = [];
   let savedAudioDeviceId = "";
   let savedSampleRate = "";
@@ -53,11 +66,16 @@
     audioPreviewFrame = 0;
     queuedLiveMessage = null;
     queuedAudioPreview = null;
+    for (const timer of liveCorrectionTimers.values()) clearTimeout(timer);
+    liveCorrectionTimers.clear();
+    liveRetractions.clear();
   }
 
   function send(action, values = {}) {
     if (window.chrome && window.chrome.webview) {
-      window.chrome.webview.postMessage(`${action}|${new URLSearchParams(values).toString()}`);
+      const payload = ["start-capture", "stop-capture", "cancel"].includes(action)
+        ? { ...values, version: "1" } : values;
+      window.chrome.webview.postMessage(`${action}|${new URLSearchParams(payload).toString()}`);
     }
   }
 
@@ -87,6 +105,80 @@
     if (text.toLowerCase().includes("failed") || text.toLowerCase().includes("error")) {
       setCaptureState("Backend error", "error");
     }
+  }
+
+  function liveLatencyText(summary) {
+    if (!summary || !(Number(summary.count) > 0)) return "unmeasured";
+    const p50 = Number(summary.p50_ms);
+    const p95 = Number(summary.p95_ms);
+    if (!Number.isFinite(p50) || !Number.isFinite(p95)) return "unmeasured";
+    return `p50 ${p50.toFixed(1)} / p95 ${p95.toFixed(1)} ms`;
+  }
+
+  function updateLiveHealth(message) {
+    const metrics = message.metrics || {};
+    const rawDriverLatency = message.driver_input_latency_ms;
+    const driverLatency = Number(rawDriverLatency);
+    const driverKnown = rawDriverLatency !== null && rawDriverLatency !== undefined &&
+      Number.isFinite(driverLatency);
+    $("health-driver").textContent = driverKnown
+      ? `${driverLatency.toFixed(1)} ms reported` : "unknown";
+    const callbackPeriod = Number(message.callback_period_ms);
+    $("health-callback").textContent = message.callback_period_ms !== null &&
+      message.callback_period_ms !== undefined && Number.isFinite(callbackPeriod) &&
+      callbackPeriod > 0
+      ? `${callbackPeriod.toFixed(1)} ms` : "unmeasured";
+    $("health-window").textContent = liveLatencyText(metrics.analysis_window);
+    $("health-input-wait").textContent = liveLatencyText(metrics.capture);
+    $("health-analysis-wait").textContent = liveLatencyText(metrics.analysis_queue);
+    $("health-analysis-execution").textContent = liveLatencyText(metrics.analysis);
+    $("health-confirmation").textContent = liveLatencyText(metrics.stabilization);
+    $("health-event-wait").textContent = liveLatencyText(metrics.publication_queue);
+    $("health-ui-dispatch").textContent = liveLatencyText(metrics.ui_dispatch);
+
+    const showTarget = (id, misses, summary, configuredTarget, defaultTarget) => {
+      const count = Number(summary?.count);
+      const targetSeconds = Number(configuredTarget);
+      const targetMs = (Number.isFinite(targetSeconds) && targetSeconds > 0
+        ? targetSeconds : defaultTarget) * 1000;
+      $(id).textContent = Number.isFinite(count) && count > 0
+        ? `${Number(misses) || 0} misses / ${count} observations · target ${targetMs.toFixed(0)} ms`
+        : `unmeasured · target ${targetMs.toFixed(0)} ms`;
+    };
+    showTarget("health-provisional-target", metrics.provisional_target_misses,
+      metrics.end_to_end, metrics.target_provisional_seconds, 0.2);
+    showTarget("health-stabilized-target", metrics.stabilized_target_misses,
+      metrics.stabilization, metrics.target_stabilized_seconds, 0.3);
+
+    const count = (name) => Number(metrics[name]) || 0;
+    const inputDepth = count("input_queue_depth");
+    const inputCapacity = count("input_queue_capacity");
+    const eventDepth = count("event_queue_depth");
+    const eventCapacity = count("event_queue_capacity");
+    const refusedBlocks = count("blocks_refused");
+    const droppedEvents = count("events_dropped");
+    const coalescedEvents = Number(message.coalesced_events_dropped) || 0;
+    const skippedFrames = count("skipped_frames");
+    const coalescedWindows = count("windows_coalesced");
+    const refusedNotes = count("tracked_notes_refused");
+    const overloaded = Boolean(metrics.overloaded);
+    const overload = $("health-overload");
+    overload.dataset.state = overloaded ? "active" : "none";
+    overload.textContent = `OVERLOAD: ${overloaded ? "active" : "none observed"} · queues ${inputDepth}/${inputCapacity}, ${eventDepth}/${eventCapacity} · refused ${refusedBlocks} blocks/${refusedNotes} notes · dropped ${droppedEvents} events/${coalescedEvents} UI deltas · skipped ${skippedFrames} frames · coalesced ${coalescedWindows} windows`;
+
+    const gapFrames = count("gap_frames");
+    const sequenceGaps = count("sequence_gaps");
+    const discontinuities = count("discontinuities");
+    const inputGap = gapFrames > 0 || sequenceGaps > 0 || discontinuities > 0;
+    const gap = $("health-input-gap");
+    gap.dataset.state = inputGap ? "active" : "none";
+    gap.textContent = `INPUT GAP: ${inputGap ? "detected" : "none observed"} · ${gapFrames} missing frames · ${sequenceGaps} sequence gaps · ${discontinuities} discontinuities`;
+
+    const driver = driverKnown
+      ? `${driverLatency.toFixed(1)} ms reported` : "unknown";
+    const diagnostic = `Stage timings only; not physical end-to-end latency. Driver ${driver}, callback ${$("health-callback").textContent}, window ${$("health-window").textContent}, input wait ${$("health-input-wait").textContent}, analysis wait ${$("health-analysis-wait").textContent}, analysis ${$("health-analysis-execution").textContent}, confirmation ${$("health-confirmation").textContent}, event wait ${$("health-event-wait").textContent}, native UI dispatch ${$("health-ui-dispatch").textContent}. Input queue ${inputDepth}/${inputCapacity}, event queue ${eventDepth}/${eventCapacity}.`;
+    $("live-diagnostics").textContent = diagnostic;
+    $("live-health-strip").hidden = false;
   }
 
   function setActivity(state, heading, detail) {
@@ -353,7 +445,7 @@
       $("pause-analysis").setAttribute("aria-pressed", "false");
       $("pause-analysis").textContent = "Pause analysis";
     }
-    if (captureActive && !preserveScore) {
+    if (captureActive) {
       recordingSeconds = 0;
       $("recording-timer").textContent = "00:00.0";
     }
@@ -376,6 +468,8 @@
     });
     $("capture-seconds").disabled = busy;
     $("latency-ms").disabled = busy;
+    $("live-hop-ms").disabled = busy || mode !== "asio" ||
+      $("live-backend").value === "yin";
     $("asio-device").disabled = busy || !asioDevices.length;
     $("asio-sample-rate").disabled = busy || !asioDevices.length;
     $("asio-channels").disabled = busy || !asioDevices.length;
@@ -395,8 +489,13 @@
     $("open-folder-button").disabled = busy;
     $("status-output-folder").disabled = busy;
     $("drop-browse").disabled = busy;
-    $("cancel-button").textContent = captureActive ? "Stop capture" : "Cancel analysis";
-    $("cancel-button").disabled = !busy || (!cancellable && !captureActive);
+    $("cancel-button").textContent = captureActive
+      ? (liveCaptureState === "finishing" ? "Cancel capture" : "Stop capture")
+      : "Cancel analysis";
+    $("cancel-button").disabled = !busy || (!cancellable && !captureActive) ||
+      cancelPending || (captureActive && stopRequested &&
+        liveCaptureState !== "finishing") ||
+      (captureActive && liveCaptureState === "finished");
     $("refine-live").disabled = busy || !hasLiveRecording;
     $("apply-refinement").disabled = busy || !hasPendingRefinement;
     $("discard-refinement").disabled = busy || !hasPendingRefinement;
@@ -407,7 +506,7 @@
       $(id).disabled = busy;
     });
     window.dispatchEvent(new CustomEvent("transcribe:busy", {
-      detail: { busy, preserveScore, liveCapture: captureActive && !preserveScore },
+      detail: { busy, preserveScore, liveCapture: captureActive },
     }));
     updateJourney();
   }
@@ -498,6 +597,7 @@
       if (saved.mode) selectMode(saved.mode);
       $("polyphonic").checked = Boolean(saved.polyphonic);
       if (saved.latencyMs) $("latency-ms").value = saved.latencyMs;
+      if (saved.liveHopMs !== undefined) $("live-hop-ms").value = saved.liveHopMs;
       if (saved.tuning) $("guitar-tuning").value = saved.tuning;
       if (saved.capoFret !== undefined) $("capo-fret").value = saved.capoFret;
       if (saved.alternatives !== undefined) $("tab-alternatives").value = saved.alternatives;
@@ -541,9 +641,11 @@
       musicxml: inputs.musicxml.value,
       tab: inputs.tab.value,
       midi: inputs.midi.value,
+      json: inputs.json.value,
       mode,
       polyphonic: $("polyphonic").checked,
       latencyMs: $("latency-ms").value,
+      liveHopMs: $("live-hop-ms").value,
       tuning: $("guitar-tuning").value,
       capoFret: $("capo-fret").value,
       alternatives: $("tab-alternatives").value,
@@ -623,8 +725,12 @@
       }
       row.dataset.key = key;
       row.dataset.index = String(index);
+      const visualState = note.live_visual_state ||
+        (note.finalized ? "finalized" : note.state || "");
+      row.dataset.liveState = visualState;
       row.setAttribute("aria-label",
-        `${note.name}, onset ${Number(note.start).toFixed(2)} seconds`);
+        `${note.name}, onset ${Number(note.start).toFixed(2)} seconds` +
+        (visualState ? `, ${visualState.replaceAll("_", " ")}` : ""));
       row.querySelector(".note-color").style.background =
         note.user_authored ? "#e9c578" : note.uncertain ? "#ff9b8e"
           : note.state === "provisional" ? "#96b5ff"
@@ -635,6 +741,11 @@
         `${Number(note.start).toFixed(2)}s · ${Number(note.duration).toFixed(2)}s`;
       row.querySelector(".note-confidence").textContent = note.uncertain
         ? "UNCERTAIN"
+        : visualState === "retracted" ? "RETRACTED"
+          : visualState === "corrected" ? "CORRECTED"
+          : visualState === "provisional" ? "PROVISIONAL"
+          : visualState === "stabilized" ? "STABILIZED"
+          : visualState === "finalized" ? "FINALIZED"
         : note.finalized ? "FINALIZED"
           : note.state ? String(note.state).replaceAll("_", " ").toUpperCase()
           : Number.isFinite(note.calibrated_confidence)
@@ -650,7 +761,8 @@
         nextNotes.every((note, index) => {
           const previous = notes[index];
           return ["id", "revision", "midi", "start", "duration", "state", "finalized",
-            "user_authored", "uncertain", "string", "fret", "calibrated_confidence"]
+            "user_authored", "uncertain", "string", "fret", "calibrated_confidence",
+            "live_visual_state", "live_visual_opacity"]
             .every(key => note[key] === previous[key]);
         })) return;
     notes = Array.isArray(nextNotes) ? nextNotes : [];
@@ -686,7 +798,45 @@
     const height = rect.height;
     context.fillStyle = getComputedStyle(document.body).getPropertyValue("--field");
     context.fillRect(0, 0, width, height);
-    if (!notes.length) return;
+    const view = window.TranscribeTimeline.bounds(duration);
+    const visible = rollIndex(duration);
+    const visibleGaps = liveGapRegions.filter((gap) =>
+      gap.end_seconds > view.start && gap.start_seconds < view.end);
+    canvas.dataset.gapRegions = String(visibleGaps.length);
+    for (const gap of visibleGaps) {
+      const left = Math.max(36, window.TranscribeTimeline.x(
+        Math.max(view.start, gap.start_seconds), duration, width));
+      const right = Math.min(width - 10, window.TranscribeTimeline.x(
+        Math.min(view.end, gap.end_seconds), duration, width));
+      if (right <= left) continue;
+      context.save();
+      context.beginPath();
+      context.rect(left, 0, right - left, height);
+      context.clip();
+      context.fillStyle = "rgba(233, 197, 120, .12)";
+      context.fillRect(left, 0, right - left, height);
+      context.strokeStyle = "rgba(233, 197, 120, .5)";
+      for (let x = left - height; x < right; x += 9) {
+        context.beginPath();
+        context.moveTo(x, height);
+        context.lineTo(x + height, 0);
+        context.stroke();
+      }
+      context.fillStyle = getComputedStyle(document.body).getPropertyValue("--text");
+      context.font = 'bold 9px "DM Mono", Consolas, monospace';
+      context.fillText("UNANALYSED", left + 4, 12);
+      context.restore();
+    }
+    if (!notes.length) {
+      canvas.dataset.visibleNotes = "0";
+      canvas.dataset.paintedNotes = "0";
+      canvas.dataset.provisionalNotes = "0";
+      canvas.dataset.stabilizedNotes = "0";
+      canvas.dataset.finalizedNotes = "0";
+      canvas.dataset.retractedNotes = "0";
+      canvas.dataset.correctedNotes = "0";
+      return;
+    }
     const low = pitchLow;
     const high = pitchHigh;
     const range = Math.max(12, high - low + 2);
@@ -709,25 +859,53 @@
       context.lineTo(Math.round(x) + .5, height);
       context.stroke();
     }
-    const view = window.TranscribeTimeline.bounds(duration);
-    const visible = rollIndex(duration);
     const stride = Math.max(1, Math.ceil(visible.length / 4000));
     let painted = 0;
+    const visualCounts = { provisional: 0, stabilized: 0, finalized: 0,
+      retracted: 0, corrected: 0 };
     visible.forEach(({ note }, index) => {
+      const visualState = note.live_visual_state ||
+        (note.finalized ? "finalized" : note.state || "");
+      if (Object.hasOwn(visualCounts, visualState)) visualCounts[visualState] += 1;
       if (index % stride && note.id !== selectedNoteId) return;
       painted += 1;
       const x = window.TranscribeTimeline.x(note.start, duration, width);
       const w = Math.max(2, window.TranscribeTimeline.x(note.start + note.duration, duration, width) - x);
       const y = height - ((note.midi + .5 - minPitch) / range) * height;
-      const alpha = note.state === "provisional" ? .55 : .9;
+      const opacity = Number.isFinite(note.live_visual_opacity)
+        ? Math.max(0, Math.min(1, note.live_visual_opacity)) : 1;
+      const alpha = opacity * (visualState === "provisional" ? .62 : .9);
       const color = note.user_authored ? "#c39b35" : note.uncertain ? "#e27467"
-        : note.state === "provisional" ? "#819ee5" : note.finalized ? "#32ae8c" : "#8b83d0";
+        : visualState === "provisional" ? "#819ee5" : visualState === "finalized" ? "#32ae8c" : "#8b83d0";
       context.globalAlpha = alpha;
       context.fillStyle = color;
       context.beginPath();
       const radius = Math.min(3, w / 2, pitchHeight / 2);
       context.roundRect(x, y - Math.max(2, pitchHeight * .33), w, Math.max(4, pitchHeight * .66), radius);
-      context.fill();
+      if (visualState === "provisional") {
+        context.setLineDash([3, 2]);
+        context.lineWidth = 1.5;
+        context.strokeStyle = color;
+        context.stroke();
+        context.setLineDash([]);
+      } else {
+        context.fill();
+      }
+      if (visualState === "stabilized") {
+        context.fillStyle = color;
+        context.font = 'bold 8px "DM Mono", Consolas, monospace';
+        context.fillText("S", x + 2, y - 2);
+      } else if (visualState === "corrected") {
+        context.lineWidth = 2;
+        context.strokeStyle = "#fff2bd";
+        context.stroke();
+      } else if (visualState === "retracted") {
+        context.beginPath();
+        context.moveTo(x, y - Math.max(2, pitchHeight * .33));
+        context.lineTo(x + w, y + Math.max(2, pitchHeight * .33));
+        context.strokeStyle = "#ff8888";
+        context.stroke();
+      }
       if (note.id === selectedNoteId) {
         context.strokeStyle = document.body.dataset.theme === "light" ? "#795100" : "#fff2bd";
         context.stroke();
@@ -741,6 +919,11 @@
     document.querySelector(".roll-time span").textContent = `${view.start.toFixed(1)}s`;
     canvas.dataset.visibleNotes = String(visible.length);
     canvas.dataset.paintedNotes = String(painted);
+    canvas.dataset.provisionalNotes = String(visualCounts.provisional);
+    canvas.dataset.stabilizedNotes = String(visualCounts.stabilized);
+    canvas.dataset.finalizedNotes = String(visualCounts.finalized);
+    canvas.dataset.retractedNotes = String(visualCounts.retracted);
+    canvas.dataset.correctedNotes = String(visualCounts.corrected);
     $("roll-duration").textContent = stride > 1
       ? `${visible.length} notes · sampled overview; zoom to inspect every note` : "Time";
   }
@@ -819,8 +1002,377 @@
     }));
   }
 
+  function updateLiveFollowControls() {
+    const available = liveCaptureState !== "idle";
+    $("follow-live").disabled = !available;
+    $("jump-live").disabled = !available;
+    $("jump-live").hidden = !available || $("follow-live").checked;
+  }
+
+  function setLiveCaptureState(state) {
+    if (!state) return;
+    if (liveCaptureState === state) {
+      updateLiveFollowControls();
+      return;
+    }
+    liveCaptureState = state;
+    updateLiveFollowControls();
+    window.dispatchEvent(new CustomEvent("transcribe:live-capture-state", {
+      detail: { state },
+    }));
+  }
+
+  function jumpToLive() {
+    const edge = Math.max(1, recordingSeconds, timelineDuration);
+    timelineDuration = edge;
+    const start = Math.max(0, edge - liveViewportSpan);
+    window.TranscribeTimeline.setView(start, liveViewportSpan, edge);
+  }
+
+  function scheduleLiveRender(flags = {}, message = null) {
+    const previous = queuedLiveMessage || {};
+    queuedLiveMessage = {
+      ...previous,
+      ...(message || {}),
+      events: [...(previous.events || []), ...(message?.events || [])],
+      coalesced_events_dropped:
+        (Number(previous.coalesced_events_dropped) || 0) +
+        (Number(message?.coalesced_events_dropped) || 0),
+      noteChanges: Boolean(previous.noteChanges || flags.noteChanges),
+      overlayChanges: Boolean(previous.overlayChanges || flags.overlayChanges),
+      timelineChanged: Boolean(previous.timelineChanged || flags.timelineChanged),
+      hasMessage: Boolean(previous.hasMessage || message),
+    };
+    if (liveFrame) return;
+    liveFrame = requestAnimationFrame(() => {
+      liveFrame = 0;
+      const latest = queuedLiveMessage;
+      queuedLiveMessage = null;
+      if (!latest) return;
+
+      let noteChanges = latest.noteChanges;
+      const now = performance.now();
+      for (const [id, fade] of liveRetractions) {
+        if (liveNoteRevisions.get(id) !== fade.revision) {
+          liveRetractions.delete(id);
+          continue;
+        }
+        const remaining = 1 - (now - fade.started) / 450;
+        if (remaining <= 0) {
+          liveRetractions.delete(id);
+          liveNotesById.delete(id);
+          noteChanges = true;
+          continue;
+        }
+        const note = liveNotesById.get(id);
+        if (note && Math.abs((note.live_visual_opacity ?? 1) - remaining) > .025) {
+          liveNotesById.set(id, { ...note, live_visual_opacity: remaining });
+          noteChanges = true;
+        }
+      }
+
+      applyingLiveBatch = true;
+      let timelineChanged = latest.timelineChanged;
+      if (Number.isFinite(latest.recording_seconds)) {
+        recordingSeconds = Math.max(0, latest.recording_seconds);
+        const minutes = Math.floor(recordingSeconds / 60);
+        $("recording-timer").textContent =
+          `${String(minutes).padStart(2, "0")}:${(recordingSeconds % 60).toFixed(1).padStart(4, "0")}`;
+        const nextDuration = Math.max(1, recordingSeconds);
+        if (nextDuration !== timelineDuration) {
+          timelineDuration = nextDuration;
+          timelineChanged = true;
+          window.dispatchEvent(new CustomEvent("transcribe:timeline", {
+            detail: { duration: timelineDuration },
+          }));
+        }
+      }
+      if (latest.status?.state) setLiveCaptureState(latest.status.state);
+      if (latest.hasMessage && $("follow-live").checked &&
+          ["arming", "capturing", "interrupted", "finishing"].includes(liveCaptureState)) {
+        jumpToLive();
+      }
+      if (latest.overlayChanges) {
+        window.dispatchEvent(new CustomEvent("transcribe:live-overlays", {
+          detail: { gaps: liveGapRegions },
+        }));
+      }
+      if (noteChanges && !sourceChanged) {
+        const nextNotes = [...liveNotesById.values()]
+          .sort((left, right) => left.start - right.start || left.midi - right.midi);
+        renderNotes(nextNotes);
+      } else if (timelineChanged || latest.overlayChanges) {
+        drawRoll();
+      }
+      applyingLiveBatch = false;
+
+      if (latest.hasMessage) {
+        const liveEvents = latest.events || [];
+        window.dispatchEvent(new CustomEvent("transcribe:live-events", {
+          detail: liveEvents,
+        }));
+        if (liveEvents.length) {
+          recentEvents = [...recentEvents, ...liveEvents].slice(-8);
+          $("live-events").textContent = recentEvents.map(item => {
+            if (item.type === "gap") {
+              return `ANALYSIS GAP · ${Number(item.first_frame || 0)}–${Number(item.end_frame || 0)} frames${item.message ? ` · ${item.message}` : ""}`;
+            }
+            return `${String(item.type || "event").replaceAll("_", " ").toUpperCase()} MIDI ${item.midi} · ${Number(item.time).toFixed(2)}s · ${(Number(item.latency_ms) || 0).toFixed(0)}ms${item.message ? ` · ${item.message}` : ""}`;
+          }).join("\n");
+        }
+
+        const metrics = latest.metrics || {};
+        if (latest.metrics) updateLiveHealth(latest);
+        const status = latest.status || {};
+        const statusText = metrics.overloaded
+          ? "Input overload; inspect live diagnostics"
+          : metrics.gap_frames
+            ? "Audio gaps detected; inspect live diagnostics"
+            : status.message || "Recording; live analysis active";
+        if ($("status-text").textContent !== statusText) $("status-text").textContent = statusText;
+        $("status-text").title = $("live-diagnostics").textContent;
+        const captureLabels = {
+          arming: ["Starting capture", "busy"],
+          capturing: [analysisPaused ? "Recording · analysis paused" : "Capturing · live inference", "active"],
+          interrupted: ["Input interrupted · reconnecting", "error"],
+          finishing: ["Finalizing live notes", "busy"],
+          finished: ["Capture finished", "ready"],
+          failed: ["Capture failed", "error"],
+          idle: ["Ready", "ready"],
+        };
+        const label = captureLabels[status.state];
+        if (label) setCaptureState(label[0], label[1]);
+        if (status.state === "finishing" && captureActive) {
+          $("cancel-button").textContent = "Cancel capture";
+          $("cancel-button").disabled = cancelPending;
+        } else if (["finished", "failed"].includes(status.state) && captureActive) {
+          $("cancel-button").disabled = true;
+        }
+        $("preview-badge").textContent = status.state === "finished"
+          ? "COMPLETE" : status.state === "failed" ? "FAILED" : "LISTENING";
+        $("preview-badge").className = status.state === "failed"
+          ? "preview-badge" : "preview-badge active";
+      }
+      if (liveRetractions.size) scheduleLiveRender({ noteChanges: false });
+    });
+  }
+
+  function receiveLiveEventBatch(message) {
+    if (Number(message.version) !== 1 ||
+        !Number.isInteger(message.sequence)) return;
+    const job = Number(message.job) || 0;
+    if (job && job < liveStatusJob) return;
+    if (job > liveStatusJob) {
+      liveStatusJob = job;
+      lastLiveSequence = 0;
+      liveNotesById.clear();
+      liveNoteRevisions.clear();
+      liveRetractions.clear();
+      for (const timer of liveCorrectionTimers.values()) clearTimeout(timer);
+      liveCorrectionTimers.clear();
+      liveGapRegions = [];
+      recentEvents = [];
+      scheduleLiveRender({ overlayChanges: true });
+    }
+    if (message.sequence <= lastLiveSequence) return;
+    lastLiveSequence = message.sequence;
+
+    const upserts = Object.entries(message.upserts || {}).map(([id, item]) => ({
+      id,
+      revision: Number(item.revision),
+      note: item.note,
+    }));
+    const finalizations = (message.finalizations || []).map(item => ({
+      id: item.id,
+      revision: Number(item.revision),
+      note: item.note,
+      finalized: true,
+    }));
+    const retractions = (message.retractions || []).map(item => ({
+      id: item.id,
+      revision: Number(item.revision),
+      note: null,
+    }));
+    const snapshotNotes = [...upserts, ...finalizations];
+    if (message.resync) {
+      liveNotesById.clear();
+      liveNoteRevisions.clear();
+      liveRetractions.clear();
+      for (const timer of liveCorrectionTimers.values()) clearTimeout(timer);
+      liveCorrectionTimers.clear();
+      for (const item of snapshotNotes) {
+        if (item.id) liveNoteRevisions.delete(item.id);
+      }
+    }
+
+    let noteChanges = Boolean(message.resync);
+    const mutations = [...upserts, ...finalizations, ...retractions]
+      .filter(item => item.id && Number.isSafeInteger(item.revision))
+      .sort((left, right) => left.revision - right.revision);
+    for (const mutation of mutations) {
+      const currentRevision = liveNoteRevisions.get(mutation.id) ?? -1;
+      if (!message.resync && mutation.revision <= currentRevision) continue;
+      liveNoteRevisions.set(mutation.id, mutation.revision);
+      noteChanges = true;
+      const correctionTimer = liveCorrectionTimers.get(mutation.id);
+      if (correctionTimer) clearTimeout(correctionTimer);
+      liveCorrectionTimers.delete(mutation.id);
+      liveRetractions.delete(mutation.id);
+      if (mutation.note) {
+        const note = {
+          ...mutation.note,
+          id: mutation.id,
+          revision: mutation.revision,
+        };
+        delete note.live_visual_state;
+        delete note.live_visual_opacity;
+        if (mutation.finalized || note.finalized) {
+          note.finalized = true;
+          note.state = "finalized";
+        }
+        liveNotesById.set(mutation.id, note);
+      } else {
+        const previous = liveNotesById.get(mutation.id);
+        if (previous) {
+          liveNotesById.set(mutation.id, {
+            ...previous,
+            revision: mutation.revision,
+            live_visual_state: "retracted",
+            live_visual_opacity: 1,
+          });
+          liveRetractions.set(mutation.id, {
+            revision: mutation.revision,
+            started: performance.now(),
+          });
+        } else {
+          liveNotesById.delete(mutation.id);
+        }
+      }
+    }
+
+    const liveEvents = Array.isArray(message.events) ? message.events : [];
+    for (const event of liveEvents) {
+      if (event.type !== "corrected" || !event.id) continue;
+      const note = liveNotesById.get(event.id);
+      if (!note || note.live_visual_state === "retracted") continue;
+      const revision = liveNoteRevisions.get(event.id);
+      liveNotesById.set(event.id, { ...note, live_visual_state: "corrected" });
+      noteChanges = true;
+      const previousTimer = liveCorrectionTimers.get(event.id);
+      if (previousTimer) clearTimeout(previousTimer);
+      liveCorrectionTimers.set(event.id, setTimeout(() => {
+        liveCorrectionTimers.delete(event.id);
+        const current = liveNotesById.get(event.id);
+        if (liveNoteRevisions.get(event.id) !== revision ||
+            current?.live_visual_state !== "corrected") return;
+        const ordinary = { ...current };
+        delete ordinary.live_visual_state;
+        liveNotesById.set(event.id, ordinary);
+        scheduleLiveRender({ noteChanges: true });
+      }, 900));
+    }
+
+    const nextGaps = [];
+    const gapKeys = new Set(liveGapRegions.map(gap =>
+      `${gap.first_frame}:${gap.end_frame}`));
+    const sampleRate = Number(message.sample_rate);
+    for (const gap of Array.isArray(message.gaps) ? message.gaps : []) {
+      const firstFrame = Number(gap.first_frame);
+      const endFrame = Number(gap.end_frame);
+      const start = Number.isFinite(gap.start_seconds) ? Number(gap.start_seconds)
+        : Number.isInteger(sampleRate) && sampleRate > 0 ? firstFrame / sampleRate : NaN;
+      const end = Number.isFinite(gap.end_seconds) ? Number(gap.end_seconds)
+        : Number.isInteger(sampleRate) && sampleRate > 0 ? endFrame / sampleRate : NaN;
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+      const key = `${firstFrame}:${endFrame}`;
+      if (gapKeys.has(key)) continue;
+      gapKeys.add(key);
+      nextGaps.push({
+        first_frame: firstFrame,
+        end_frame: endFrame,
+        start_seconds: start,
+        end_seconds: end,
+        message: gap.message || "",
+      });
+    }
+    if (nextGaps.length) {
+      liveGapRegions = [...liveGapRegions, ...nextGaps].slice(-64);
+    }
+
+    const fingerings = message.fingerings || {};
+    for (const [id, note] of liveNotesById) {
+      const position = fingerings[id];
+      if (position) {
+        if (note.string !== position.string || note.fret !== position.fret ||
+            !note.manual_fingering) noteChanges = true;
+        liveNotesById.set(id, {
+          ...note,
+          string: position.string,
+          fret: position.fret,
+          manual_fingering: true,
+        });
+      } else if (note.manual_fingering) {
+        const withoutFingering = { ...note };
+        delete withoutFingering.string;
+        delete withoutFingering.fret;
+        delete withoutFingering.manual_fingering;
+        liveNotesById.set(id, withoutFingering);
+        noteChanges = true;
+      }
+    }
+
+    scheduleLiveRender({
+      noteChanges,
+      overlayChanges: nextGaps.length > 0 || Boolean(message.resync),
+      timelineChanged: Number.isFinite(message.recording_seconds),
+    }, message);
+  }
+
   function handleMessage(event) {
     const message = event.data || {};
+    if (message.type === "live-status") {
+      if (Number(message.version) !== 1) return;
+      const job = Number(message.job) || 0;
+      if (job && job < liveStatusJob) return;
+      if (job > liveStatusJob) {
+        liveStatusJob = job;
+        lastLiveSequence = 0;
+        liveNotesById.clear();
+        liveNoteRevisions.clear();
+        liveRetractions.clear();
+        liveGapRegions = [];
+        recentEvents = [];
+        scheduleLiveRender({ noteChanges: true, overlayChanges: true });
+      }
+      setLiveCaptureState(message.state || "failed");
+      if (liveCaptureState === "finishing" && captureActive) {
+        $("cancel-button").textContent = "Cancel capture";
+        $("cancel-button").disabled = cancelPending;
+      } else if (["finished", "failed"].includes(liveCaptureState) && captureActive) {
+        $("cancel-button").disabled = true;
+      }
+      const statusLabels = {
+        idle: ["Ready", "ready"],
+        arming: ["Starting capture", "busy"],
+        capturing: [analysisPaused ? "Recording · analysis paused" : "Capturing · live inference", "active"],
+        interrupted: ["Input interrupted · reconnecting", "error"],
+        finishing: ["Finalizing live notes", "busy"],
+        finished: ["Capture finished", "ready"],
+        failed: ["Capture failed", "error"],
+      };
+      const label = statusLabels[liveCaptureState];
+      if (label) setCaptureState(label[0], label[1]);
+      if (message.status) {
+        $("status-text").textContent = message.status;
+        $("status-text").title = message.status;
+      }
+      return;
+    }
+    if (message.type === "live-event-batch") {
+      if (message.job && Number(message.job) < liveStatusJob) return;
+      receiveLiveEventBatch(message);
+      return;
+    }
     if (message.type === "analysis-paused") {
       analysisPaused = Boolean(message.paused);
       $("pause-analysis").disabled = !captureActive;
@@ -998,25 +1550,12 @@
           window.dispatchEvent(new CustomEvent("transcribe:live-events", { detail: latest.events || [] }));
           if (Array.isArray(latest.events) && latest.events.length) {
             recentEvents = [...recentEvents, ...latest.events].slice(-8);
-            const latency = latest.metrics?.end_to_end?.p95_ms ??
-              latest.events.reduce((sum, item) =>
-                sum + (Number(item.latency_ms) || 0), 0) / latest.events.length;
-            $("latency-value").textContent = `${Number(latency).toFixed(1)} ms p95`;
             $("live-events").textContent = recentEvents.map((item) =>
               `${String(item.type || "event").replaceAll("_", " ").toUpperCase()} MIDI ${item.midi} · ${Number(item.time).toFixed(2)}s · ${(Number(item.latency_ms) || 0).toFixed(0)}ms${item.message ? ` · ${item.message}` : ""}`
             ).join("\n");
           }
           if (latest.metrics) {
-            const analysis = Number(latest.metrics.analysis?.p95_ms) || 0;
-            const input = Number(latest.metrics.input_queue_high_water) || 0;
-            const capacity = Number(latest.metrics.input_queue_capacity) || 0;
-            const warning = latest.metrics.overloaded || latest.metrics.gap_frames
-              ? `${latest.metrics.overloaded ? "OVERLOAD" : "INPUT GAP"}: refused ${latest.metrics.blocks_refused || 0}, gaps ${latest.metrics.gap_frames || 0} frames, events lost ${latest.metrics.events_dropped || 0} · `
-              : "";
-            const driver = Number.isFinite(latest.driver_input_latency_ms)
-              ? `${latest.driver_input_latency_ms.toFixed(1)} ms reported` : "unknown";
-            $("live-diagnostics").textContent =
-              `${warning}Live · driver ${driver} · period ${Number(latest.callback_period_ms || 0).toFixed(1)} ms · onset p95 ${Number(latest.metrics.end_to_end?.p95_ms || 0).toFixed(1)} ms · window ${Number(latest.metrics.analysis_window?.p95_ms || 0).toFixed(1)} ms · input wait ${Number(latest.metrics.capture?.p95_ms || 0).toFixed(1)} ms · analysis wait ${Number(latest.metrics.analysis_queue?.p95_ms || 0).toFixed(1)} ms · analysis p95 ${analysis.toFixed(1)} ms · confirmation ${Number(latest.metrics.confirmation?.p95_ms || 0).toFixed(1)} ms · event wait ${Number(latest.metrics.publication_queue?.p95_ms || 0).toFixed(1)} ms · UI dispatch ${Number(latest.ui_dispatch_delay_ms || 0).toFixed(1)} ms · queue ${input}/${capacity}`;
+            updateLiveHealth(latest);
             const status = latest.metrics.overloaded ? "Input overload; inspect live diagnostics"
               : latest.metrics.gap_frames ? "Audio gaps detected; inspect live diagnostics"
               : analysisPaused ? "Recording continues; live analysis paused" : "Recording; live analysis active";
@@ -1055,6 +1594,11 @@
     }
     if (message.type === "proposal") {
       setBusy(false);
+      if (acceptedNotesBeforeLiveCapture) {
+        renderNotes(acceptedNotesBeforeLiveCapture, false);
+        acceptedNotesBeforeLiveCapture = null;
+      }
+      setLiveCaptureState("idle");
       hasPendingProposal = true;
       setActivity("completed", "New proposal ready", "Review the proposal before replacing the accepted score.");
       $("result-message").textContent = message.summary ||
@@ -1079,8 +1623,11 @@
     if (message.type === "complete") {
       clearQueuedPreviews();
       setBusy(false);
+      stopRequested = false;
       $("proposal-details").className = "result-message hidden";
       if (message.success) {
+        acceptedNotesBeforeLiveCapture = null;
+        setLiveCaptureState("idle");
         hasAcceptedScore = true;
         hasPendingProposal = false;
         hasUnexportedEdits = false;
@@ -1104,6 +1651,7 @@
           detail: message.fingering,
         }));
         window.dispatchEvent(new CustomEvent("transcribe:metadata", { detail: message.metadata }));
+        window.TranscribeTimeline.setView(0, null, duration);
         window.dispatchEvent(new CustomEvent("transcribe:accepted-score", {
           detail: message,
         }));
@@ -1127,6 +1675,11 @@
             : "Try another instrument or supported model, and inspect the recording level. Silence or unsupported material may produce no notes.");
         updateProjectTitle();
       } else {
+        if (acceptedNotesBeforeLiveCapture) {
+          renderNotes(acceptedNotesBeforeLiveCapture, false);
+          acceptedNotesBeforeLiveCapture = null;
+        }
+        setLiveCaptureState("idle");
         if (!hasAcceptedScore) {
           renderNotes([]);
           window.dispatchEvent(new CustomEvent("transcribe:source-changed"));
@@ -1207,6 +1760,11 @@
     if (message.type === "error") {
       window.dispatchEvent(new CustomEvent("transcribe:playback-error"));
       setBusy(false);
+      if (acceptedNotesBeforeLiveCapture) {
+        renderNotes(acceptedNotesBeforeLiveCapture, false);
+        acceptedNotesBeforeLiveCapture = null;
+        setLiveCaptureState("idle");
+      }
       setCaptureState("Backend error", "error");
       showError(message.message || "The application encountered an error.");
     }
@@ -1270,8 +1828,9 @@
       showError("Choose an audio file first.");
       return;
     }
-    if (!inputs.musicxml.value.trim() || !inputs.tab.value.trim()) {
-      showError("Choose both MusicXML and guitar tab output paths.");
+    if (!inputs.musicxml.value.trim() || !inputs.tab.value.trim() ||
+        !inputs.json.value.trim()) {
+      showError("Choose MusicXML, guitar tab, and score JSON output paths.");
       return;
     }
     if (mode === "asio" && (!(Number($("capture-seconds").value) > 0) || Number($("capture-seconds").value) > 300)) {
@@ -1281,6 +1840,12 @@
     if (mode === "asio" &&
         (!(Number($("latency-ms").value) >= 20) || Number($("latency-ms").value) > 50)) {
       showError("Realtime analysis latency must be between 20 and 50 milliseconds.");
+      return;
+    }
+    if (mode === "asio" && $("live-backend").value !== "yin" &&
+        (!Number.isFinite(Number($("live-hop-ms").value)) ||
+         Number($("live-hop-ms").value) < 10 || Number($("live-hop-ms").value) > 1800)) {
+      showError("Windowed live hop interval must be between 10 and 1800 milliseconds.");
       return;
     }
     if (mode === "asio" && !selectedAsioDevice()) {
@@ -1314,6 +1879,7 @@
     inputPeak = 0;
     updateInputLevel([], true);
     $("live-events").textContent = "Waiting for realtime note events.";
+    $("live-health-strip").hidden = true;
     if (!hasAcceptedScore) {
       renderNotes([]);
     }
@@ -1324,10 +1890,35 @@
     hasPendingProposal = false;
     $("preview-badge").textContent = "STARTING";
     $("preview-badge").className = "preview-badge active";
+    if (mode === "asio") {
+      acceptedNotesBeforeLiveCapture = hasAcceptedScore
+        ? notes.map(note => ({ ...note })) : null;
+      liveGapRegions = [];
+      liveViewportSpan = 12;
+      recordingSeconds = 0;
+      timelineDuration = 1;
+      $("follow-live").checked = true;
+      setLiveCaptureState("arming");
+      window.dispatchEvent(new CustomEvent("transcribe:timeline", {
+        detail: { duration: timelineDuration },
+      }));
+      jumpToLive();
+      liveStatusJob = 0;
+      lastLiveSequence = 0;
+      liveNotesById.clear();
+      liveNoteRevisions.clear();
+      liveRetractions.clear();
+      for (const timer of liveCorrectionTimers.values()) clearTimeout(timer);
+      liveCorrectionTimers.clear();
+      stopRequested = false;
+      window.dispatchEvent(new CustomEvent("transcribe:live-overlays", {
+        detail: { gaps: liveGapRegions },
+      }));
+    }
     setStatus(mode === "asio" ? "Connecting to ASIO input..." : "Preparing audio...", 0);
     setCaptureState(mode === "asio" ? "Starting capture" : "Loading audio", "busy");
     setBusy(true, hasAcceptedScore, mode === "asio", true);
-    send("transcribe", {
+    send(mode === "asio" ? "start-capture" : "transcribe", {
       mode,
       input: inputs.input.value,
       duration: $("capture-seconds").value,
@@ -1336,6 +1927,7 @@
       isolation_reviewed: $("isolation-reviewed").checked ? "1" : "0",
       preprocessing_fallback: $("preprocessing-fallback").checked ? "1" : "0",
       latency_ms: $("latency-ms").value,
+      live_hop_ms: $("live-hop-ms").value,
       device_id: $("asio-device").value,
       sample_rate: $("asio-sample-rate").value,
       channels: $("asio-channels").value,
@@ -1360,18 +1952,29 @@
       musicxml: inputs.musicxml.value,
       tab: inputs.tab.value,
       midi: inputs.midi.value,
+      json: inputs.json.value,
       review_mode: mode === "file" && $("review-mode").checked ? "1" : "0",
       bounded_inference: mode === "file" && window.transcribeConfig?.onnx &&
         $("bounded-inference").checked ? "1" : "0",
     });
   });
   $("cancel-button").addEventListener("click", () => {
+    if (captureActive && liveCaptureState !== "finishing") {
+      if (stopRequested) return;
+      stopRequested = true;
+      $("cancel-button").disabled = true;
+      $("cancel-button").textContent = "Stopping capture…";
+      setActivity("canceling", "Stopping capture",
+        "Finalizing queued notes before saving the recording.");
+      send("stop-capture");
+      return;
+    }
     if (cancelPending) return;
     cancelPending = true;
     $("cancel-button").disabled = true;
-    $("cancel-button").textContent = captureActive ? "Stopping capture…" : "Canceling…";
-    setActivity("canceling", captureActive ? "Stopping capture" : "Cancel requested",
-      "Waiting for the backend to reach a safe processing boundary. The application remains available.");
+    $("cancel-button").textContent = captureActive ? "Canceling capture…" : "Canceling…";
+    setActivity("canceling", captureActive ? "Canceling capture" : "Cancel requested",
+      "Waiting for the backend to reach a safe processing boundary. The accepted score remains unchanged.");
     setStatus("Waiting for a safe cancellation boundary");
     send("cancel");
   });
@@ -1477,6 +2080,7 @@
   inputs.model.addEventListener("input", updateAnalysisControlState);
   inputs.model.addEventListener("input", updateModelStatus);
   $("latency-ms").addEventListener("change", savePaths);
+  $("live-hop-ms").addEventListener("change", savePaths);
   $("asio-device").addEventListener("change", () => {
     populateCaptureFormats(selectedAsioDevice());
   });
@@ -1484,6 +2088,7 @@
     $(id).addEventListener("change", () => {
       savePaths();
       updateModelStatus();
+      updateAnalysisControlState();
     });
   });
   $("guitar-tuning").addEventListener("change", savePaths);
@@ -1524,7 +2129,7 @@
   window.addEventListener("transcribe:timeline", (event) => {
     timelineDuration = event.detail.duration;
     duration = Math.max(timelineDuration, 1);
-    drawRoll();
+    if (!applyingLiveBatch) drawRoll();
   });
   window.addEventListener("transcribe:playback-time", (event) => {
     cursorTime = Number(event.detail);
@@ -1551,9 +2156,26 @@
     window.dispatchEvent(new CustomEvent("transcribe:engraving-select", { detail: { id: note?.id || "" } }));
   });
   window.addEventListener("resize", drawRoll);
-  window.addEventListener("transcribe:viewport", drawRoll);
+  window.addEventListener("transcribe:viewport", () => {
+    if (!applyingLiveBatch) drawRoll();
+  });
+  window.addEventListener("transcribe:viewport-manual", (event) => {
+    const view = event.detail || {};
+    const span = Number(view.end) - Number(view.start);
+    if (Number.isFinite(span) && span > 0) liveViewportSpan = span;
+    if (liveCaptureState !== "idle" && $("follow-live").checked) {
+      $("follow-live").checked = false;
+      updateLiveFollowControls();
+    }
+  });
   window.addEventListener("transcribe:theme", drawRoll);
   window.addEventListener("DOMContentLoaded", () => {
+    $("follow-live").addEventListener("change", () => {
+      updateLiveFollowControls();
+      if ($("follow-live").checked) jumpToLive();
+    });
+    $("jump-live").addEventListener("click", jumpToLive);
+    updateLiveFollowControls();
     loadSavedPaths();
     updateReviewModeState();
     updateProjectTitle();

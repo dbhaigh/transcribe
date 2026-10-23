@@ -671,10 +671,13 @@ struct LiveTranscriptionSession::Impl {
         const auto context = [&](std::uint64_t frame) {
             return final_window ? cap : std::min(end - std::min(end, frame), cap);
         };
-        const auto correction = frames(options.window.correction_seconds);
+        const auto exceeds_correction = [&](std::uint64_t change_frames) {
+            return static_cast<long double>(change_frames) >
+                static_cast<long double>(options.window.correction_seconds) * rate;
+        };
         bool changed = false, reopened = false, closed = false;
         if (!c.truncated && context(c.onset) > tracked.onset_context) {
-            if (distance(c.onset, tracked.note.onset_frame) >= std::max<std::uint64_t>(1, correction)) {
+            if (exceeds_correction(distance(c.onset, tracked.note.onset_frame))) {
                 tracked.note.onset_frame = c.onset;
                 tracked.onset_capture = capture_time_for(c.onset);
                 changed = true;
@@ -695,7 +698,7 @@ struct LiveTranscriptionSession::Impl {
                 tracked.offset_context = context(c.offset);
                 closed = true;
             } else if (context(c.offset) > tracked.offset_context) {
-                if (distance(c.offset, *tracked.note.offset_frame) >= std::max<std::uint64_t>(1, correction)) {
+                if (exceeds_correction(distance(c.offset, *tracked.note.offset_frame))) {
                     tracked.note.offset_frame = c.offset;
                     changed = true;
                 }
@@ -1469,9 +1472,13 @@ LiveMetrics LiveTranscriptionSession::metrics() const {
     result.input_queue_depth = std::min(write - read, impl_->slots.size());
     result.sequence_gaps = impl_->sequence_gaps.load(std::memory_order_relaxed);
     result.analysed_audio_seconds = impl_->seconds(impl_->analysed_frames.load(std::memory_order_relaxed));
-    result.overloaded = result.blocks_refused > 0 || result.skipped_frames > 0 ||
-        result.windows_coalesced > 0 || result.events_dropped > 0 ||
-        result.input_markers_coalesced > 0;
+    const auto under_pressure = [](std::size_t depth, std::size_t capacity) {
+        return capacity != 0 && depth >= capacity - capacity / 4;
+    };
+    const auto lag_limit = impl_->frames(impl_->options.max_analysis_lag_seconds);
+    result.overloaded = under_pressure(result.input_queue_depth, result.input_queue_capacity) ||
+        under_pressure(result.event_queue_depth, result.event_queue_capacity) ||
+        (lag_limit != 0 && result.current_lag_frames >= lag_limit);
     return result;
 }
 
