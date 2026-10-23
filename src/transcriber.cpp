@@ -1207,6 +1207,8 @@ AudioPreviewData make_audio_preview(std::span<const float> samples,
     preview.minimum_frequency_hz = 55.0;
     preview.maximum_frequency_hz = sample_rate * 0.5;
     preview.waveform.resize(column_count);
+    preview.waveform_minimum.resize(column_count);
+    preview.waveform_maximum.resize(column_count);
     preview.spectrogram.assign(column_count * frequency_bands, 0.0f);
 
     for (std::size_t column = 0; column < column_count; ++column) {
@@ -1218,11 +1220,29 @@ AudioPreviewData make_audio_preview(std::span<const float> samples,
             samples_per_bucket * (column + 1) +
             std::min(column + 1, remainder);
         float peak = 0.0f;
+        float minimum = 0.0f;
+        float maximum = 0.0f;
+        bool has_finite_sample = false;
         for (std::size_t sample = bucket_start;
              sample < std::min(bucket_end, samples.size()); ++sample) {
-            peak = std::max(peak, std::abs(samples[sample]));
+            const float value = samples[sample];
+            if (!std::isfinite(value)) {
+                continue;
+            }
+            const float normalized = std::clamp(value, -1.0f, 1.0f);
+            if (!has_finite_sample) {
+                minimum = normalized;
+                maximum = normalized;
+                has_finite_sample = true;
+            } else {
+                minimum = std::min(minimum, normalized);
+                maximum = std::max(maximum, normalized);
+            }
+            peak = std::max(peak, std::abs(normalized));
         }
         preview.waveform[column] = std::clamp(peak, 0.0f, 1.0f);
+        preview.waveform_minimum[column] = minimum;
+        preview.waveform_maximum[column] = maximum;
     }
 
     if (window_size < 256 || samples.size() < 64) {

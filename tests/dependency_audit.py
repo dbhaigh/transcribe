@@ -20,7 +20,7 @@ def require_text(path, text, description):
 
 def main():
     root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
-    cmake = require_text(root / "CMakeLists.txt", "project(transcriber VERSION 0.1.5",
+    cmake = require_text(root / "CMakeLists.txt", "project(transcriber VERSION ",
                          "project version")
     require("GIT_TAG v3.7.1" in cmake, "Catch2 pin is missing")
     require("InstallRequiredSystemLibraries" in cmake,
@@ -89,7 +89,10 @@ def main():
             "Project MIT license copyright notice is missing")
     main_cpp = require_text(root / "src" / "main.cpp", "TRANSCRIBE_VERSION",
                             "CLI version output")
-    require("TRANSCRIBE_VERSION" in cmake and "0.1.5" in cmake,
+    version_line = next((line for line in cmake.splitlines()
+                         if line.startswith("project(transcriber VERSION ")), "")
+    require(version_line.endswith(" LANGUAGES CXX)") and
+            'TRANSCRIBE_VERSION="${PROJECT_VERSION}"' in cmake,
             "CLI version is not sourced from the CMake project version")
 
     print("Dependency pins and bundled license evidence are consistent with the inventory.")

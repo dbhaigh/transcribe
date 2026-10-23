@@ -1339,6 +1339,16 @@ std::wstring audio_preview_json(double offset, bool replace,
         if (index != 0) json << L',';
         json << std::setprecision(3) << preview.waveform[index];
     }
+    json << L"],\"waveform_minimum\":[";
+    for (std::size_t index = 0; index < preview.waveform_minimum.size(); ++index) {
+        if (index != 0) json << L',';
+        json << std::setprecision(3) << preview.waveform_minimum[index];
+    }
+    json << L"],\"waveform_maximum\":[";
+    for (std::size_t index = 0; index < preview.waveform_maximum.size(); ++index) {
+        if (index != 0) json << L',';
+        json << std::setprecision(3) << preview.waveform_maximum[index];
+    }
     json << L"],\"spectrogram\":[";
     for (std::size_t index = 0; index < preview.spectrogram.size(); ++index) {
         if (index != 0) json << L',';
@@ -2735,9 +2745,10 @@ void perform_live_capture(
         if (edited)
             post_live_events_ready(state, bridge);
         if (now - last_preview >= std::chrono::milliseconds(150)) {
-            const auto tail = session->recording_tail(8192);
+            const auto tail =
+                session->recording_tail(static_cast<std::size_t>(rate) * 3);
             if (!tail.samples.empty()) {
-                const auto preview = make_audio_preview(tail.samples, tail.sample_rate, 96, 40);
+                const auto preview = make_audio_preview(tail.samples, tail.sample_rate, 128, 40);
                 const double offset =
                     std::max(0.0, static_cast<double>(session->ingested_frames()) / rate -
                                       preview.duration_seconds);
@@ -3722,6 +3733,32 @@ void export_edited_score(
     if (!tuning_text.empty() && tuning_text != "custom") {
         request.guitar_tab_options.tuning = guitar_tuning(tuning_text);
         request.guitar_tab_options.string_tuning.clear();
+    } else if (tuning_text == "custom") {
+        const auto tuning_pitches = field(fields, "tuning_pitches");
+        if (!tuning_pitches.empty()) {
+            std::vector<int> pitches;
+            std::size_t start = 0;
+            while (start <= tuning_pitches.size()) {
+                const auto end = tuning_pitches.find(',', start);
+                const auto pitch_text = tuning_pitches.substr(
+                    start, end == std::string::npos
+                        ? std::string::npos : end - start);
+                std::size_t consumed = 0;
+                const int pitch = std::stoi(pitch_text, &consumed);
+                if (consumed != pitch_text.size() || pitch < 0 || pitch > 127 ||
+                    pitches.size() >= 12) {
+                    throw std::invalid_argument(
+                        "Custom tuning pitches must be MIDI notes from 0 to 127, with at most 12 strings.");
+                }
+                pitches.push_back(pitch);
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+            if (pitches.empty()) {
+                throw std::invalid_argument("Custom tuning must contain at least one string.");
+            }
+            request.guitar_tab_options.string_tuning = std::move(pitches);
+        }
     }
     const auto capo_text = field(fields, "capo");
     if (!capo_text.empty()) {

@@ -195,7 +195,11 @@ def main():
             environment.pop("LD_LIBRARY_PATH", None)
             environment.pop("DYLD_LIBRARY_PATH", None)
         help_result = run([executable, "--help"], executable.parent, environment)
-        require("Transcriber 0.1.5" in help_result.stdout,
+        cmake_path = Path(__file__).resolve().parents[1] / "CMakeLists.txt"
+        project_line = next((line for line in cmake_path.read_text(encoding="utf-8").splitlines()
+                             if line.startswith("project(transcriber VERSION ")), "")
+        expected_version = project_line.split()[2] if project_line else ""
+        require(expected_version and f"Transcriber {expected_version}" in help_result.stdout,
                 "Packaged CLI version does not match the current release")
 
         with tempfile.TemporaryDirectory(prefix="transcriber-package-output-") as temporary:

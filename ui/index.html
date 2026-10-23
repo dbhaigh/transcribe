@@ -377,7 +377,7 @@
 
       <section class="panel score-panel" aria-label="Score workspace">
         <div class="score-heading">
-          <div><span class="section-kicker">SCORE WORKSPACE</span><h1>Notation &amp; tablature</h1></div>
+          <div><span class="section-kicker">TRANSCRIPTION WORKSPACE</span><h1>Transcription workspace</h1></div>
           <div class="score-heading-actions">
             <div class="stats-inline" aria-label="Score summary">
               <span><b id="note-count">—</b> notes</span>
@@ -428,14 +428,14 @@
           <button id="jump-live" class="button button-quiet" type="button"
                   aria-label="Jump to the latest live evidence" title="Jump to the latest live evidence"
                   disabled hidden>Jump to live</button>
-          <div class="score-zoom" aria-label="Notation zoom controls">
+          <div id="score-zoom-controls" class="score-zoom" role="group" aria-label="Notation zoom controls" hidden>
             <button id="engraving-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
             <button id="engraving-fit" type="button" title="Fit score to panel">Fit</button>
             <button id="engraving-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
           </div>
           <span id="selection-label" aria-live="polite">No selection</span>
         </div>
-        <div class="note-legend" aria-label="Note state legend">
+        <div id="note-legend" class="note-legend" aria-label="Note state legend">
           <span class="provisional">Provisional · hollow/dashed</span>
           <span class="stabilized">Stabilized · solid + S</span>
           <span class="finalized">Finalized · normal</span>
@@ -446,15 +446,42 @@
           <span class="uncertain">Uncertain · coral</span>
         </div>
 
-        <section class="timeline-panel" aria-label="Transcription timeline">
+        <div class="display-tabs" role="tablist" aria-label="Transcription views">
+          <button id="view-tab-waveform" class="display-tab" type="button" role="tab"
+                  aria-controls="view-waveform" aria-selected="false" tabindex="-1"
+                  data-display-tab="waveform">Waveform</button>
+          <button id="view-tab-spectrogram" class="display-tab" type="button" role="tab"
+                  aria-controls="view-spectrogram" aria-selected="false" tabindex="-1"
+                  data-display-tab="spectrogram">Spectrogram</button>
+          <button id="view-tab-note-timeline" class="display-tab" type="button" role="tab"
+                  aria-controls="view-note-timeline" aria-selected="true" tabindex="0"
+                  data-display-tab="note-timeline">Note timeline</button>
+          <button id="view-tab-standard-notation" class="display-tab" type="button" role="tab"
+                  aria-controls="view-standard-notation" aria-selected="false" tabindex="-1"
+                  data-display-tab="standard-notation">Standard notation</button>
+          <button id="view-tab-guitar-tablature" class="display-tab" type="button" role="tab"
+                  aria-controls="view-guitar-tablature" aria-selected="false" tabindex="-1"
+                  data-display-tab="guitar-tablature">Guitar tablature</button>
+        </div>
+
+        <section id="view-waveform" class="display-pane timeline-panel" role="tabpanel"
+                 aria-labelledby="view-tab-waveform" tabindex="0" hidden>
           <div class="visual-panel">
             <div class="visual-label"><span>WAVEFORM</span><span>Peak envelope · normalized amplitude</span></div>
             <canvas id="waveform" aria-label="Audio waveform preview"></canvas>
           </div>
+        </section>
+
+        <section id="view-spectrogram" class="display-pane timeline-panel" role="tabpanel"
+                 aria-labelledby="view-tab-spectrogram" tabindex="0" hidden>
           <div class="visual-panel">
             <div class="visual-label"><span>SPECTROGRAM</span><span>Log frequency · relative energy · sample seconds</span></div>
             <canvas id="spectrogram" aria-label="Audio spectrogram preview"></canvas>
           </div>
+        </section>
+
+        <section id="view-note-timeline" class="display-pane timeline-panel note-timeline-pane"
+                 role="tabpanel" aria-labelledby="view-tab-note-timeline" tabindex="0">
           <div class="timeline-title"><span>NOTE TIMELINE</span><span id="roll-duration">Select a note to inspect or edit</span></div>
           <div class="piano-roll-wrap">
             <div class="roll-labels"><span id="pitch-high">—</span><span>Pitch</span><span id="pitch-low">—</span></div>
@@ -469,31 +496,37 @@
           </div>
         </section>
 
-        <section class="notation-panel standard-panel">
-          <div class="notation-heading">
-            <div><span class="section-kicker">STANDARD NOTATION</span>
-              <span id="score-hint">Editable timing sketch · select a note to inspect</span></div>
-            <div id="engraving-controls" class="engraving-controls">
-              <label for="engraving-layout">Page</label>
-              <select id="engraving-layout" aria-label="Engraved score page layout" disabled>
-                <option value="a4">A4</option>
-                <option value="letter">US Letter</option>
-                <option value="compact">Compact</option>
-              </select>
-              <span id="engraving-status">Timeline preview · enable optional Verovio for engraved pages</span>
-              <span id="engraving-license" class="engraving-license">Verovio 6.3.0 · LGPL-3.0-or-later</span>
+        <section id="view-standard-notation" class="display-pane" role="tabpanel"
+                 aria-labelledby="view-tab-standard-notation" tabindex="0" hidden>
+          <section class="notation-panel standard-panel">
+            <div class="notation-heading">
+              <div><span class="section-kicker">STANDARD NOTATION</span>
+                <span id="score-hint">Editable timing sketch · select a note to inspect</span></div>
+              <div id="engraving-controls" class="engraving-controls">
+                <label for="engraving-layout">Page</label>
+                <select id="engraving-layout" aria-label="Engraved score page layout" disabled>
+                  <option value="a4">A4</option>
+                  <option value="letter">US Letter</option>
+                  <option value="compact">Compact</option>
+                </select>
+                <span id="engraving-status">Timeline preview · enable optional Verovio for engraved pages</span>
+                <span id="engraving-license" class="engraving-license">Verovio 6.3.0 · LGPL-3.0-or-later</span>
+              </div>
             </div>
-          </div>
-          <div id="engraving-host" class="engraving-host hidden"
-               aria-label="Engraved notation for the accepted score"></div>
-          <canvas id="staff-view" tabindex="0" aria-label="Editable treble clef notation. Double click to insert; arrows edit pitch; Delete removes selection."></canvas>
+            <div id="engraving-host" class="engraving-host hidden"
+                 aria-label="Engraved notation for the accepted score"></div>
+            <canvas id="staff-view" tabindex="0" aria-label="Editable treble clef notation. Double click to insert; arrows edit pitch; Delete removes selection."></canvas>
+          </section>
         </section>
 
-        <section class="notation-panel tab-panel" aria-label="Synchronized guitar tablature">
-          <div class="notation-heading"><div><span class="section-kicker">GUITAR TABLATURE</span>
-            <span id="tab-hint">Tuning and capo follow export settings</span></div>
-            <span id="tab-tuning-label">Standard E</span></div>
-          <canvas id="tab-view" tabindex="0" aria-label="Editable guitar tablature. Left and right select notes; up and down edit pitch."></canvas>
+        <section id="view-guitar-tablature" class="display-pane" role="tabpanel"
+                 aria-labelledby="view-tab-guitar-tablature" tabindex="0" hidden>
+          <section class="notation-panel tab-panel" aria-label="Synchronized guitar tablature">
+            <div class="notation-heading"><div><span class="section-kicker">GUITAR TABLATURE</span>
+              <span id="tab-hint">Tuning and capo follow export settings</span></div>
+              <span id="tab-tuning-label">Standard E</span></div>
+            <canvas id="tab-view" tabindex="0" aria-label="Editable guitar tablature. Left and right select notes; up and down edit pitch."></canvas>
+          </section>
         </section>
       </section>
 
@@ -682,6 +715,7 @@
     <button id="show-guide" class="button button-secondary" type="button">Show first-run guide</button>
   </dialog>
   <script src="timeline.js"></script>
+  <script src="display-tabs.js"></script>
   <script src="workspace.js"></script>
   <script src="app.js"></script>
   <script src="editor.js"></script>

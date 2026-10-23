@@ -348,6 +348,15 @@ and clears after pressure subsides; its loss counters remain cumulative.
 `INPUT GAP` separately indicates known missing input. Both expose loss counts
 rather than substituting successful-looking output.
 
+### Workstation audio preview
+
+During ASIO capture, the WebView2 workstation refreshes the waveform and
+spectrogram with a rolling three-second preview about every 150 ms. The
+downsampled waveform carries signed minimum and maximum values per time column;
+the spectrogram carries relative energy in log-frequency bands. Preview
+timestamps remain recording-relative, but this bounded display is not a
+full-recording history and does not alter the audio supplied to analysis.
+
 ### Hardware-independent workstation replay
 
 `ui_live_callback_replay` replays `samples/guitar_scale.wav` at real-time pace

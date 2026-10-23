@@ -257,7 +257,7 @@
       (projectDirty || hasUnexportedEdits ? " *" : "");
   }
 
-  function acceptProjectInfo(project) {
+  function acceptProjectInfo(project, preserveSetup = false) {
     if (!project) return;
     currentProjectPath = project.project_path || "";
     activeProjectTitle = project.title || "Untitled project";
@@ -273,69 +273,73 @@
     }
     const settings = project.settings || {};
     $("project-annotation").value = project.annotation_text || "";
-    if (settings.quantization) $("quantization-mode").value = settings.quantization;
-    if (Number.isFinite(settings.quantization_strength))
-      $("quantization-strength").value = String(settings.quantization_strength);
-    if (Number.isFinite(settings.minimum_rhythm_evidence))
-      $("rhythm-evidence").value = String(settings.minimum_rhythm_evidence);
-    if (Object.hasOwn(settings, "retain_review_evidence"))
-      $("review-mode").checked = settings.retain_review_evidence;
-    if (Object.hasOwn(settings, "bounded_inference"))
-      $("bounded-inference").checked = settings.bounded_inference;
-    if (Object.hasOwn(settings, "tempo_automatic")) {
-      $("tempo-auto").checked = Boolean(settings.tempo_automatic);
-    }
-    if (Number.isFinite(Number(settings.tempo_bpm))) {
-      $("tempo-control").value = String(Math.round(Number(settings.tempo_bpm)));
-    }
-    if (Object.hasOwn(settings, "meter_automatic")) {
-      $("meter-control").value = settings.meter_automatic
-        ? "auto"
-        : `${settings.meter_numerator}/${settings.meter_denominator}`;
-    }
-    if (Object.hasOwn(settings, "key_automatic")) {
-      $("key-control").value = settings.key_automatic
-        ? "auto" : String(settings.key_fifths);
-    }
-    if (Object.hasOwn(settings, "minor_key")) {
-      $("minor-control").checked = Boolean(settings.minor_key);
-    }
-    if (Number.isFinite(Number(settings.pickup_quarters))) {
-      $("pickup-control").value = String(settings.pickup_quarters);
-    }
-    if (Number.isFinite(Number(settings.written_transposition))) {
-      $("written-transposition-control").value =
-        String(settings.written_transposition);
-    }
-    if (settings.tuning_preset) {
-      $("guitar-tuning").value = settings.tuning_preset;
-    }
-    if (Number.isFinite(Number(settings.capo_fret))) {
-      $("capo-fret").value = String(settings.capo_fret);
-    }
-    if (settings.instrument_prior) {
-      $("instrument-prior").value = settings.instrument_prior === "none" ? "auto" : settings.instrument_prior;
-    }
-    if (Object.hasOwn(settings, "model_path")) inputs.model.value = settings.model_path;
-    if (settings.live_backend) $("live-backend").value = settings.live_backend;
-    if (Object.hasOwn(settings, "polyphonic")) {
-      $("polyphonic").checked = Boolean(settings.polyphonic);
-    }
-    if (Object.hasOwn(settings, "fast_preview")) {
-      $("quality-mode").value = settings.fast_preview ? "fast" : "quality";
-    }
-    if (Object.hasOwn(settings, "preserve_timing")) {
-      $("preserve-timing").checked = Boolean(settings.preserve_timing);
-    }
-    if (Number.isFinite(Number(settings.latency_ms))) {
-      $("latency-ms").value = String(settings.latency_ms);
+    if (!preserveSetup) {
+      if (settings.quantization) $("quantization-mode").value = settings.quantization;
+      if (Number.isFinite(settings.quantization_strength))
+        $("quantization-strength").value = String(settings.quantization_strength);
+      if (Number.isFinite(settings.minimum_rhythm_evidence))
+        $("rhythm-evidence").value = String(settings.minimum_rhythm_evidence);
+      if (Object.hasOwn(settings, "retain_review_evidence"))
+        $("review-mode").checked = settings.retain_review_evidence;
+      if (Object.hasOwn(settings, "bounded_inference"))
+        $("bounded-inference").checked = settings.bounded_inference;
+      if (Object.hasOwn(settings, "tempo_automatic")) {
+        $("tempo-auto").checked = Boolean(settings.tempo_automatic);
+      }
+      if (Number.isFinite(Number(settings.tempo_bpm))) {
+        $("tempo-control").value = String(Math.round(Number(settings.tempo_bpm)));
+      }
+      if (Object.hasOwn(settings, "meter_automatic")) {
+        $("meter-control").value = settings.meter_automatic
+          ? "auto"
+          : `${settings.meter_numerator}/${settings.meter_denominator}`;
+      }
+      if (Object.hasOwn(settings, "key_automatic")) {
+        $("key-control").value = settings.key_automatic
+          ? "auto" : String(settings.key_fifths);
+      }
+      if (Object.hasOwn(settings, "minor_key")) {
+        $("minor-control").checked = Boolean(settings.minor_key);
+      }
+      if (Number.isFinite(Number(settings.pickup_quarters))) {
+        $("pickup-control").value = String(settings.pickup_quarters);
+      }
+      if (Number.isFinite(Number(settings.written_transposition))) {
+        $("written-transposition-control").value =
+          String(settings.written_transposition);
+      }
+      if (settings.tuning_preset) {
+        $("guitar-tuning").value = settings.tuning_preset;
+      }
+      if (Number.isFinite(Number(settings.capo_fret))) {
+        $("capo-fret").value = String(settings.capo_fret);
+      }
+      if (settings.instrument_prior) {
+        $("instrument-prior").value = settings.instrument_prior === "none" ? "auto" : settings.instrument_prior;
+      }
+      if (Object.hasOwn(settings, "model_path")) inputs.model.value = settings.model_path;
+      if (settings.live_backend) $("live-backend").value = settings.live_backend;
+      if (Object.hasOwn(settings, "polyphonic")) {
+        $("polyphonic").checked = Boolean(settings.polyphonic);
+      }
+      if (Object.hasOwn(settings, "fast_preview")) {
+        $("quality-mode").value = settings.fast_preview ? "fast" : "quality";
+      }
+      if (Object.hasOwn(settings, "preserve_timing")) {
+        $("preserve-timing").checked = Boolean(settings.preserve_timing);
+      }
+      if (Number.isFinite(Number(settings.latency_ms))) {
+        $("latency-ms").value = String(settings.latency_ms);
+      }
     }
     window.dispatchEvent(new CustomEvent("transcribe:project-active", {
       detail: { active: true },
     }));
-    window.dispatchEvent(new CustomEvent("transcribe:project-settings", {
-      detail: settings,
-    }));
+    if (!preserveSetup) {
+      window.dispatchEvent(new CustomEvent("transcribe:project-settings", {
+        detail: settings,
+      }));
+    }
     projectDirty = false;
     updateTempoControlState();
     updateAnalysisControlState();
@@ -928,6 +932,8 @@
       ? `${visible.length} notes · sampled overview; zoom to inspect every note` : "Time";
   }
 
+  window.addEventListener("resize", drawRoll);
+
   function showError(message) {
     setActivity("error", "Action could not be completed", message);
     $("preview-badge").textContent = "ERROR";
@@ -1490,14 +1496,57 @@
       return;
     }
     if (message.type === "project-reset") {
+      clearQueuedPreviews();
+      window.clearTimeout(autosaveTimer);
+      autosaveTimer = 0;
       hasAcceptedScore = true;
       hasPendingProposal = false;
       hasLiveRecording = false;
       hasPendingRefinement = false;
       hasUnexportedEdits = false;
       projectDirty = false;
+      captureActive = false;
+      analysisPaused = false;
+      stopRequested = false;
+      cancelPending = false;
+      sourceChanged = true;
+      timelineDuration = 1;
+      recordingSeconds = 0;
+      liveViewportSpan = 12;
+      lastLiveSequence = 0;
+      liveStatusJob = 0;
+      acceptedNotesBeforeLiveCapture = null;
+      liveNotesById.clear();
+      liveNoteRevisions.clear();
+      liveRetractions.clear();
+      liveGapRegions = [];
       recentEvents = [];
-      acceptProjectInfo(message.project);
+      acceptProjectInfo(message.project, true);
+      $("isolation-enabled").checked = false;
+      $("isolation-reviewed").checked = false;
+      $("preprocessing-fallback").checked = false;
+      inputs.isolated.value = "";
+      $("follow-live").checked = true;
+      $("recording-timer").textContent = "00:00.0";
+      $("live-events").textContent = "";
+      $("live-health-strip").hidden = true;
+      $("pause-analysis").classList.add("hidden");
+      $("pause-analysis").setAttribute("aria-pressed", "false");
+      $("proposal-details").className = "result-message hidden";
+      $("proposal-summary").textContent = "";
+      $("accept-proposal").hidden = true;
+      $("accept-proposal").disabled = true;
+      $("refinement-panel").classList.add("hidden");
+      $("undo-refinement").hidden = true;
+      $("preview-badge").textContent = "EMPTY PROJECT";
+      $("preview-badge").className = "preview-badge";
+      $("tempo-value").textContent = "—";
+      $("key-value").textContent = "—";
+      $("result-message").textContent = "New project created.";
+      $("result-message").className = "result-message";
+      inputPeak = 0;
+      updateInputLevel([], true);
+      setLiveCaptureState("idle");
       renderNotes(Array.isArray(message.notes) ? message.notes : [], true);
       window.dispatchEvent(new CustomEvent("transcribe:fingering", {
         detail: message.fingering,
@@ -1508,8 +1557,23 @@
       window.dispatchEvent(new CustomEvent("transcribe:accepted-score", {
         detail: message,
       }));
+      window.TranscribeTimeline.setView(0, null, 1);
+      window.dispatchEvent(new CustomEvent("transcribe:source-changed"));
+      window.dispatchEvent(new CustomEvent("transcribe:live-events", {
+        detail: [],
+      }));
+      window.dispatchEvent(new CustomEvent("transcribe:live-overlays", {
+        detail: { gaps: [] },
+      }));
+      notifyReview({});
+      setActivity("empty", "Ready for a recording",
+        "Open audio, choose your setup, then select Transcribe.");
       setCaptureState("Empty project");
       setStatus("New project created", 100);
+      projectEditGeneration += 1;
+      window.dispatchEvent(new CustomEvent("transcribe:project-autosave", {
+        detail: { generation: projectEditGeneration },
+      }));
       return;
     }
     if (message.type === "progress") {
@@ -1783,7 +1847,11 @@
     });
   });
   $("new-project").addEventListener("click", () => {
-    if (confirmDiscardCurrentProject("create a new project")) send("new-project");
+    if (confirmDiscardCurrentProject("create a new project")) {
+      window.clearTimeout(autosaveTimer);
+      autosaveTimer = 0;
+      send("new-project");
+    }
   });
   $("open-project").addEventListener("click", openProjectPicker);
   $("save-project").addEventListener("click", () => requestSaveProject(false));

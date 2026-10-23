@@ -1,6 +1,6 @@
 # Transcriber
 
-Transcriber 0.1.7 is a C++20 audio-to-score CLI with an optional Windows
+Transcriber 0.1.8 is a C++20 audio-to-score CLI with an optional Windows
 WebView2 workstation as its sole graphical interface. It combines first-pass
 transcription with editable notation/tab, canonical score projects, evidence
 review, and reproducible build/package checks while retaining the
@@ -27,6 +27,12 @@ metrics, and stop/cancel/refinement review semantics. Hardware-independent
 replay verifies the callback transport through the bridge and browser UI.
 Physical ASIO hardware acceptance remains outstanding; see the
 [live manual acceptance checklist](docs/live-manual-acceptance.md).
+
+Version 0.1.8 adds five tabbed workstation displays and improves live capture
+refresh: the note timeline redraws when shown again, the waveform uses signed
+min/max bounds, and waveform/spectrogram previews retain the newest three
+seconds. Starting **New** clears project/source content while preserving setup
+preferences.
 
 ## Architecture
 

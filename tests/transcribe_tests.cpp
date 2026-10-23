@@ -593,7 +593,8 @@ TEST_CASE("WAV transcription uses bounded overlapping chunks") {
     REQUIRE(preview_samples == static_cast<std::size_t>(44100 * 2.4));
 }
 
-TEST_CASE("audio preview builds bounded waveform and log-frequency spectrogram data") {
+TEST_CASE("audio preview builds signed waveform bounds and log-frequency spectrogram data",
+          "[live][preview]") {
     constexpr std::uint32_t sample_rate = 44100;
     std::vector<float> samples(sample_rate / 2);
     for (std::size_t index = 0; index < samples.size(); ++index) {
@@ -609,8 +610,14 @@ TEST_CASE("audio preview builds bounded waveform and log-frequency spectrogram d
     REQUIRE(preview.minimum_frequency_hz == 55.0);
     REQUIRE(preview.maximum_frequency_hz == sample_rate * 0.5);
     REQUIRE(preview.waveform.size() == preview.columns);
+    REQUIRE(preview.waveform_minimum.size() == preview.columns);
+    REQUIRE(preview.waveform_maximum.size() == preview.columns);
     REQUIRE(preview.spectrogram.size() == preview.columns * 24);
     REQUIRE(*std::max_element(preview.waveform.begin(), preview.waveform.end()) > 0.5f);
+    REQUIRE(*std::min_element(preview.waveform_minimum.begin(),
+                              preview.waveform_minimum.end()) < -0.5f);
+    REQUIRE(*std::max_element(preview.waveform_maximum.begin(),
+                              preview.waveform_maximum.end()) > 0.5f);
     REQUIRE(*std::max_element(preview.spectrogram.begin(),
                               preview.spectrogram.end()) > 0.5f);
     REQUIRE_THROWS(transcribe::make_audio_preview(samples, sample_rate, 0, 24));

@@ -12,6 +12,45 @@ window.runTranscriberWorkflowTests = async (studio) => {
   const key = (value, extra = {}) => doc.dispatchEvent(new studio.KeyboardEvent("keydown",
     { key: value, bubbles: true, ...extra }));
   const timeline = studio.TranscribeTimeline;
+  const viewNames = ["waveform", "spectrogram", "note-timeline", "standard-notation", "guitar-tablature"];
+  const viewTabs = viewNames.map(name => $(`view-tab-${name}`));
+  require(viewTabs.length === 5 && $("view-tab-note-timeline").getAttribute("aria-selected") === "true",
+    "The note timeline is not the initial selection in the five-view tab strip");
+  viewTabs.forEach((tab, index) => {
+    tab.click();
+    require(tab.getAttribute("aria-selected") === "true" &&
+      !$(`view-${viewNames[index]}`).hidden &&
+      viewTabs.every(other => other === tab || other.getAttribute("aria-selected") === "false"),
+      `Selecting the ${viewNames[index]} tab did not show exactly its view`);
+  });
+  $("view-tab-waveform").click();
+  await tick();
+  const waveformRect = $("waveform").getBoundingClientRect();
+  require(waveformRect.width > 0 && waveformRect.height > 0 &&
+    $("waveform").width === Math.round(waveformRect.width * (studio.devicePixelRatio || 1)),
+    "Showing the waveform tab did not size and repaint its canvas");
+  $("view-tab-waveform").focus();
+  $("view-tab-waveform").dispatchEvent(new studio.KeyboardEvent("keydown",
+    { key: "ArrowRight", bubbles: true }));
+  require($("view-tab-spectrogram").getAttribute("aria-selected") === "true" &&
+    doc.activeElement === $("view-tab-spectrogram"),
+    "Arrow-key navigation did not move selection and focus to the next view");
+  $("view-tab-spectrogram").dispatchEvent(new studio.KeyboardEvent("keydown",
+    { key: "End", bubbles: true }));
+  require($("view-tab-guitar-tablature").getAttribute("aria-selected") === "true",
+    "End did not select the last display tab");
+  $("view-tab-guitar-tablature").dispatchEvent(new studio.KeyboardEvent("keydown",
+    { key: "Home", bubbles: true }));
+  require($("view-tab-waveform").getAttribute("aria-selected") === "true",
+    "Home did not select the first display tab");
+  $("view-tab-standard-notation").click();
+  require(!$("score-zoom-controls").hidden && !$("note-legend").hidden,
+    "Score-specific controls did not appear on the notation tab");
+  $("view-tab-waveform").click();
+  require($("score-zoom-controls").hidden && $("note-legend").hidden,
+    "Score-specific controls remained visible on an audio tab");
+  $("view-tab-note-timeline").click();
+  checks.push("five accessible display tabs, keyboard navigation, contextual controls and canvas resizing");
   require(!$("journey-guide").hidden && $("journey-open").getAttribute("aria-current") === "step",
     "First-run workflow did not identify opening a recording");
   require(!$("instrument-prior").closest("details") && !$("quality-mode").closest("details"),
@@ -174,17 +213,34 @@ window.runTranscriberWorkflowTests = async (studio) => {
   require(!$("note-list").textContent.includes("E4"),
     "Retracted note was not removed after its fade");
 
-  recordedLiveStream.slice(3).forEach(batch => sendBatch(batch.sequence, batch));
+  sendBatch(recordedLiveStream[3].sequence, recordedLiveStream[3]);
   await tick();
   require($("note-list").textContent.includes("G4") &&
-    !$("note-list").textContent.includes("E4") &&
-    $("note-list").textContent.includes("CORRECTED"),
-    "Resync did not replace stale notes or correction highlight was missing");
-  require($("piano-roll").dataset.gapRegions === "1" &&
-    $("staff-view").dataset.gapRegions === "1" &&
-    $("tab-view").dataset.gapRegions === "1" &&
+    !$("note-list").textContent.includes("E4"),
+    "Resync did not replace stale notes");
+  require($("piano-roll").dataset.gapRegions === "1",
+    "Analysis gaps were not rendered in the active note timeline");
+  $("view-tab-standard-notation").click();
+  await tick();
+  require($("staff-view").dataset.gapRegions === "1",
+    "Analysis gaps were not rendered when standard notation became visible");
+  $("view-tab-guitar-tablature").click();
+  await tick();
+  require($("tab-view").dataset.gapRegions === "1" &&
     $("tab-view").dataset.unresolvedTabNotes === "1",
-    "Analysis gaps or unresolved tablature were not rendered across synchronized canvases");
+    "Analysis gaps or unresolved tablature were not rendered when tablature became visible");
+  sendBatch(recordedLiveStream[4].sequence, recordedLiveStream[4]);
+  await tick();
+  require($("note-list").textContent.includes("CORRECTED"),
+    "The live note update was not received while the note timeline tab was hidden");
+  const hiddenTimelinePaintCount = Number($("piano-roll").dataset.paintCount);
+  $("view-tab-note-timeline").click();
+  await tick();
+  const timelineRect = $("piano-roll").getBoundingClientRect();
+  require(Number($("piano-roll").dataset.paintCount) > hiddenTimelinePaintCount &&
+    $("piano-roll").width === Math.round(timelineRect.width * (studio.devicePixelRatio || 1)) &&
+    $("piano-roll").dataset.correctedNotes === "1",
+    "The note timeline did not repaint the latest live capture after becoming visible");
   checks.push("mock-host live stream: provisional, stabilized, retraction fade, correction, resync and gap overlays");
 
   sendBatch(6, { finalizations: [{ id: "take/live-2", revision: 6,
@@ -366,6 +422,8 @@ window.runTranscriberWorkflowTests = async (studio) => {
   send("busy", { busy: false });
   checks.push("stale live preview protection and busy edit isolation");
 
+  $("view-tab-standard-notation").click();
+  await tick();
   const staff = $("staff-view");
   const staffRect = staff.getBoundingClientRect();
   staff.dispatchEvent(new studio.MouseEvent("dblclick", {
@@ -403,20 +461,34 @@ window.runTranscriberWorkflowTests = async (studio) => {
   send("metadata", metadata);
   checks.push("live delete tombstones and undo restoration");
 
+  $("view-tab-waveform").click();
+  await tick();
   const calls = [];
   const waveformContext = $("waveform").getContext("2d");
-  const originalMove = waveformContext.moveTo.bind(waveformContext);
-  waveformContext.moveTo = (x, y) => { calls.push(x); originalMove(x, y); };
+  const originalFillRect = waveformContext.fillRect.bind(waveformContext);
+  waveformContext.fillRect = (x, y, width, height) => {
+    calls.push([x, y, width, height]);
+    originalFillRect(x, y, width, height);
+  };
+  timeline.setView(0, null, 4);
   host({ type: "audio-preview", replace: true, offset: 0, duration: 1, bands: 1,
-    waveform: [.1, .2], spectrogram: [.2, .3] });
+    waveform: [.1, .2], waveform_minimum: [-.1, -.2],
+    waveform_maximum: [.1, .2], spectrogram: [.2, .3] });
   host({ type: "audio-preview", replace: false, offset: 3, duration: 1, bands: 1,
-    waveform: [.3, .4], spectrogram: [.3, .4] });
+    waveform: [.3], waveform_minimum: [-.2],
+    waveform_maximum: [.4], spectrogram: [.3] });
   await tick();
   require($("audio-time").textContent.includes("4.0"), "Incremental preview was dropped");
   const width = $("waveform").getBoundingClientRect().width;
-  require(calls.some(x => Math.abs(x - timeline.x(3.25, 4, width)) < .01), "Timestamped audio gap was compressed");
-  waveformContext.moveTo = originalMove;
-  checks.push("incremental previews retain timestamped gaps and common alignment");
+  const previewCenter = timeline.x(3.5, 4, width);
+  const plotHeight = $("waveform").getBoundingClientRect().height - 20;
+  require(calls.some(([x, y, barWidth, barHeight]) =>
+    x <= previewCenter && x + barWidth >= previewCenter &&
+    y >= 0 && y + barHeight <= plotHeight &&
+    Math.abs(barHeight - .6 * plotHeight * .44) < 1),
+  "The signed min/max waveform envelope or timestamped gap was rendered incorrectly");
+  waveformContext.fillRect = originalFillRect;
+  checks.push("incremental previews retain timestamped gaps and signed waveform bounds");
 
   let resume;
   let clock = 0;
@@ -749,10 +821,14 @@ window.runTranscriberWorkflowTests = async (studio) => {
     minimum_frequency_hz: 55, maximum_frequency_hz: 22050,
     waveform: [.2, .4], spectrogram: [.1, .3, .2, .4] });
   timeline.setView(1, 1, 4);
+  $("view-tab-waveform").click();
   await tick();
-  require($("spectrogram").getAttribute("aria-label").includes("55 to 22050 Hz") &&
-    $("waveform").getAttribute("aria-label").includes("1.00 to 2.00 seconds"),
-    "Audio axes do not expose backend frequency bounds or shared viewport");
+  require($("waveform").getAttribute("aria-label").includes("1.00 to 2.00 seconds"),
+    "Waveform axes do not expose the shared viewport");
+  $("view-tab-spectrogram").click();
+  await tick();
+  require($("spectrogram").getAttribute("aria-label").includes("55 to 22050 Hz"),
+    "Spectrogram axes do not expose backend frequency bounds");
   require(!$("timeline-scroll").disabled && Number($("timeline-scroll").max) === 3,
     "Horizontal timeline control does not reflect zoom");
   $("timeline-scroll").value = "2";
@@ -762,6 +838,7 @@ window.runTranscriberWorkflowTests = async (studio) => {
   require($("timeline-scroll").disabled, "Full-take shortcut did not reset scrolling");
   key("+");
   require(!$("timeline-scroll").disabled, "Zoom shortcut did not create a scrollable view");
+  $("view-tab-note-timeline").click();
   checks.push("sample-time and real frequency axes, shared horizontal slider and zoom shortcuts");
 
   const largeScore = longNotes.map(note => ({ ...note, name: "C4" }));
@@ -827,6 +904,72 @@ window.runTranscriberWorkflowTests = async (studio) => {
     $("theme-toggle").click();
   }
   checks.push("480/720/1024/1440px layouts without page overflow and 4.5:1 core text-token contrast in both themes");
+  $("instrument-prior").value = "bass";
+  $("quality-mode").value = "fast";
+  $("quantization-mode").value = "evidence";
+  $("quantization-strength").value = "0.35";
+  $("live-backend").value = "spectral";
+  $("guitar-tuning").value = "custom";
+  $("capo-fret").value = "3";
+  $("tempo-control").value = "90";
+  $("tempo-auto").checked = false;
+  $("meter-control").value = "3/4";
+  $("key-control").value = "-2";
+  $("minor-control").checked = true;
+  send("project-settings", {
+    tuning: [64, 59, 55, 50, 45, 40],
+    tempo_automatic: false,
+    meter_automatic: false,
+    key_automatic: false,
+  });
+  $("project-annotation").value = "Discard with the current project";
+  $("project-annotation").dispatchEvent(new studio.Event("input", { bubbles: true }));
+  $("isolation-enabled").checked = true;
+  $("isolation-reviewed").checked = true;
+  $("preprocessing-fallback").checked = true;
+  $("isolated-path").value = "old-isolated.wav";
+  host({ type: "audio-preview", replace: true, offset: 0, duration: 1, bands: 1,
+    waveform: [.8], spectrogram: [.5] });
+  studio.confirm = () => true;
+  $("new-project").click();
+  require(studio.__messages.at(-1).startsWith("new-project|"),
+    "New did not request a project reset after confirming unsaved changes");
+  host({ type: "project-reset", project: {
+    project_path: "", title: "Untitled project", audio_path: "", annotation_text: "",
+    exports: {},
+    settings: { quantization: "legacy", quantization_strength: 1,
+      minimum_rhythm_evidence: .65, tempo_automatic: true, meter_automatic: true,
+      key_automatic: true, tuning_preset: "standard", tuning: [64, 59, 55, 50, 45, 40],
+      instrument_prior: "auto", live_backend: "yin", fast_preview: false,
+      polyphonic: false, preserve_timing: false, capo_fret: 0 },
+  }, notes: [], metadata: { ...metadata, score_id: "empty-score", score_revision: 0,
+    tempo_inferred: false, key_inferred: false }, fingering: { notes: [] } });
+  await tick();
+  const resetAutosave = new URLSearchParams(studio.__messages.filter(
+    message => message.startsWith("autosave-project|")).at(-1).split("|")[1]);
+  require($("note-list").querySelectorAll(".note-row").length === 0 &&
+    $("project-title").textContent === "Untitled project" &&
+    $("project-annotation").value === "" && $("input-path").value === "" &&
+    $("audio-time").textContent === "Waiting for audio" &&
+    Number($("input-level-meter").value) === 0,
+    "New did not clear the project score, annotations, source, and audio preview");
+  require(!$("isolation-enabled").checked && !$("isolation-reviewed").checked &&
+    !$("preprocessing-fallback").checked && $("isolated-path").value === "",
+    "New retained source-specific preprocessing approval");
+  require($("instrument-prior").value === "bass" && $("quality-mode").value === "fast" &&
+    $("quantization-mode").value === "evidence" &&
+    $("quantization-strength").value === "0.35" &&
+    $("live-backend").value === "spectral" && $("guitar-tuning").value === "custom" &&
+    $("capo-fret").value === "3" && $("tempo-control").value === "90" &&
+    !$("tempo-auto").checked && $("meter-control").value === "3/4" &&
+    $("key-control").value === "-2" && $("minor-control").checked,
+    "New reset transcription/setup preferences");
+  require(resetAutosave.get("tuning") === "custom" &&
+    resetAutosave.get("tuning_pitches") === "64,59,55,50,45,40" &&
+    resetAutosave.get("instrument") === "bass" &&
+    resetAutosave.get("quantization") === "evidence",
+    "New did not persist retained setup preferences to the empty recovery project");
+  checks.push("New clears project and source state, preserves setup, and autosaves retained custom tuning");
   require(studio.__errors.length === 0, `Browser errors: ${studio.__errors.join("; ")}`);
   return checks;
 };

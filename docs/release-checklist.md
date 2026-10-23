@@ -15,7 +15,7 @@ acceptance. A CI-generated `pending` report is not a release sign-off.
 
 ## Current repository facts
 
-- Project version is 0.1.7; the CLI release banner is generated from the CMake
+- Project version is 0.1.8; the CLI release banner is generated from the CMake
   project version.
 - The default C++20 build is dependency-light and reads WAV audio. FFmpeg,
   ONNX Runtime, Windows ASIO capture, WebView2, and Verovio are optional.

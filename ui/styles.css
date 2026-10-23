@@ -803,3 +803,41 @@ body[data-theme="light"] .edit-details > summary { color: var(--text); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+.display-tabs {
+  display: flex;
+  min-width: 0;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 0 0 5px;
+  border-bottom: 1px solid var(--border);
+}
+.display-tab {
+  min-height: 36px;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.display-tab:hover { background: var(--panel-raised); color: var(--text); }
+.display-tab[aria-selected="true"] {
+  border-color: var(--border);
+  border-bottom-color: var(--panel-raised);
+  background: var(--panel-raised);
+  color: var(--mint);
+}
+.display-pane { min-width: 0; }
+.display-pane[hidden] { display: none !important; }
+#view-waveform #waveform { height: clamp(160px, 30vh, 320px); }
+#view-spectrogram #spectrogram { height: clamp(220px, 40vh, 460px); }
+#view-note-timeline .piano-roll-wrap { min-height: clamp(210px, 34vh, 380px); }
+#view-note-timeline #piano-roll { height: clamp(190px, 32vh, 360px); }
+#view-standard-notation .notation-panel canvas { min-height: 260px; max-height: 460px; }
+#view-guitar-tablature .tab-panel canvas {
+  height: clamp(220px, 34vh, 380px);
+  min-height: 220px;
+  max-height: 420px;
+}

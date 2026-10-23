@@ -119,6 +119,18 @@ def main():
         "spectrogram",
         "staff-view",
         "tab-view",
+        "view-tab-waveform",
+        "view-tab-spectrogram",
+        "view-tab-note-timeline",
+        "view-tab-standard-notation",
+        "view-tab-guitar-tablature",
+        "view-waveform",
+        "view-spectrogram",
+        "view-note-timeline",
+        "view-standard-notation",
+        "view-guitar-tablature",
+        "note-legend",
+        "score-zoom-controls",
         "fingering-alternatives",
         "fingering-note",
         "confidence-heatmap",
@@ -145,6 +157,8 @@ def main():
         "engraving-fit",
     }
     require(required_ids <= parser.ids, "UI is missing required workstation elements")
+    require((ui_directory / "display-tabs.js").is_file(),
+            "Accessible display-tab behavior is missing")
 
     javascript = [
         ui_directory / "workspace.js",
@@ -153,6 +167,7 @@ def main():
         ui_directory / "notation.js",
         ui_directory / "notation-worker.js",
         ui_directory / "timeline.js",
+        ui_directory / "display-tabs.js",
     ]
     for source in javascript:
         text = source.read_text(encoding="utf-8")
@@ -172,11 +187,16 @@ def main():
             "parse_quantization_mode(quantization)" in webview_backend,
             "Rhythm interpretation controls must reach validated native request options")
     transcription_backend = (ui_directory.parent / "src" / "gui_transcription.cpp").read_text(encoding="utf-8")
+    preview_backend = (ui_directory.parent / "src" / "transcriber.cpp").read_text(encoding="utf-8")
     review_backend = (ui_directory.parent / "src" / "review.cpp").read_text(encoding="utf-8")
     require("transcribe:notes" in app and "transcribe:notes" in editor,
             "Live note events are not connected to the score editor")
     require("transcribe:audio-preview" in app and "transcribe:audio-preview" in editor,
             "Audio previews are not connected to the visualizations")
+    require("waveform_minimum" in editor and "waveform_maximum" in editor and
+            "waveform_minimum" in webview_backend and "waveform_maximum" in webview_backend and
+            "waveform_minimum" in preview_backend and "waveform_maximum" in preview_backend,
+            "Signed waveform bounds are not connected from preview generation through the UI")
     require("transcribe:fingering" in app and "transcribe:fingering" in editor,
             "Ranked fingering assignments are not connected to the score editor")
     require("note.midi = open + fret" not in editor,

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(transcriber VERSION 0.1.7 LANGUAGES CXX)
+project(transcriber VERSION 0.1.8 LANGUAGES CXX)
 
 option(TRANSCRIBE_ENABLE_ASIO "Build real-time capture using RtAudio's ASIO backend" OFF)
 option(TRANSCRIBE_ENABLE_ONNX "Build ONNX Runtime model inference support" OFF)
@@ -234,6 +234,7 @@ if(WIN32 AND TRANSCRIBE_ENABLE_WEBVIEW2)
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html"
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/styles.css"
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/timeline.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ui/display-tabs.js"
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/workspace.js"
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/app.js"
         "${CMAKE_CURRENT_SOURCE_DIR}/ui/editor.js"

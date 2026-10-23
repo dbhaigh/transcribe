@@ -133,6 +133,8 @@ struct AudioPreviewData {
     std::size_t columns{};
     std::size_t frequency_bands{};
     std::vector<float> waveform;
+    std::vector<float> waveform_minimum;
+    std::vector<float> waveform_maximum;
     std::vector<float> spectrogram;
     double minimum_frequency_hz{};
     double maximum_frequency_hz{};

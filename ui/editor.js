@@ -24,6 +24,8 @@
   let audioStart = 0;
   let audioEnd = 0;
   let waveform = [];
+  let waveformMinimum = [];
+  let waveformMaximum = [];
   let spectrum = [];
   let spectrumBands = 40;
   let spectrumMinimum = 0;
@@ -641,26 +643,33 @@
     context.clearRect(0, 0, width, height);
     context.fillStyle = canvasColor("--field", "#0c1319");
     context.fillRect(0, 0, width, height);
-    context.strokeStyle = "rgba(116, 228, 189, .76)";
-    context.lineWidth = 1;
-    context.beginPath();
+    context.fillStyle = "rgba(116, 228, 189, .76)";
     const plotHeight = height - 20;
     const middle = plotHeight / 2;
     if (waveform.length) {
       waveform.forEach((peak, index) => {
         const column = audioColumns[index];
+        if (!column) return;
         const view = timeline.bounds(totalDuration());
         if (column.end < view.start || column.start > view.end) return;
-        const x = timeline.x((column.start + column.end) / 2, totalDuration(), width);
-        const amplitude = Math.max(1, peak * plotHeight * .44);
-        context.moveTo(x, middle - amplitude);
-        context.lineTo(x, middle + amplitude);
+        const x = timeline.x(column.start, totalDuration(), width);
+        const endX = timeline.x(column.end, totalDuration(), width);
+        const minimum = Number.isFinite(waveformMinimum[index])
+          ? waveformMinimum[index] : -Math.abs(peak);
+        const maximum = Number.isFinite(waveformMaximum[index])
+          ? waveformMaximum[index] : Math.abs(peak);
+        const firstY = middle - maximum * plotHeight * .44;
+        const lastY = middle - minimum * plotHeight * .44;
+        context.fillRect(x, Math.min(firstY, lastY),
+          Math.max(1, endX - x), Math.max(1, Math.abs(lastY - firstY)));
       });
     } else {
+      context.strokeStyle = "rgba(116, 228, 189, .76)";
+      context.beginPath();
       context.moveTo(0, middle);
       context.lineTo(width, middle);
+      context.stroke();
     }
-    context.stroke();
     drawAudioAxes(frame, false);
   }
 
@@ -697,7 +706,7 @@
     context.textAlign = "left";
     context.textBaseline = "alphabetic";
     $(frequency ? "spectrogram" : "waveform").setAttribute("aria-label",
-      `${frequency ? "Log-frequency relative-energy spectrogram" : "Normalized peak-envelope waveform"}, ${view.start.toFixed(2)} to ${view.end.toFixed(2)} seconds` +
+      `${frequency ? "Log-frequency relative-energy spectrogram" : "Normalized signed min/max waveform envelope"}, ${view.start.toFixed(2)} to ${view.end.toFixed(2)} seconds` +
       (frequency && spectrumMaximum > 0 ? `, ${spectrumMinimum} to ${spectrumMaximum} Hz` : ""));
   }
 
@@ -726,8 +735,8 @@
         context.fillRect(x, plotHeight - (band + 1) * cellHeight,
           Math.ceil(cellWidth), Math.ceil(cellHeight));
       }
-      drawAudioAxes(frame, true);
     }
+    drawAudioAxes(frame, true);
   }
 
   function drawConfidence() {
@@ -1863,17 +1872,28 @@
 
   function acceptAudioPreview(message) {
     const nextWaveform = Array.isArray(message.waveform) ? message.waveform : [];
+    const nextWaveformMinimum = Array.isArray(message.waveform_minimum)
+      ? message.waveform_minimum : nextWaveform.map(value => -Math.abs(value));
+    const nextWaveformMaximum = Array.isArray(message.waveform_maximum)
+      ? message.waveform_maximum : nextWaveform.map(value => Math.abs(value));
     const nextSpectrum = Array.isArray(message.spectrogram) ? message.spectrogram : [];
     const bands = Number(message.bands) || spectrumBands;
     const offset = Number(message.offset);
     const length = Number(message.duration);
     if (!Number.isFinite(offset) || offset < 0 || !Number.isFinite(length) || length < 0 ||
+        nextWaveformMinimum.length !== nextWaveform.length ||
+        nextWaveformMaximum.length !== nextWaveform.length ||
+        nextWaveformMinimum.some((value, index) =>
+          !Number.isFinite(value) || !Number.isFinite(nextWaveformMaximum[index]) ||
+          value > nextWaveformMaximum[index]) ||
         nextSpectrum.length !== nextWaveform.length * bands) {
       $("status-text").textContent = "Audio preview rejected: invalid timing or dimensions.";
       return;
     }
     if (message.replace || bands !== spectrumBands) {
       waveform = [];
+      waveformMinimum = [];
+      waveformMaximum = [];
       spectrum = [];
       audioColumns = [];
     }
@@ -1886,6 +1906,8 @@
     }));
     if (message.replace) {
       waveform = nextWaveform.slice();
+      waveformMinimum = nextWaveformMinimum.slice();
+      waveformMaximum = nextWaveformMaximum.slice();
       spectrum = nextSpectrum.slice();
       audioColumns = spans;
       audioStart = offset;
@@ -1895,12 +1917,16 @@
       const chunkDuration = Number(message.duration) || 0;
       const chunkOffset = Number(message.offset) || 0;
       waveform.push(...nextWaveform);
+      waveformMinimum.push(...nextWaveformMinimum);
+      waveformMaximum.push(...nextWaveformMaximum);
       spectrum.push(...nextSpectrum);
       audioColumns.push(...spans);
       const maximumColumns = 512;
       if (waveform.length > maximumColumns) {
         const remove = waveform.length - maximumColumns;
         waveform.splice(0, remove);
+        waveformMinimum.splice(0, remove);
+        waveformMaximum.splice(0, remove);
         spectrum.splice(0, remove * spectrumBands);
         audioColumns.splice(0, remove);
       }
@@ -2101,6 +2127,7 @@
       review_decisions: reviewDecisions.map((decision) =>
         [decision.id, decision.note_id, decision.outcome].join(",")).join(";"),
       tuning: $("guitar-tuning").value,
+      tuning_pitches: currentTuning().join(","),
       capo: String(currentCapo()),
       model: $("model-path").value,
       instrument: $("instrument-prior").value,
@@ -2429,6 +2456,8 @@
   window.addEventListener("transcribe:source-changed", () => {
     stopPlayback();
     waveform = [];
+    waveformMinimum = [];
+    waveformMaximum = [];
     spectrum = [];
     audioColumns = [];
     audioStart = 0;
@@ -2457,6 +2486,8 @@
       exportReady = false;
       edited = false;
       waveform = [];
+      waveformMinimum = [];
+      waveformMaximum = [];
       spectrum = [];
       audioColumns = [];
       audioStart = 0;

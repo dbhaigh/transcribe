@@ -33,6 +33,11 @@ focus rings. No network font or new UI framework is required.
 
 ## Projects
 
+**New** starts a clean project after confirming any unsaved edits. It clears the
+current score, source-audio reference, annotations, and source-specific
+preprocessing approval while preserving transcription/setup preferences. The
+empty project is autosaved with those retained settings.
+
 **Save** preserves the accepted score, tuning/capo, rhythm/model settings and
 annotations in the [native project format](projects.md). **Save with audio**
 explicitly copies the recording beside a newly chosen project file; move both
@@ -101,11 +106,12 @@ intact; recovery remains an explicit choice.
   individually approved; the original event stream remains in the live
   document. An applied refinement can be undone until a subsequent score edit
   is exported.
-- The source panel displays the selected audio waveform and spectrogram,
-  preview-sample peak level, recording status, and setup options.
-- The central score presents the editable notation and tablature timelines.
-  When the optional Verovio renderer is available, accepted MusicXML is
-  rendered as synchronized notation and tablature. See
+- The central work surface provides separate **Waveform**, **Spectrogram**,
+  **Note timeline**, **Standard notation**, and **Guitar tablature** tabs. The
+  note timeline is selected initially. Audio previews and score views share a
+  time viewport; notation page zoom is available on the two score tabs. When
+  the optional Verovio renderer is available, accepted MusicXML is rendered as
+  synchronized notation and tablature. See
   [`notation-rendering.md`](./notation-rendering.md) for its feature limits.
 - Selecting a score note exposes its accepted pitch, measured onset and
   offset, supplied calibrated confidence, available raw evidence, source
@@ -126,20 +132,23 @@ than accepting or exporting its notes. The versioned native bridge reports
 `failed` capture states. Saving and export are non-cancellable while committing
 files; their controls do not offer a false cancel action.
 
-The waveform is a normalized **peak-envelope preview**, not individual samples.
-Its amplitude and seconds axes share the viewport with the spectrogram,
-timeline, notation sketch and tablature. Spectrogram labels use actual backend
-log-band limits (55 Hz through half the analyzed sample rate), not guessed FFT
-frequencies; intensities show relative energy, not calibrated dB. Old preview
-messages without frequency metadata display an unknown-Hz label.
+The waveform is a normalized signed min/max envelope, downsampled into
+time-aligned columns rather than individual samples. Realtime capture shows a
+rolling three-second preview. Its amplitude and seconds axes share the viewport
+with the spectrogram, timeline, notation sketch and tablature. Spectrogram
+labels use actual backend log-band limits (55 Hz through half the analyzed
+sample rate), not guessed FFT frequencies; intensities show relative energy,
+not calibrated dB. Old preview messages without frequency metadata display an
+unknown-Hz label.
 Preview resolution is bounded, so zooming does not recover missing sample detail.
 Progressive previews can retain only a recent portion; absent regions are not
 represented as new audio.
 
-Use timeline **+ / − / Full take**, the horizontal position slider,
+Use the shared **+ / − / Full take** controls, the horizontal position slider,
 **Page Up / Page Down**, or Shift+wheel/trackpad horizontal scrolling.
 The slider's arrows are native accessible range controls. **0** resets to the
-full take. Engraved-page zoom is separate from the shared time viewport.
+full take. Engraved-page zoom is separate from the shared time viewport. The
+display tabs support Left/Right Arrow and Home/End keyboard navigation.
 At over 4,000 visible timeline events the display explicitly labels its sampled
 overview; zoom in to inspect all events. The canonical score is not sampled.
 Only the last 80 event-list rows are materialized.

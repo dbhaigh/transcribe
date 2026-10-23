@@ -46,7 +46,8 @@ native transaction converts those seconds with the **edited** tempo map.
 Undo restores both the context and its note projection.
 
 Waveform/spectrogram columns retain their individual recording-relative start
-and end times. Rolling previews retain at most 512 columns; discarded history
+and end times. Realtime capture replaces the preview with the newest three
+seconds; other rolling previews retain at most 512 columns. Discarded history
 and delivery gaps are not stretched into continuous audio. Incremental UI
 messages are no longer overwritten by a last-message-only animation queue.
 The native preview mailbox may still coalesce chunks under load; a gap remains
